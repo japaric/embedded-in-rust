@@ -1,0 +1,3 @@
+[submodule "themes/hucore"]
+	path = themes/hucore
+	url = https://github.com/japaric/hucore

@@ -1,0 +1,33 @@
+baseURL = "https://blog.japaric.io/"
+copyright = "<a rel=\"license\" href=\"http://creativecommons.org/licenses/by/4.0/\"><img alt=\"Creative Commons License\" src=\"https://i.creativecommons.org/l/by/4.0/80x15.png\" /></a><br/>Jorge Aparicio"
+enableEmoji = true
+languageCode = "en-us"
+theme = "hucore"
+title = "Embedded in Rust"
+
+[taxonomies]
+tag = "tags"
+
+[params]
+author = "Jorge Aparicio"
+description = "A blog about Rust and embedded stuff"
+displayauthor = true
+keywords = ["Rust", "embedded", "development"]
+sharingicons = false
+
+[params.highlight]
+languages = ["armasm", "rust", "shell"]
+style = "github"
+theme = "tomorrow-night"
+
+[[params.social]]
+fa_icon = "fa-github"
+url = "https://github.com/japaric"
+
+[[params.social]]
+fa_icon = "fa-twitter"
+url = "https://twitter.com/japaricious"
+
+[[params.social]]
+fa_icon = "fa-rss"
+url = "/index.xml"
