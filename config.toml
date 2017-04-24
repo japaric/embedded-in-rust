@@ -1,4 +1,4 @@
-baseURL = "https://blog.japaric.io/"
+baseURL = "http://blog.japaric.io/"
 copyright = "<a rel=\"license\" href=\"http://creativecommons.org/licenses/by/4.0/\"><img alt=\"Creative Commons License\" src=\"https://i.creativecommons.org/l/by/4.0/80x15.png\" /></a><br/>Jorge Aparicio"
 enableEmoji = true
 languageCode = "en-us"
