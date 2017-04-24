@@ -58,8 +58,8 @@ Which you should see on the right. I stole this one from the [Minos] theme. I
 
 [Minos]: https://themes.gohugo.io/hugo-theme-minos
 
-<!-- As a good citizen of the open source world, I sent PRs to [mgjohansen/hucore] -->
-<!-- for every one of these modifications. -->
+As a good citizen of the open source world, I sent PRs to [mgjohansen/hucore]
+for some of these modifications.
 
 [mgjohansen/hucore]: https://github.com/mgjohansen/hucore
 
@@ -67,13 +67,9 @@ Leaving the theme aside: The "source" of this blog, a bunch of Markdown files,
 is hosted on [GitHub]. The site is hosted on [GitHub pages] and I'm [using
 Travis] to update the site every time I push to the source repo.
 
-<!-- Oh, and HTTPS is provided by [Cloudfare] since GitHub pages' HTTPS stops -->
-<!-- working when you use a custom domain. -->
-
 [GitHub]: https://github.com/japaric/embedded-in-rust
 [GitHub pages]: https://pages.github.com/
 [using Travis]: https://github.com/japaric/embedded-in-rust/blob/master/.travis.yml
-[Cloudfare]: https://www.cloudflare.com/
 
 I think that's enough for this post. See you in the next one! (Oh, you have no
 idea what I have in stock :smile:)
