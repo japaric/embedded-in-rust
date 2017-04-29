@@ -114,13 +114,13 @@ a hitch.
     likely brick your device. This template doesn't support locked devices.
 
 [^tested]: [STM32VLDISCOVERY], [STM32F3DISCOVERY], [Blue Pill] and another board
-    with STM32 micros, [BLE400] with a nRF51 micro, and [EK-TM4C1249XL] with a
+    with STM32 micros, [BLE400] with a nRF51 micro, and [EK-TM4C1294XL] with a
     TI micro.
 
 [STM32VLDISCOVERY]: http://www.st.com/en/evaluation-tools/stm32vldiscovery.html
 [Blue Pill]: http://wiki.stm32duino.com/index.php?title=Blue_Pill
 [BLE400]: http://www.waveshare.com/wiki/BLE400
-[EK-TM4C1249XL]: http://www.ti.com/tool/ek-tm4c1294xl
+[EK-TM4C1294XL]: http://www.ti.com/tool/ek-tm4c1294xl
 
 ``` console
 $ # if you don't have the `clone` subcommand
