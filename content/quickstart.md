@@ -1068,3 +1068,6 @@ Enjoyed this post? Like my work on embedded stuff? Consider supporting me on
 Follow me on [twitter] for even more embedded stuff.
 
 [twitter]: https://twitter.com/japaricious
+
+The embedded Rust community gathers on the #rust-embedded IRC channel
+(irc.mozilla.org). Join us!
