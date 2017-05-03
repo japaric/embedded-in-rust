@@ -1063,7 +1063,7 @@ Let's discuss on [reddit].
 Enjoyed this post? Like my work on embedded stuff? Consider supporting me on
 [Patreon]!
 
-[Patreon]: https://www.patreon.com/user?u=4586950
+[Patreon]: https://goo.gl/7048rg
 
 Follow me on [twitter] for even more embedded stuff.
 
