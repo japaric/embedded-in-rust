@@ -1060,8 +1060,8 @@ Let's discuss on [reddit].
 
 [reddit]: https://www.reddit.com/r/rust/comments/687b3l/embedded_in_rust_rust_your_arm_microcontroller/
 
-Enjoyed this post? Like my work on embedded stuff? Consider supporting me on
-[Patreon]!
+Enjoyed this post? Like my work on embedded stuff? Consider supporting my work
+on [Patreon]!
 
 [Patreon]: https://goo.gl/7048rg
 
