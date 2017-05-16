@@ -196,12 +196,12 @@ are four options:
 - `thumbv7em-none-eabi`, for Cortex M4 and M7 devices. No FPU.
 - `thumbv7em-none-eabihf`, for Cortex M4 and M7 devices. With FPU.
 
-> **UPDATE**(2017-05-16) Incremental compilation appears to not work with builds
-> that need to customize linker sections so you'll have to disable it to do
-> embedded development:
+> **UPDATE** (2017-05-16) Incremental compilation appears to not work with
+> builds that need to customize linker sections so you'll have to disable it to
+> do embedded development:
 
 ```
-# disable incremental compilation (if you were using it)
+$ # disable incremental compilation (if you were using it)
 $ unset CARGO_INCREMENTAL
 ```
 
