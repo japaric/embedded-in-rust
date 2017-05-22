@@ -3,7 +3,7 @@ author = "Jorge Aparicio"
 date = "2017-05-09T09:07:39-05:00"
 description = "Build memory safe multitasking applications with Rust"
 draft = false
-tags = ["ARM Cortex-M", "concurrency"]
+tags = ["ARM Cortex-M", "concurrency", "rtfm"]
 title = "Fearless concurrency in your microcontroller"
 +++
 
