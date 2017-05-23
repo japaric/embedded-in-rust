@@ -1808,9 +1808,9 @@ more people for [supporting my work on Patreon][Patreon].
 
 ---
 
-<!-- Let's discuss on [reddit]. -->
+Let's discuss on [reddit].
 
-[reddit]: TODO
+[reddit]: https://www.reddit.com/r/rust/comments/6cv2in/eir_overhead_analysis_of_the_rtfm_framework/
 
 Enjoyed this post? Like my work on embedded stuff? Consider supporting my work
 on [Patreon]!
