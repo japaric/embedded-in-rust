@@ -1543,7 +1543,7 @@ fn t1(_task: Exti0Irq, ref prio: P1, ref thr: T1) {
     rtfm::bkpt();
 
     let counter = COUNTER.access(prio, thr);
-    *r1.borrow_mut() += 1;
+    *counter.borrow_mut() += 1;
 
     rtfm::bkpt();
 }
