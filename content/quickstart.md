@@ -1,7 +1,6 @@
 +++
 date = "2017-04-28T22:05:45-05:00"
 draft = false
-description = "Get Rust running on your ARM Cortex-M microcontroller"
 title = "Rust your ARM microcontroller!"
 tags = ["ARM Cortex-M", "template", "tooling", "tutorial"]
 +++

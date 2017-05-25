@@ -1,7 +1,6 @@
 +++
 author = "Jorge Aparicio"
 date = "2017-05-23T09:33:23-05:00"
-description = "We'll analyze the overhead of the RTFM framework"
 draft = false
 tags = ["ARM Cortex-M", "rtfm", "analysis"]
 title = "Overhead analysis of the RTFM framework"
