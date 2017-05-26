@@ -1814,7 +1814,7 @@ Let's discuss on [reddit].
 Enjoyed this post? Like my work on embedded stuff? Consider supporting my work
 on [Patreon]!
 
-[Patreon]: https://goo.gl/5yNZDa
+[Patreon]: https://goo.gl/ijwc0z
 
 Follow me on [twitter] for even more embedded stuff.
 
