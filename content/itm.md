@@ -1054,9 +1054,9 @@ Munns] and 20 more people for [supporting my work on Patreon][Patreon].
 
 ---
 
-<!-- Let's discuss on [reddit]. How do *you* do data logging on embedded systems? -->
+Let's discuss on [reddit]. How do *you* do data logging on embedded systems?
 
-<!-- [reddit]:  -->
+[reddit]: https://www.reddit.com/r/rust/comments/6ejshd/eir_the_itm_and_the_quest_for_faster_logging/
 
 Enjoyed this post? Like my work on embedded stuff? Consider supporting my work
 on [Patreon]!
