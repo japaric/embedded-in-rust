@@ -426,9 +426,9 @@ for [supporting my work on Patreon][Patreon].
 
 ---
 
-<!-- Let's discuss on [reddit]. -->
+Let's discuss on [reddit].
 
-<!-- [reddit]:  -->
+[reddit]: https://www.reddit.com/r/rust/comments/6f94t6/eir_a_cpu_usage_monitor_for_the_rtfm_framework/
 
 Enjoyed this post? Like my work on embedded stuff? Consider supporting my work
 on [Patreon]!
