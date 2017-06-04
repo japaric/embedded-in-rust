@@ -338,6 +338,13 @@ disassembly in a bit -- which is not that bad. However, there's one particular
 scenario where a task can be delayed *indefinitely*. Again let's look at the
 source code of `idle`:
 
+> **UPDATE** [/u/idubrov][] [pointed out] that WFI behaves like a NOP (No
+> OPeration) if there's an interrupt is pending so the scenario described below
+> is actually impossible. Yay!
+
+[/u/idubrov]: https://www.reddit.com/user/idubrov
+[pointed out]: https://www.reddit.com/r/rust/comments/6f94t6/eir_a_cpu_usage_monitor_for_the_rtfm_framework/digekkl/
+
 ``` rust
 fn idle(ref prio: P0, _thr: T0) -> ! {
     loop {
