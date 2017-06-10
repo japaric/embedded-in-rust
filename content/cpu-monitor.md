@@ -416,9 +416,16 @@ hardware), low overhead CPU usage monitor. Until next time!
 
 __Thank you patrons! :heart:__
 
-I want to wholeheartedly thank [Iban Eguia], [Aaron Turon], [Geoff Cant],
-[Harrison Chin], [Brandon Edens], [whitequark], [J. Ryan Stinnett], [James
-Munns], [Jared Boone] and 20 more people
+I want to wholeheartedly thank:
+
+<p style="text-align:center">
+  <a href="http://www.sharebrained.com/" style="border-bottom:0px">
+    <img alt="ShareBrained Technology" src="/logo/sharebrained.png" width="200"/>
+  </a>
+</p>
+
+[Iban Eguia], [Aaron Turon], [Geoff Cant], [Harrison Chin], [Brandon Edens],
+[whitequark], [J. Ryan Stinnett], [James Munns] and 20 more people
 for [supporting my work on Patreon][Patreon].
 
 [Iban Eguia]: https://github.com/Razican
@@ -429,7 +436,6 @@ for [supporting my work on Patreon][Patreon].
 [whitequark]: https://github.com/whitequark
 [J. Ryan Stinnett]: https://convolv.es/
 [James Munns]: https://jamesmunns.com/
-[Jared Boone]: http://www.sharebrained.com/
 
 ---
 
