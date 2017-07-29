@@ -1123,9 +1123,9 @@ for [supporting my work on Patreon][Patreon].
 
 ---
 
-<!-- Let's discuss on [reddit]. -->
+Let's discuss on [reddit].
 
-<!-- [reddit]:  -->
+[reddit]: https://www.reddit.com/r/rust/comments/6q9s76/rtfm_v2_simpler_less_overhead_and_more_device/
 
 Enjoyed this post? Like my work on embedded stuff? Consider supporting my work
 on [Patreon]!
