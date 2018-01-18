@@ -185,9 +185,9 @@ by a third party*. Yikes!
 
 # The new approach
 
-The new I/O model (`svd2rust` v0.12.x) makes away with the root of the problem: it no longer
-provides global access to peripherals. Instead peripherals need to be `take`n (read: moved) *into*
-the current execution context. See below:
+The new I/O model (`svd2rust` v0.12.x) removes the root of the problem: it no longer provides global
+access to peripherals. Instead peripherals need to be `take`n (read: moved) *into* the current
+execution context. See below:
 
 ``` rust
 // stm32f30x was generated using `svd2rust`
