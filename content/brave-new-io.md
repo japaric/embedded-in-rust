@@ -499,7 +499,7 @@ set of traits to build that generic code upon.
 
 Enter the [`embedded-hal`] crate.
 
-[`embedded-hal`]: https://docs.rs/embedded-hal/0.1.0/embedded-hal/
+[`embedded-hal`]: https://docs.rs/embedded-hal/0.1.0
 
 This crate is basically a collection of traits that provides interfaces for the different
 peripherals available on a embedded device. These traits form a Hardware Abstraction Layer, an
