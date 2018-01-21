@@ -352,6 +352,6 @@ generics, which has already been accepted, so I'm hoping it gets implemented soo
 
 That's my wishlist for the Rust team. Let's make 2018 a great year for embedded Rust!
 
-<!-- Let's discuss on [reddit]. -->
+Let's discuss on [reddit].
 
-<!-- [reddit]:-->
+[reddit]: https://www.reddit.com/r/rust/comments/7s0m6f/eir_embedded_rust_in_2018/
