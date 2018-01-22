@@ -528,9 +528,9 @@ and 42 more people for [supporting my work on Patreon][Patreon].
 
 ---
 
-<!-- Let's discuss on [reddit]. -->
+Let's discuss on [reddit].
 
-<!-- [reddit]: -->
+[reddit]: https://www.reddit.com/r/rust/comments/7s81h1/eir_real_time_for_the_masses_v030_safe_static_mut/
 
 Enjoyed this post? Like my work on embedded stuff? Consider supporting my work
 on [Patreon]!
