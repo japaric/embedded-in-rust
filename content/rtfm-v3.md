@@ -495,6 +495,12 @@ I want to wholeheartedly thank:
       <img alt="Pollen Robotics" class="image" src="/logo/pollen-robotics.png"/>
     </a>
   </div>
+
+  <div class="cell">
+    <a href="https://formation.sh/" style="border-bottom:0px">
+      <img alt="Formation Aerosystems" class="image" src="/logo/formation.png"/>
+    </a>
+  </div>
 </div>
 
 [Iban Eguia],
