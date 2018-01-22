@@ -226,6 +226,11 @@ clippy lint that points out that the crate can be marked as `no_std` compatible.
 third scenarios *might* be addressed by the portable lint stuff, but I'm not familiar with that
 feature.
 
+UPDATE(2018-01-22) I think [this comment] by /u/Zoxc32 would be a great solution to the last two
+scenarios.
+
+[this comment]: https://www.reddit.com/r/rust/comments/7s0m6f/eir_embedded_rust_in_2018/dt1f5r2/
+
 # Better IDE support
 
 Another thing that C embedded developers are used to work with are IDEs with integrated embedded
