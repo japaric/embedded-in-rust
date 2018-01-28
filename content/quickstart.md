@@ -5,6 +5,15 @@ title = "Rust your ARM microcontroller!"
 tags = ["ARM Cortex-M", "template", "tooling", "tutorial"]
 +++
 
+> **NOTE** Embedded Rust development makes use of the *nightly* channel. The nightly channel moves
+> fast and breaks things unapologetically. That's why if you want to follow these steps you *must*
+> use the exact same versions (crates' and nightly's) used in these steps. If you want to try the
+> latest and greatest of embeded Rust and use the latest nightly then go grab the latest version of
+> the [`cortex-m-quickstart`][latest] template. The instructions there are an abridged version of
+> this post; I still recommend that you at least read this post since it has more details.
+
+[latest]: https://docs.rs/cortex-m-quickstart
+
 Want to program your microcontroller in Rust but your microcontroller vendor
 doesn't provide a Rust HAL / SDK? No wonder. AFAIK, no vendor is betting for
 Rust ... yet. How about binding to a C HAL? No? Don't feel like wrestling with
@@ -63,7 +72,7 @@ Installation instructions for Arch Linux:
 
 ``` console
 $ # Switch to the nightly channel
-$ rustup default nightly
+$ rustup default nightly-2017-04-24
 
 $ rustc -V
 rustc 1.18.0-nightly (2bd4b5c6d 2017-04-23)
@@ -775,50 +784,50 @@ $ arm-none-eabi-objdump -Cd target/thumbv7em-none-eabihf/release/examples/blinky
 
 ``` armasm
 08000400 <blinky::main>:
- 8000400:	b580      	push	{r7, lr}
- 8000402:	f3ef 8010 	mrs	r0, PRIMASK
- 8000406:	b672      	cpsid	i
- 8000408:	2201      	movs	r2, #1
- 800040a:	2300      	movs	r3, #0
- 800040c:	f04f 7c00 	mov.w	ip, #33554432	; 0x2000000
- 8000410:	f44f 7e00 	mov.w	lr, #512	; 0x200
- 8000414:	f241 0014 	movw	r0, #4116	; 0x1014
- 8000418:	f2c4 0002 	movt	r0, #16386	; 0x4002
- 800041c:	6801      	ldr	r1, [r0, #0]
- 800041e:	f441 1100 	orr.w	r1, r1, #2097152	; 0x200000
- 8000422:	6001      	str	r1, [r0, #0]
- 8000424:	6881      	ldr	r1, [r0, #8]
- 8000426:	f041 0120 	orr.w	r1, r1, #32
- 800042a:	6081      	str	r1, [r0, #8]
- 800042c:	f241 0000 	movw	r0, #4096	; 0x1000
- 8000430:	f6c4 0000 	movt	r0, #18432	; 0x4800
- 8000434:	6801      	ldr	r1, [r0, #0]
- 8000436:	f362 4193 	bfi	r1, r2, #18, #2
- 800043a:	227a      	movs	r2, #122	; 0x7a
- 800043c:	6001      	str	r1, [r0, #0]
- 800043e:	f241 4100 	movw	r1, #5120	; 0x1400
- 8000442:	f2c4 0100 	movt	r1, #16384	; 0x4000
- 8000446:	628a      	str	r2, [r1, #40]	; 0x28
- 8000448:	f64f 6210 	movw	r2, #65040	; 0xfe10
- 800044c:	62ca      	str	r2, [r1, #44]	; 0x2c
- 800044e:	600b      	str	r3, [r1, #0]
- 8000450:	680a      	ldr	r2, [r1, #0]
- 8000452:	f042 0201 	orr.w	r2, r2, #1
- 8000456:	600a      	str	r2, [r1, #0]
- 8000458:	e00d      	b.n	8000476 <blinky::main+0x76>
- 800045a:	690a      	ldr	r2, [r1, #16]
- 800045c:	f013 0f01 	tst.w	r3, #1
- 8000460:	f022 0201 	bic.w	r2, r2, #1
- 8000464:	610a      	str	r2, [r1, #16]
- 8000466:	f083 0201 	eor.w	r2, r3, #1
- 800046a:	bf14      	ite	ne
- 800046c:	f8c0 c018 	strne.w	ip, [r0, #24]
- 8000470:	f8c0 e018 	streq.w	lr, [r0, #24]
- 8000474:	4613      	mov	r3, r2
- 8000476:	690a      	ldr	r2, [r1, #16]
- 8000478:	f012 0f01 	tst.w	r2, #1
- 800047c:	d0fb      	beq.n	8000476 <blinky::main+0x76>
- 800047e:	e7ec      	b.n	800045a <blinky::main+0x5a>
+ 8000400:	b580        push	{r7, lr}
+ 8000402:	f3ef 8010   mrs	r0, PRIMASK
+ 8000406:	b672        cpsid	i
+ 8000408:	2201        movs	r2, #1
+ 800040a:	2300        movs	r3, #0
+ 800040c:	f04f 7c00   mov.w	ip, #33554432	; 0x2000000
+ 8000410:	f44f 7e00   mov.w	lr, #512	; 0x200
+ 8000414:	f241 0014   movw	r0, #4116	; 0x1014
+ 8000418:	f2c4 0002   movt	r0, #16386	; 0x4002
+ 800041c:	6801        ldr	r1, [r0, #0]
+ 800041e:	f441 1100   orr.w	r1, r1, #2097152	; 0x200000
+ 8000422:	6001        str	r1, [r0, #0]
+ 8000424:	6881        ldr	r1, [r0, #8]
+ 8000426:	f041 0120   orr.w	r1, r1, #32
+ 800042a:	6081        str	r1, [r0, #8]
+ 800042c:	f241 0000   movw	r0, #4096	; 0x1000
+ 8000430:	f6c4 0000   movt	r0, #18432	; 0x4800
+ 8000434:	6801        ldr	r1, [r0, #0]
+ 8000436:	f362 4193   bfi	r1, r2, #18, #2
+ 800043a:	227a        movs	r2, #122	; 0x7a
+ 800043c:	6001        str	r1, [r0, #0]
+ 800043e:	f241 4100   movw	r1, #5120	; 0x1400
+ 8000442:	f2c4 0100   movt	r1, #16384	; 0x4000
+ 8000446:	628a        str	r2, [r1, #40]	; 0x28
+ 8000448:	f64f 6210   movw	r2, #65040	; 0xfe10
+ 800044c:	62ca        str	r2, [r1, #44]	; 0x2c
+ 800044e:	600b        str	r3, [r1, #0]
+ 8000450:	680a        ldr	r2, [r1, #0]
+ 8000452:	f042 0201   orr.w	r2, r2, #1
+ 8000456:	600a        str	r2, [r1, #0]
+ 8000458:	e00d        b.n	8000476 <blinky::main+0x76>
+ 800045a:	690a        ldr	r2, [r1, #16]
+ 800045c:	f013 0f01   tst.w	r3, #1
+ 8000460:	f022 0201   bic.w	r2, r2, #1
+ 8000464:	610a        str	r2, [r1, #16]
+ 8000466:	f083 0201   eor.w	r2, r3, #1
+ 800046a:	bf14        ite	ne
+ 800046c:	f8c0 c018   strne.w	ip, [r0, #24]
+ 8000470:	f8c0 e018   streq.w	lr, [r0, #24]
+ 8000474:	4613        mov	r3, r2
+ 8000476:	690a        ldr	r2, [r1, #16]
+ 8000478:	f012 0f01   tst.w	r2, #1
+ 800047c:	d0fb        beq.n	8000476 <blinky::main+0x76>
+ 800047e:	e7ec        b.n	800045a <blinky::main+0x5a>
 ```
 
 The `svd2rust` generated API makes heavy use of closures and enums for type
@@ -942,51 +951,51 @@ $ arm-none-eabi-objdump -Cd target/thumbv7em-none-eabihf/release/examples/blinky
 
 ``` armasm
 08000400 <blinky2::main>:
- 8000400:	b580      	push	{r7, lr}
- 8000402:	f241 0114 	movw	r1, #4116	; 0x1014
- 8000406:	f3ef 8010 	mrs	r0, PRIMASK
- 800040a:	b672      	cpsid	i
- 800040c:	2300      	movs	r3, #0
- 800040e:	f04f 7c00 	mov.w	ip, #33554432	; 0x2000000
- 8000412:	f44f 7e00 	mov.w	lr, #512	; 0x200
- 8000416:	f2c4 0102 	movt	r1, #16386	; 0x4002
- 800041a:	6808      	ldr	r0, [r1, #0]
- 800041c:	f440 1000 	orr.w	r0, r0, #2097152	; 0x200000
- 8000420:	6008      	str	r0, [r1, #0]
- 8000422:	f241 0000 	movw	r0, #4096	; 0x1000
- 8000426:	f6c4 0000 	movt	r0, #18432	; 0x4800
- 800042a:	6802      	ldr	r2, [r0, #0]
- 800042c:	f2c5 5255 	movt	r2, #21845	; 0x5555
- 8000430:	6002      	str	r2, [r0, #0]
- 8000432:	688a      	ldr	r2, [r1, #8]
- 8000434:	f042 0220 	orr.w	r2, r2, #32
- 8000438:	608a      	str	r2, [r1, #8]
- 800043a:	f241 4100 	movw	r1, #5120	; 0x1400
- 800043e:	227a      	movs	r2, #122	; 0x7a
- 8000440:	f2c4 0100 	movt	r1, #16384	; 0x4000
- 8000444:	628a      	str	r2, [r1, #40]	; 0x28
- 8000446:	f64f 6210 	movw	r2, #65040	; 0xfe10
- 800044a:	62ca      	str	r2, [r1, #44]	; 0x2c
- 800044c:	2201      	movs	r2, #1
- 800044e:	60ca      	str	r2, [r1, #12]
- 8000450:	600b      	str	r3, [r1, #0]
- 8000452:	680a      	ldr	r2, [r1, #0]
- 8000454:	f042 0201 	orr.w	r2, r2, #1
- 8000458:	600a      	str	r2, [r1, #0]
- 800045a:	e00d      	b.n	8000478 <blinky2::main+0x78>
- 800045c:	690a      	ldr	r2, [r1, #16]
- 800045e:	f013 0f01 	tst.w	r3, #1
- 8000462:	f022 0201 	bic.w	r2, r2, #1
- 8000466:	610a      	str	r2, [r1, #16]
- 8000468:	f083 0201 	eor.w	r2, r3, #1
- 800046c:	bf14      	ite	ne
- 800046e:	f8c0 c018 	strne.w	ip, [r0, #24]
- 8000472:	f8c0 e018 	streq.w	lr, [r0, #24]
- 8000476:	4613      	mov	r3, r2
- 8000478:	690a      	ldr	r2, [r1, #16]
- 800047a:	f012 0f01 	tst.w	r2, #1
- 800047e:	d0fb      	beq.n	8000478 <blinky2::main+0x78>
- 8000480:	e7ec      	b.n	800045c <blinky2::main+0x5c>
+ 8000400:	b580        push	{r7, lr}
+ 8000402:	f241 0114   movw	r1, #4116	; 0x1014
+ 8000406:	f3ef 8010   mrs	r0, PRIMASK
+ 800040a:	b672        cpsid	i
+ 800040c:	2300        movs	r3, #0
+ 800040e:	f04f 7c00   mov.w	ip, #33554432	; 0x2000000
+ 8000412:	f44f 7e00   mov.w	lr, #512	; 0x200
+ 8000416:	f2c4 0102   movt	r1, #16386	; 0x4002
+ 800041a:	6808        ldr	r0, [r1, #0]
+ 800041c:	f440 1000   orr.w	r0, r0, #2097152	; 0x200000
+ 8000420:	6008        str	r0, [r1, #0]
+ 8000422:	f241 0000   movw	r0, #4096	; 0x1000
+ 8000426:	f6c4 0000   movt	r0, #18432	; 0x4800
+ 800042a:	6802        ldr	r2, [r0, #0]
+ 800042c:	f2c5 5255   movt	r2, #21845	; 0x5555
+ 8000430:	6002        str	r2, [r0, #0]
+ 8000432:	688a        ldr	r2, [r1, #8]
+ 8000434:	f042 0220   orr.w	r2, r2, #32
+ 8000438:	608a        str	r2, [r1, #8]
+ 800043a:	f241 4100   movw	r1, #5120	; 0x1400
+ 800043e:	227a        movs	r2, #122	; 0x7a
+ 8000440:	f2c4 0100   movt	r1, #16384	; 0x4000
+ 8000444:	628a        str	r2, [r1, #40]	; 0x28
+ 8000446:	f64f 6210   movw	r2, #65040	; 0xfe10
+ 800044a:	62ca        str	r2, [r1, #44]	; 0x2c
+ 800044c:	2201        movs	r2, #1
+ 800044e:	60ca        str	r2, [r1, #12]
+ 8000450:	600b        str	r3, [r1, #0]
+ 8000452:	680a        ldr	r2, [r1, #0]
+ 8000454:	f042 0201   orr.w	r2, r2, #1
+ 8000458:	600a        str	r2, [r1, #0]
+ 800045a:	e00d        b.n	8000478 <blinky2::main+0x78>
+ 800045c:	690a        ldr	r2, [r1, #16]
+ 800045e:	f013 0f01   tst.w	r3, #1
+ 8000462:	f022 0201   bic.w	r2, r2, #1
+ 8000466:	610a        str	r2, [r1, #16]
+ 8000468:	f083 0201   eor.w	r2, r3, #1
+ 800046c:	bf14        ite	ne
+ 800046e:	f8c0 c018   strne.w	ip, [r0, #24]
+ 8000472:	f8c0 e018   streq.w	lr, [r0, #24]
+ 8000476:	4613        mov	r3, r2
+ 8000478:	690a        ldr	r2, [r1, #16]
+ 800047a:	f012 0f01   tst.w	r2, #1
+ 800047e:	d0fb        beq.n	8000478 <blinky2::main+0x78>
+ 8000480:	e7ec        b.n	800045c <blinky2::main+0x5c>
 ```
 
 The generated code is about the same as the version that directly used the
