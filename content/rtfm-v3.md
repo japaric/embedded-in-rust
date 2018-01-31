@@ -201,7 +201,7 @@ fn exti0(t: &mut Threshold, r: EXTI0::Resources) {
     // do stuff with `tx`
 }
 
-fn exti1(t: &mut Threshold, r: EXTI0::Resources) {
+fn exti1(t: &mut Threshold, r: EXTI1::Resources) {
     let rx: &mut Rx<USART1> = r.RX;
     // do stuff with `rx`
 }
