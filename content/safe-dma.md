@@ -820,7 +820,7 @@ use my implementation of these APIs  in the [`stm32f103xx-hal`] crate as a refer
 the APIs in that crate are pretty much undocumented but at least there are some (also undocumented)
 examples.
 
-[proposed]: https://github.com/japaric/embedded-hal/issues/36
+[proposed]: https://github.com/japaric/embedded-hal/issues/37
 [`stm32f103xx-hal`]: https://github.com/japaric/stm32f103xx-hal
 
 I've also sketched an API for circular DMA transfers, which I have not included in this blog post,
@@ -892,9 +892,9 @@ and 45 more people for [supporting my work on Patreon][Patreon].
 
 ---
 
-<!-- Let's discuss on [reddit]. -->
+Let's discuss on [reddit].
 
-<!-- [reddit]:  -->
+[reddit]: https://www.reddit.com/r/rust/comments/7wco91/eir_memory_safe_dma_transfers/
 
 Enjoyed this post? Like my work on embedded stuff? Consider supporting my work
 on [Patreon]!
