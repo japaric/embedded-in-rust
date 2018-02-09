@@ -5,6 +5,12 @@ draft: false
 tags: ["I/O", "microcontroller"]
 ---
 
+**UPDATE** Given the comments I've received so far I think I should more explicitly mention that the
+context here are systems that lack a MMU and where a memory allocator may or may not be available or
+desirable, e.g. Cortex-M microcontrollers.
+
+---
+
 In this post I'll describe an approach to building memory safe DMA based APIs.
 
 # DMA?
