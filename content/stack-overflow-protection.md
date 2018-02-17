@@ -476,9 +476,9 @@ and 48 more people for [supporting my work on Patreon][Patreon].
 
 ---
 
-<!-- Let's discuss on [reddit]. -->
+Let's discuss on [reddit].
 
-<!-- [reddit]: TODO -->
+[reddit]: https://www.reddit.com/r/rust/comments/7y7y48/eir_zero_cost_stack_overflow_protection_for_arm/
 
 Enjoyed this post? Like my work on embedded stuff? Consider supporting my work
 on [Patreon]!
