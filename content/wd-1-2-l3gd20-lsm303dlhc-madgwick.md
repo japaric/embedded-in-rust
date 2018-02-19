@@ -8,8 +8,8 @@ Oh, time flies. It's already week 8 and we have zero [weekly driver] posts out t
 though because there's plenty of [drivers] and `embedded-hal` [implementations] in the works.
 
 [weekly driver]: /brave-new-io/#making-more-batteries
-[drivers]: https://github.com/japaric/embedded-hal#implementations
-[implementations]: https://github.com/japaric/embedded-hal#drivers
+[drivers]: https://github.com/japaric/embedded-hal#drivers
+[implementations]: https://github.com/japaric/embedded-hal#implementations
 
 To play catch up in this post I'll cover two [`embedded-hal`] drivers: the [`l3gd20`] and the
 [`lsm303dlhc`]. The [L3GD20] is an IC that contains a gyroscope and exposes I2C and SPI interfaces;
