@@ -421,9 +421,9 @@ and 48 more people for [supporting my work on Patreon][Patreon].
 
 ---
 
-<!-- Let's discuss on [reddit]. -->
+Let's discuss on [reddit].
 
-<!-- [reddit]: TODO -->
+[reddit]: https://www.reddit.com/r/rust/comments/7yn7k1/eir_weekly_driver_1_2_l3gd20_lsm303dlhc_and/
 
 Enjoyed this post? Like my work on embedded stuff? Consider supporting my work
 on [Patreon]!
