@@ -474,7 +474,7 @@ $ arm-none-eabi-size enc28j60-coap
    9186       0       4    9190    23e6 enc28j60-coap
 ```
 
-I swear that at some point the binary size of the CoAP demo was about the of the UDP echo server.
+I swear that at some point the binary size of the CoAP demo was about the size of the UDP echo server.
 I, somehow, seem to have made some change that regressed the binary size by around 2 KB *sigh*. This
 is why I should commit more often.
 
