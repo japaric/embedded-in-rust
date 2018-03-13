@@ -551,9 +551,9 @@ and 54 more people for [supporting my work on Patreon][Patreon].
 
 ---
 
-<!-- Let's discuss on [reddit]. -->
+Let's discuss on [reddit].
 
-<!-- [reddit]: TODO -->
+[reddit]: https://www.reddit.com/r/rust/comments/84183w/weekly_driver_4_enc28j60_ethernet_for_your/
 
 Enjoyed this post? Like my work on embedded stuff? Consider supporting my work
 on [Patreon]!
