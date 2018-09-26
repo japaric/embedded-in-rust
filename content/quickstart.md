@@ -5,14 +5,50 @@ title = "Rust your ARM microcontroller!"
 tags = ["ARM Cortex-M", "template", "tooling", "tutorial"]
 +++
 
-> **NOTE** Embedded Rust development makes use of the *nightly* channel. The nightly channel moves
-> fast and breaks things unapologetically. That's why if you want to follow these steps you *must*
-> use the exact same versions (crates' and nightly's) used in these steps. If you want to try the
-> latest and greatest of embeded Rust and use the latest nightly then go grab the latest version of
-> the [`cortex-m-quickstart`][latest] template. The instructions there are an abridged version of
-> this post; I still recommend that you at least read this post since it has more details.
+> **IMPORTANT! READ THIS!**
+>
+> Hello there! This article is outdated and following it will only confuse you.
+> Check out [the embedded Rust book][book] and the rest of the [embedded WG][wg]
+> [bookshelf] for up to date and maintained documentation on embedded Rust
+> development.
+>
+> If you still want to read this post, for historical reasons and what now,
+> scroll down.
 
-[latest]: https://docs.rs/cortex-m-quickstart
+[book]: https://rust-embedded.github.io/bookshelf/book/
+[wg]: https://github.com/rust-embedded/wg
+[bookshelf]: https://rust-embedded.github.io/bookshelf/
+
+</br>
+</br>
+</br>
+</br>
+</br>
+</br>
+</br>
+</br>
+</br>
+</br>
+</br>
+</br>
+</br>
+</br>
+</br>
+</br>
+</br>
+</br>
+</br>
+</br>
+</br>
+</br>
+</br>
+</br>
+</br>
+</br>
+</br>
+</br>
+</br>
+</br>
 
 Want to program your microcontroller in Rust but your microcontroller vendor
 doesn't provide a Rust HAL / SDK? No wonder. AFAIK, no vendor is betting for
