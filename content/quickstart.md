@@ -15,9 +15,9 @@ tags = ["ARM Cortex-M", "template", "tooling", "tutorial"]
 > If you still want to read this post, for historical reasons and what now,
 > scroll down.
 
-[book]: https://rust-embedded.github.io/bookshelf/book/
+[book]: https://rust-embedded.github.io/book/
 [wg]: https://github.com/rust-embedded/wg
-[bookshelf]: https://rust-embedded.github.io/bookshelf/
+[bookshelf]: https://docs.rust-embedded.org/
 
 </br>
 </br>
