@@ -1,7 +1,7 @@
 set -ex
 
 main() {
-    local vers=0.20.2
+    local vers=0.52
     local url=https://github.com/spf13/hugo/releases/download/v$vers/hugo_${vers}_Linux-64bit.tar.gz
 
     curl -L $url | tar --strip-components 1 -xz hugo_${vers}_linux_amd64/hugo_${vers}_linux_amd64
