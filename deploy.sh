@@ -1,11 +1,11 @@
-set -ex
+set -euxo pipefail
 
 main() {
     local vers=0.52
-    local url=https://github.com/spf13/hugo/releases/download/v$vers/hugo_${vers}_Linux-64bit.tar.gz
+    local url=https://github.com/gohugoio/hugo/releases/download/v$vers/hugo_${vers}_Linux-64bit.tar.gz
 
-    curl -L $url | tar --strip-components 1 -xz hugo_${vers}_linux_amd64/hugo_${vers}_linux_amd64
-    ./hugo_${vers}_linux_amd64
+    curl -L $url | tar -xz hugo
+    ./hugo
 
     mkdir ghp-import
     curl -Ls https://github.com/davisp/ghp-import/archive/master.tar.gz |
