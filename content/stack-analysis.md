@@ -1857,9 +1857,9 @@ and 56 more people for [supporting my work on Patreon][Patreon].
 
 ---
 
-<!-- Let's discuss on [reddit]. -->
+Let's discuss on [reddit].
 
-<!-- [reddit]: TODO -->
+[reddit]: https://www.reddit.com/r/rust/comments/b0q13i/implementing_a_static_stack_usage_analysis_tool/
 
 Enjoyed this post? Like my work on embedded stuff? Consider supporting my work
 on [Patreon]!
