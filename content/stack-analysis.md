@@ -1760,7 +1760,7 @@ also not easy for the tool to detect (but you may be able to spot it when you
 look at the call graph) so it's best to avoid using libraries that use this
 pattern (`core` is fine) if you want to keep your program analyzable.
 
-# Conclusion
+# What's next?
 
 Congratulations on reaching this point! This post ended up being way longer than
 I originally planned.
@@ -1771,8 +1771,6 @@ v0.1.1 but midway I realized that `cargo-call-stack` still had some holes that
 wouldn't be too hard to fix so I ended up working on it some more and released
 v0.1.2. Now that I'm about to publish this blog post I still see some low
 hanging fruit so we'll probably see v0.1.3 in the near future!
-
-# What's next?
 
 So what's next for `cargo-call-stack`?
 
