@@ -17,7 +17,7 @@ keywords = ["Rust", "embedded", "development"]
 sharingicons = false
 
 [params.highlight]
-languages = ["armasm", "rust", "shell"]
+languages = ["armasm", "c", "diff", "llvm", "rust", "shell"]
 style = "github"
 theme = "tomorrow-night"
 
