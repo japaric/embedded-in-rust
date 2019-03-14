@@ -379,6 +379,13 @@ worst-case stack usage of `main` we walk the graph as we usually do but consider
 each cycle as a single node, or in more technical terms: we walk over the SCCs
 (Strongly Connected Components) of the graph in reverse topological order.
 
+If you are a bit incredulous about this result (I was too!) check out the
+`cargo-call-stack`
+[README](https://github.com/japaric/cargo-call-stack/tree/v0.1.2#cycles).  It
+contains this exact same example but expands on it further by showing the
+disassembly and the GDB logs of running the example on a Cortex-M3
+microcontroller. (Yes, the stack usage is indeed zero!)
+
 ## Function pointers
 
 We have only seen direct function calls so far; how do we deal with function
