@@ -811,9 +811,9 @@ and 63 more people for [supporting my work on Patreon][Patreon].
 
 ---
 
-<!-- Let's discuss on [reddit]. -->
+Let's discuss on [reddit].
 
-<!-- [reddit]: -->
+[reddit]: https://www.reddit.com/r/rust/comments/bcraf5/cargocallstack_part_2_getting_call_graph/
 
 Enjoyed this post? Like my work on embedded stuff? Consider supporting my work
 on [Patreon]!
