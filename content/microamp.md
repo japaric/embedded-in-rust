@@ -1,6 +1,6 @@
 +++
 author = "Jorge Aparicio"
-date = 2019-05-09T15:22:00+02:00
+date = 2019-05-10T15:33:00+02:00
 draft = false
 tags = ["AMP", "concurrency", "multi-core"]
 title = "μAMP: Asymmetric Multi-Processing on microcontrollers"
