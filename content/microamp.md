@@ -1300,9 +1300,9 @@ and 64 more people for [supporting my work on Patreon][Patreon].
 
 ---
 
-<!-- Let's discuss on [reddit]. -->
+Let's discuss on [reddit].
 
-<!-- [reddit]:  -->
+[reddit]: https://www.reddit.com/r/rust/comments/bmyeah/%CE%BCamp_asymmetric_multiprocessing_on/
 
 Enjoyed this post? Like my work on embedded stuff? Consider supporting my work
 on [Patreon]!
