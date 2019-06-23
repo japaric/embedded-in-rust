@@ -1165,9 +1165,9 @@ and 65 more people for [supporting my work on Patreon][Patreon].
 
 ---
 
-<!-- Let's discuss on [reddit]. -->
+Let's discuss on [reddit].
 
-<!-- [reddit]:  -->
+[reddit]: https://www.reddit.com/r/rust/comments/c477n3/real_time_for_the_masses_goes_multicore_embedded/
 
 Enjoyed this post? Like my work on embedded stuff? Consider supporting my work
 on [Patreon]!
