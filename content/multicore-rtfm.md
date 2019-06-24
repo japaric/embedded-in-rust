@@ -285,7 +285,7 @@ const APP: () = {
             // (losing a packet is OK-ish and not that uncommon in lossy links like
             //  802.15.4; the client will likely retry the transmission. Of course,
             //  it would be best to never drop packets but we have limited memory!)
-            packet.discard();
+            next_packet.discard();
         }
     }
 
