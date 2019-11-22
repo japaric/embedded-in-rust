@@ -30,8 +30,8 @@ factor; it can fit in [lots] of interesting [places] :-).
 [^1]: [Blue Pill purchase link](https://www.aliexpress.com/wholesale?SearchText=stm32&SortType=total_tranpro_desc&isFreeShip=y)
 [^2]: [ST Link clone purchase link](https://www.aliexpress.com/wholesale?SearchText=st-link&SortType=total_tranpro_desc&isFreeShip=y)
 [^3]: [UART USB adapter purchase link](https://www.aliexpress.com/wholesale?SearchText=serial+usb&SortType=total_tranpro_desc&isFreeShip=y)
-[lots]: https://mobile.twitter.com/japaricious/status/845697935572656128
-[places]: https://mobile.twitter.com/japaricious/status/843971417083432961
+[lots]: https://mobile.twitter.com/japaric_io/status/845697935572656128
+[places]: https://mobile.twitter.com/japaric_io/status/843971417083432961
 
 These are the specifications of the Blue Pill:
 
@@ -1065,7 +1065,7 @@ on [Patreon]!
 
 Follow me on [twitter] for even more embedded stuff.
 
-[twitter]: https://twitter.com/japaricious
+[twitter]: https://twitter.com/japaric_io
 
 The embedded Rust community gathers on the #rust-embedded IRC channel
 (irc.mozilla.org). Join us!

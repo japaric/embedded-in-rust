@@ -15,8 +15,8 @@ you are only interested in *using* the tool [these][] [tweets] and the [README]
 will give you an idea of what it can do.)
 
 [`cargo-call-stack`]: https://crates.io/crates/cargo-call-stack/0.1.2
-[these]: https://twitter.com/japaricious/status/1102275637606338562
-[tweets]: https://twitter.com/japaricious/status/1105368938018267136
+[these]: https://twitter.com/japaric_io/status/1102275637606338562
+[tweets]: https://twitter.com/japaric_io/status/1105368938018267136
 [README]: https://github.com/japaric/cargo-call-stack/tree/v0.1.2#cargo-call-stack
 
 # Motivation
@@ -1873,7 +1873,7 @@ on [Patreon]!
 
 Follow me on [twitter] for even more embedded stuff.
 
-[twitter]: https://twitter.com/japaricious
+[twitter]: https://twitter.com/japaric_io
 
 The embedded Rust community gathers on the #rust-embedded IRC channel
 (irc.mozilla.org). Join us!

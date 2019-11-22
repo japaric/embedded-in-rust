@@ -1646,7 +1646,7 @@ on [Patreon]!
 
 Follow me on [twitter] for even more embedded stuff.
 
-[twitter]: https://twitter.com/japaricious
+[twitter]: https://twitter.com/japaric_io
 
 The embedded Rust community gathers on the #rust-embedded IRC channel
 (irc.mozilla.org). Join us!

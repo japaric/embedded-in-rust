@@ -368,7 +368,7 @@ devices and asymmetric multiprocessing (AKA AMP)! And I'm happy to report that
 not only have I got RTFM running on a Cortex-**R** core but I also have
 implemented a proof of concept for *multicore* RTFM!
 
-[playing]: https://mobile.twitter.com/japaricious/status/1071116410166935553
+[playing]: https://mobile.twitter.com/japaric_io/status/1071116410166935553
 
 This is what my current multicore RTFM prototype looks like:
 
@@ -553,7 +553,7 @@ on [Patreon]!
 
 Follow me on [twitter] for even more embedded stuff.
 
-[twitter]: https://twitter.com/japaricious
+[twitter]: https://twitter.com/japaric_io
 
 The embedded Rust community gathers on the #rust-embedded IRC channel
 (irc.mozilla.org). Join us!
