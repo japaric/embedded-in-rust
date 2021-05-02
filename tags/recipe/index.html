@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html lang="en-us">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta content="Rust, embedded, development" name="keywords">
+<meta content="Jorge Aparicio" name="author">
+<meta property="og:title" content="recipe - Embedded in Rust">
+<meta property="og:url" content="https://blog.japaric.io/tags/recipe/">
+<meta property="og:description" content="A blog about Rust and embedded stuff">
+<meta property="og:type" content="website" />
+<title>recipe | Embedded in Rust</title>
+<link rel="stylesheet" href="https://blog.japaric.io//css/style.css">
+<link rel="shortcut icon" href="https://blog.japaric.io//wave.ico">
+<link rel="alternate" type="application/atom+xml" title="Embedded in Rust Posts" href="https://blog.japaric.io//index.xml">
+<link href="//maxcdn.bootstrapcdn.com/font-awesome/4.7.0/css/font-awesome.min.css" rel="stylesheet" integrity="sha384-wvfXpqpZZVQGK6TAh5PVlGOfQNHSoD2xbE+QkPxCAFlNEevoEH3Sl0sibVcOQVnN" crossorigin="anonymous">
+
+<link rel="stylesheet" href="//cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/styles/github.min.css">
+
+</head>
+
+<section class="section">
+  <div class="container">
+    <nav class="nav">
+      <div class="nav-left">
+        <a class="nav-item" href="https://blog.japaric.io/"><h1 class="title is-4">Embedded in Rust</h1></a>
+      </div>
+      <div class="nav-right">
+        <nav class="nav-item level is-mobile">
+          
+          <a class="level-item" href="https://github.com/japaric" target="_blank">
+            <span class="icon">
+              <i class="fa fa-github"></i>
+            </span>
+          </a>
+          
+          <a class="level-item" href="/index.xml" target="_blank">
+            <span class="icon">
+              <i class="fa fa-rss"></i>
+            </span>
+          </a>
+          
+        </nav>
+      </div>
+    </nav>
+  </div>
+</section>
+
+<section class="section">
+  <div class="container">
+    
+    <article>
+      <h1 class="title"><a href="https://blog.japaric.io/cpu-monitor/">A CPU usage monitor for the RTFM framework</a></h1>
+      <h2 class="subtitle is-5">June 4, 2017</h2>
+      
+        <div class="tags">
+    
+        <a class="button is-link" href="/tags/arm-cortex-m">ARM Cortex-M</a>
+    
+        <a class="button is-link" href="/tags/performance">performance</a>
+    
+        <a class="button is-link" href="/tags/recipe">recipe</a>
+    
+        <a class="button is-link" href="/tags/rtfm">rtfm</a>
+    
+</div>
+
+      
+      <div class="content">
+        We have used the RTFM framework in the previous posts but put most of the application logic in tasks, and always sent the processor to sleep in the idle function. In this post we&rsquo;ll put the idle function to better use and build a CPU usage monitor there.
+Idle The main logic of the CPU usage monitor will be in the idle function. Let&rsquo;s see how it works:
+// RESOURCES peripherals!
+        
+        ...<a class="button is-link" href="https://blog.japaric.io/cpu-monitor/" style="height:28px">
+          Read more
+          <span class="icon is-small">
+            <i class="fa fa-angle-double-right"></i>
+          </span>
+        </a>
+        
+      </div>
+    </article>
+    
+  </div>
+</section>
+<section class="section">
+  <div class="container">
+    <nav class="level is-mobile">
+      <div class="level-left">
+        <div class="level-item">
+          
+          <a class="button is-disabled">
+            <span class="icon is-small is-marginless">
+              <i class="fa fa-angle-left"></i>
+            </span>
+            Newer
+          </a>
+          
+        </div>
+      </div>
+      <div class="level-right is-marginless">
+        <div class="level-item">
+          
+          <a class="button is-disabled">
+            Older
+            <span class="icon is-small is-marginless">
+              <i class="fa fa-angle-right"></i>
+            </span>
+          </a>
+          
+        </div>
+      </div>
+    </nav>
+  </div>
+</section>
+
+<section class="section">
+  <div class="container has-text-centered">
+    <p><a rel="license" href="http://creativecommons.org/licenses/by/4.0/"><img alt="Creative Commons License" src="https://i.creativecommons.org/l/by/4.0/80x15.png" /></a><br/>Jorge Aparicio</p>
+  </div>
+</section>
+
+
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/styles/tomorrow-night.min.css" />
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/highlight.min.js" integrity="sha256-aYTdUrn6Ow1DDgh5JTc3aDGnnju48y/1c8s1dgkYPQ8=" crossorigin="anonymous"></script>
+
+<script type="text/javascript" src="//cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/languages/armasm.min.js"></script>
+
+<script type="text/javascript" src="//cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/languages/c.min.js"></script>
+
+<script type="text/javascript" src="//cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/languages/diff.min.js"></script>
+
+<script type="text/javascript" src="//cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/languages/llvm.min.js"></script>
+
+<script type="text/javascript" src="//cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/languages/rust.min.js"></script>
+
+<script type="text/javascript" src="//cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/languages/shell.min.js"></script>
+
+<script>hljs.initHighlightingOnLoad();</script>
+
+

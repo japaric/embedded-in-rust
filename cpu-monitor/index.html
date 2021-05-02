@@ -1,0 +1,568 @@
+<!DOCTYPE html>
+<html lang="en-us">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta content="Rust, embedded, development" name="keywords">
+<meta content="Jorge Aparicio" name="author">
+<meta property="og:title" content="A CPU usage monitor for the RTFM framework - Embedded in Rust">
+<meta property="og:url" content="https://blog.japaric.io/cpu-monitor/">
+<meta property="og:description" content="A blog about Rust and embedded stuff">
+<meta property="og:type" content="website" />
+<title>A CPU usage monitor for the RTFM framework | Embedded in Rust</title>
+<link rel="stylesheet" href="https://blog.japaric.io//css/style.css">
+<link rel="shortcut icon" href="https://blog.japaric.io//wave.ico">
+<link rel="alternate" type="application/atom+xml" title="Embedded in Rust Posts" href="https://blog.japaric.io//index.xml">
+<link href="//maxcdn.bootstrapcdn.com/font-awesome/4.7.0/css/font-awesome.min.css" rel="stylesheet" integrity="sha384-wvfXpqpZZVQGK6TAh5PVlGOfQNHSoD2xbE+QkPxCAFlNEevoEH3Sl0sibVcOQVnN" crossorigin="anonymous">
+
+<link rel="stylesheet" href="//cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/styles/github.min.css">
+
+</head>
+
+<body>
+<section class="section">
+  <div class="container">
+    <nav class="nav">
+      <div class="nav-left">
+        <a class="nav-item" href="https://blog.japaric.io/"><h1 class="title is-4">Embedded in Rust</h1></a>
+      </div>
+      <div class="nav-right">
+        <nav class="nav-item level is-mobile">
+          
+          <a class="level-item" href="https://github.com/japaric" target="_blank">
+            <span class="icon">
+              <i class="fa fa-github"></i>
+            </span>
+          </a>
+          
+          <a class="level-item" href="/index.xml" target="_blank">
+            <span class="icon">
+              <i class="fa fa-rss"></i>
+            </span>
+          </a>
+          
+        </nav>
+      </div>
+    </nav>
+  </div>
+</section>
+
+<section class="section">
+  <div class="container">
+    <h1 class="title">A CPU usage monitor for the RTFM framework</h1>
+    <h2 class="subtitle is-5">June 4, 2017 by Jorge Aparicio</h2>
+    
+      <div class="tags">
+    
+        <a class="button is-link" href="/tags/arm-cortex-m">ARM Cortex-M</a>
+    
+        <a class="button is-link" href="/tags/performance">performance</a>
+    
+        <a class="button is-link" href="/tags/recipe">recipe</a>
+    
+        <a class="button is-link" href="/tags/rtfm">rtfm</a>
+    
+</div>
+
+    
+    <div class="content">
+      <p>We have used <a href="/fearless-concurrency">the RTFM framework</a> in the previous posts but put most of the
+application logic in tasks, and always sent the processor to sleep in the <code>idle</code>
+function. In this post we&rsquo;ll put the <code>idle</code> function to better use and build a
+CPU usage monitor there.</p>
+<h1 id="idle">Idle</h1>
+<p>The main logic of the CPU usage monitor will be in the <code>idle</code> function. Let&rsquo;s
+see how it works:</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#75715e">// RESOURCES
+</span><span style="color:#75715e"></span>peripherals<span style="color:#f92672">!</span>(stm32f30x, {
+    DWT: <span style="color:#a6e22e">Peripheral</span> {
+        register_block: <span style="color:#a6e22e">Dwt</span>,
+        ceiling: <span style="color:#a6e22e">C0</span>,
+    },
+    (..)
+});
+
+<span style="color:#75715e">// Total sleep time (in clock cycles)
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">static</span> SLEEP_TIME: <span style="color:#a6e22e">Resource</span><span style="color:#f92672">&lt;</span>Cell<span style="color:#f92672">&lt;</span><span style="color:#66d9ef">u32</span><span style="color:#f92672">&gt;</span>, C1<span style="color:#f92672">&gt;</span> <span style="color:#f92672">=</span> Resource::new(Cell::new(<span style="color:#ae81ff">0</span>));
+
+<span style="color:#75715e">// IDLE LOOP
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">idle</span>(<span style="color:#66d9ef">ref</span> prio: <span style="color:#a6e22e">P0</span>, _thr: <span style="color:#a6e22e">T0</span>) -&gt; <span style="color:#f92672">!</span> {
+    <span style="color:#66d9ef">loop</span> {
+        <span style="color:#75715e">// For the span of this critical section the processor will not service
+</span><span style="color:#75715e"></span>        <span style="color:#75715e">// interrupts (tasks)
+</span><span style="color:#75715e"></span>        rtfm::atomic(<span style="color:#f92672">|</span>thr<span style="color:#f92672">|</span> {
+            <span style="color:#66d9ef">let</span> dwt <span style="color:#f92672">=</span> DWT.access(prio, thr);
+            <span style="color:#66d9ef">let</span> sleep_time <span style="color:#f92672">=</span> SLEEP_TIME.access(prio, thr);
+
+            <span style="color:#75715e">// Sleep
+</span><span style="color:#75715e"></span>            <span style="color:#66d9ef">let</span> before <span style="color:#f92672">=</span> dwt.cyccnt.read();
+            rtfm::wfi();
+            <span style="color:#66d9ef">let</span> after <span style="color:#f92672">=</span> dwt.cyccnt.read();
+
+            <span style="color:#66d9ef">let</span> elapsed <span style="color:#f92672">=</span> after.wrapping_sub(before);
+
+            <span style="color:#75715e">// Accumulate sleep time
+</span><span style="color:#75715e"></span>            sleep_time.set(sleep_time.get() <span style="color:#f92672">+</span> elapsed);
+        });
+
+        <span style="color:#75715e">// Tasks are serviced at this point
+</span><span style="color:#75715e"></span>    }
+}
+</code></pre></div><p>We will still put the processor to sleep in the <code>idle</code> function &ndash; you can still
+see the WFI (Wait For Interrupt) instruction. However this time the instruction
+will be executed within a <em>global</em> critical section (<code>rtfm::atomic</code>). So what
+will happen when an interrupt event arrives? The processor will <em>wake up</em> from
+the WFI instruction but it will <em>not</em> service the interrupt because of the
+critical section; instead it will continue executing the <code>idle</code> function.</p>
+<p>Before and after the WFI instruction <a href="/rtfm-overhead/#dwt-and-cyccnt">the CYCCNT register</a> is read; the
+difference between these two snapshots, <code>elapsed</code>, is the time, in clock cycles,
+that the processor spent sleeping, <em>waiting for an interrupt</em>. This sleep time
+is then accumulated in the <code>SLEEP_TIME</code> resource; this resource tracks the
+<em>total</em> time spent sleeping.</p>
+<p>Once the resource has been updated the critical section ends and <code>idle</code> gets
+immediately preempted by the pending interrupts. The processor then starts
+executing the tasks that need to be serviced. Once the processor has finished
+executing all the pending tasks it returns back to <code>idle</code>.</p>
+<p>The <code>loop</code> restarts: a new critical section starts and the processor goes back
+to sleep. The whole cycle repeats.</p>
+<p>So the logic in the <code>idle</code> function is actually <em>not</em> measuring the CPU use;
+it&rsquo;s measuring the opposite: the total time the CPU is <em>not</em> being used. To turn
+that number into CPU usage we have to subtract the total elapsed time by the
+time spent sleeping; that would be the time the CPU was active. To get a
+percentage we have to divide the active time by the total elapsed time and
+multiply by 100%. The formula would be:</p>
+<blockquote>
+<p><code>CPU_USE = (TOTAL - SLEEP) / TOTAL * 100.</code></p>
+</blockquote>
+<p>Now let&rsquo;s build an example.</p>
+<h1 id="blinky">Blinky</h1>
+<p>We&rsquo;ll add the CPU usage monitor to the blinky example we used in <a href="/fearless-concurrency/#a-blinking-task">the post that
+introduced the RTFM framework</a>.</p>
+<p>Starting from that example we&rsquo;ll replace the <code>idle</code> function with the version
+shown in the previous section and then tweak the <code>blinky</code> task like this:</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">blinky</span>(<span style="color:#66d9ef">ref</span> <span style="color:#66d9ef">mut</span> task: <span style="color:#a6e22e">Tim1UpTim10</span>, <span style="color:#66d9ef">ref</span> prio: <span style="color:#a6e22e">P1</span>, <span style="color:#66d9ef">ref</span> thr: <span style="color:#a6e22e">T1</span>) {
+    <span style="color:#66d9ef">static</span> STATE: <span style="color:#a6e22e">Local</span><span style="color:#f92672">&lt;</span><span style="color:#66d9ef">bool</span>, Tim1UpTim10<span style="color:#f92672">&gt;</span> <span style="color:#f92672">=</span> Local::new(<span style="color:#66d9ef">false</span>);
+
+    <span style="color:#66d9ef">let</span> tim1 <span style="color:#f92672">=</span> <span style="color:#f92672">&amp;</span>TIM1.access(prio, thr);
+    <span style="color:#66d9ef">let</span> itm <span style="color:#f92672">=</span> ITM.access(prio, thr);
+    <span style="color:#66d9ef">let</span> sleep_time <span style="color:#f92672">=</span> SLEEP_TIME.access(prio, thr);
+    <span style="color:#66d9ef">let</span> state <span style="color:#f92672">=</span> STATE.borrow_mut(task);
+
+    <span style="color:#66d9ef">let</span> timer <span style="color:#f92672">=</span> Timer(tim1);
+
+    <span style="color:#66d9ef">if</span> timer.clear_update_flag().is_ok() {
+        <span style="color:#f92672">*</span>state <span style="color:#f92672">=</span> <span style="color:#f92672">!*</span>state;
+
+        <span style="color:#66d9ef">if</span> <span style="color:#f92672">*</span>state {
+            Green.on();
+        } <span style="color:#66d9ef">else</span> {
+            Green.off();
+        }
+
+        <span style="color:#75715e">// NEW!
+</span><span style="color:#75715e"></span>        <span style="color:#75715e">// Report clock cycles spent sleeping
+</span><span style="color:#75715e"></span>        iprintln<span style="color:#f92672">!</span>(<span style="color:#f92672">&amp;</span>itm.stim[<span style="color:#ae81ff">0</span>], <span style="color:#e6db74">&#34;{}&#34;</span>, sleep_time.get());
+
+        <span style="color:#75715e">// Reset sleep time back to zero
+</span><span style="color:#75715e"></span>        sleep_time.set(<span style="color:#ae81ff">0</span>);
+    } <span style="color:#66d9ef">else</span> {
+        <span style="color:#75715e">// Only reachable via `rtfm::request(blinky)`
+</span><span style="color:#75715e"></span>        unreachable<span style="color:#f92672">!</span>()
+    }
+}
+</code></pre></div><p>(You can find the full source code of this program in <a href="/cpu-monitor/#appendix">the appendix</a>)</p>
+<p>The new part here is that, after we toggle the state of the LED, we print the
+sleep time to the console using <a href="/itm">the ITM</a>, and then we reset the <code>SLEEP_TIME</code>
+counter back to zero. As the <code>blinky</code> task is periodic this will print the
+number of clock cycles the processor spent sleeping in a period of one second.</p>
+<p>Let&rsquo;s see the numbers reported by this program when compiled in debug mode
+(without optimizations):</p>
+<pre><code class="language-console" data-lang="console">$ cat /dev/ttyUSB0
+(..)
+7993609
+7993608
+7993609
+7993608
+</code></pre><p>The sleep time is reported every one second. As the processor is operating at 8
+MHz 1 second is equivalent to 8 millions of processor clock cycles. Subtracting
+that value by the ones above yields the active CPU time per second:</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-text" data-lang="text">6391
+6392
+6391
+6392
+</code></pre></div><p>Those values can be converted to a CPU usage percentage using the formula we
+presented before (<code>PERIOD</code> is <code>8_000_000</code>):</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-text" data-lang="text">0.0798875%
+0.0799%
+0.0798875%
+0.0799%
+</code></pre></div><p>Averaging those values gives 0.0799%</p>
+<p>Note that this CPU usage includes both blinking the LED, <em>and</em> reporting the
+sleep time.</p>
+<p>We can repeat the measurement but with the program compiled in release mode
+(with optimizations):</p>
+<pre><code class="language-console" data-lang="console">$ cat /dev/ttyUSB0
+(..)
+7999488
+7999488
+7999488
+7999488
+</code></pre><p>Now the average CPU usage is down to 0.0064%.</p>
+<p>For extra enlightenment we can do a threshold vs time diagram, like we did
+in <a href="/fearless-concurrency/#preemption">the fearless concurrency post</a>, for this last program:</p>
+<p><img src="/cpu-monitor/blinky.svg" alt="Blinky"></p>
+<p>The difference is that the preemption threshold of the idle loop is now maxed
+out but once an update event arrives the threshold of <code>idle</code> is quickly dropped
+to allow preemption and service the <code>blinky</code> task. Scheduling wise nothing has
+changed.</p>
+<h1 id="loopback">Loopback</h1>
+<p>Let&rsquo;s do one more example. Let&rsquo;s add a CPU usage monitor to <a href="/fearless-concurrency/#concurrency">the concurrency
+example</a> we did in the fearless concurrency post. Starting from this post blinky
+example we only have to add the <code>loopback</code> task and some initialization code:</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust">tasks<span style="color:#f92672">!</span>(stm32f103xx, {
+    <span style="color:#75715e">// ..
+</span><span style="color:#75715e"></span>    loopback: <span style="color:#a6e22e">Task</span> {
+        interrupt: <span style="color:#a6e22e">Usart1</span>,
+        priority: <span style="color:#a6e22e">P1</span>,
+        enabled: <span style="color:#a6e22e">true</span>,
+    },
+});
+
+<span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">loopback</span>(_task: <span style="color:#a6e22e">Usart1</span>, <span style="color:#66d9ef">ref</span> prio: <span style="color:#a6e22e">P1</span>, <span style="color:#66d9ef">ref</span> thr: <span style="color:#a6e22e">T1</span>) {
+    <span style="color:#66d9ef">let</span> usart1 <span style="color:#f92672">=</span> USART1.access(prio, thr);
+
+    <span style="color:#66d9ef">let</span> serial <span style="color:#f92672">=</span> Serial(<span style="color:#f92672">&amp;</span>usart1);
+
+    <span style="color:#66d9ef">if</span> <span style="color:#66d9ef">let</span> Ok(byte) <span style="color:#f92672">=</span> serial.read() {
+        <span style="color:#66d9ef">if</span> serial.write(byte).is_err() {
+            <span style="color:#75715e">// NOTE(unreachable!) unlikely to overrun the TX buffer because we
+</span><span style="color:#75715e"></span>            <span style="color:#75715e">// are sending _one_ byte per byte received
+</span><span style="color:#75715e"></span>            unreachable<span style="color:#f92672">!</span>()
+        }
+    } <span style="color:#66d9ef">else</span> {
+        <span style="color:#75715e">// NOTE(unreachable!) only reachable through `rtfm::request(loopback)`
+</span><span style="color:#75715e"></span>        unreachable<span style="color:#f92672">!</span>()
+    }
+}
+</code></pre></div><p>This <code>loopback</code> task will send back the data that comes through the serial
+interface byte by byte.</p>
+<p>In the original example we tested this program by manually sending data through
+a serial terminal. The data throughput was rather low as the input came from a
+keyboard. This time we&rsquo;ll maximize the data throughput using the following
+command:</p>
+<pre><code class="language-console" data-lang="console">$ # Send the pangram over the serial interface 1000 times and as fast possible
+$ for i in `seq 1 1000`; do
+    echo &quot;The quick brown fox jumps over the lazy dog.&quot; &gt; /dev/rfcomm0
+  done
+</code></pre><p>Let&rsquo;s see if the microcontroller can keep up and what the CPU usage is under
+these conditions:</p>
+<!-- raw HTML omitted -->
+<p>In this take the program running on the microcontroller was compiled in release
+mode. The top right terminal shows the data that the microcontroller echoes
+back. The bottom right terminal shows the sleep time periodically reported by
+the microcontroller. Here&rsquo;s a transcript of the sleep times:</p>
+<pre><code>$ cat /dev/ttyUSB0
+(..)
+7999488
+7660188
+7636788
+7636788
+7639843
+7639612
+7648033
+7646047
+7636788
+7926363
+7999488
+</code></pre><p>The average CPU usage under these conditions is 4.4624% (the first and last two
+samples were not taken into account in the computation).</p>
+<h1 id="delayed-interrupt-handling">Delayed interrupt handling</h1>
+<p>Using this CPU monitor comes at a cost: servicing of interrupts (tasks) will be
+delayed by a constant number of clock cycles. You can think of this as an
+increased context switching cost when switching from <code>idle</code> to some task.</p>
+<p>I think this delay is better visualized by looking at the source code of <code>idle</code>.
+Note the comments:</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">idle</span>(<span style="color:#66d9ef">ref</span> prio: <span style="color:#a6e22e">P0</span>, _thr: <span style="color:#a6e22e">T0</span>) -&gt; <span style="color:#f92672">!</span> {
+    <span style="color:#66d9ef">loop</span> {
+        rtfm::atomic(<span style="color:#f92672">|</span>thr<span style="color:#f92672">|</span> {
+            <span style="color:#66d9ef">let</span> dwt <span style="color:#f92672">=</span> DWT.access(prio, thr);
+            <span style="color:#66d9ef">let</span> sleep_time <span style="color:#f92672">=</span> SLEEP_TIME.access(prio, thr);
+
+            <span style="color:#66d9ef">let</span> before <span style="color:#f92672">=</span> dwt.cyccnt.read();
+            <span style="color:#75715e">// Sleep
+</span><span style="color:#75715e"></span>            rtfm::wfi(); <span style="color:#75715e">// &lt;- event A arrives and wakes the processor up
+</span><span style="color:#75715e"></span>            <span style="color:#66d9ef">let</span> after <span style="color:#f92672">=</span> dwt.cyccnt.read();
+
+            <span style="color:#66d9ef">let</span> elapsed <span style="color:#f92672">=</span> after.wrapping_sub(before);
+
+            sleep_time.set(sleep_time.get() <span style="color:#f92672">+</span> elapsed);
+        });
+
+        <span style="color:#75715e">// task A starts
+</span><span style="color:#75715e"></span>    }
+}
+</code></pre></div><p>Starting the task A is delayed by the execution of the code that increases the
+<code>SLEEP_TIME</code> counter:</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust">            <span style="color:#66d9ef">let</span> after <span style="color:#f92672">=</span> dwt.cyccnt.read();
+
+            <span style="color:#66d9ef">let</span> elapsed <span style="color:#f92672">=</span> after.wrapping_sub(before);
+
+            sleep_time.set(sleep_time.get() <span style="color:#f92672">+</span> elapsed);
+        }); <span style="color:#75715e">// end of critical section
+</span></code></pre></div><p>The delay is constant and less than 10 clock cycles &ndash; I&rsquo;ll show you the
+disassembly in a bit &ndash; which is not that bad. However, there&rsquo;s one particular
+scenario where a task can be delayed <em>indefinitely</em>. Again let&rsquo;s look at the
+source code of <code>idle</code>:</p>
+<blockquote>
+<p><strong>UPDATE</strong> <a href="https://www.reddit.com/user/idubrov">/u/idubrov</a> <a href="https://www.reddit.com/r/rust/comments/6f94t6/eir_a_cpu_usage_monitor_for_the_rtfm_framework/digekkl/">pointed out</a> that WFI behaves like a NOP (No
+OPeration) if there&rsquo;s an interrupt is pending so the scenario described below
+is actually impossible. Yay!</p>
+</blockquote>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">idle</span>(<span style="color:#66d9ef">ref</span> prio: <span style="color:#a6e22e">P0</span>, _thr: <span style="color:#a6e22e">T0</span>) -&gt; <span style="color:#f92672">!</span> {
+    <span style="color:#66d9ef">loop</span> {
+        rtfm::atomic(<span style="color:#f92672">|</span>thr<span style="color:#f92672">|</span> {
+            <span style="color:#66d9ef">let</span> dwt <span style="color:#f92672">=</span> DWT.access(prio, thr);
+            <span style="color:#66d9ef">let</span> sleep_time <span style="color:#f92672">=</span> SLEEP_TIME.access(prio, thr);
+
+            <span style="color:#75715e">// &lt;- event A arrives. Task A is NOT executed
+</span><span style="color:#75715e"></span>
+            <span style="color:#66d9ef">let</span> before <span style="color:#f92672">=</span> dwt.cyccnt.read();
+            <span style="color:#75715e">// Sleep
+</span><span style="color:#75715e"></span>            rtfm::wfi(); <span style="color:#75715e">// &lt;- event B arrives and wakes the processor up
+</span><span style="color:#75715e"></span>            <span style="color:#66d9ef">let</span> after <span style="color:#f92672">=</span> dwt.cyccnt.read();
+
+            <span style="color:#66d9ef">let</span> elapsed <span style="color:#f92672">=</span> after.wrapping_sub(before);
+
+            sleep_time.set(sleep_time.get() <span style="color:#f92672">+</span> elapsed);
+        });
+
+        <span style="color:#75715e">// tasks A and B start
+</span><span style="color:#75715e"></span>    }
+}
+</code></pre></div><p>Here event A arrives after the critical section is started and before WFI is
+executed. Because of this the execution of task A will be delayed <em>until some
+other event arrives</em> and wakes up the processor. That could take a few cycles,
+or several, or never occur. In any case it&rsquo;s bad because the delay is non
+deterministic in the general case.</p>
+<p>The condition to arrive at this scenario is that some interrupt event must
+arrive <em>after</em> the critical section starts (the interrupts get disabled) and
+<em>before</em> the processor executes the WFI instruction. The likelihood of this
+scenario will thus depend on how big that window is so let&rsquo;s look at the
+disassembly of the <code>idle</code> function:</p>
+<pre><code class="language-armasm" data-lang="armasm">08000462 &lt;blinky::idle&gt;:
+ 8000462:       f241 0c04       movw    ip, #4100       ; 0x1004
+ 8000466:       f240 0100       movw    r1, #0
+ 800046a:       f2ce 0c00       movt    ip, #57344      ; 0xe000
+ 800046e:       f2c2 0100       movt    r1, #8192       ; 0x2000
+ 8000472:       e000            b.n     8000476 &lt;blinky::idle+0x14&gt;
+ 8000474:       b662            cpsie   i               ; ENABLE interrupts
+ 8000476:       f3ef 8210       mrs     r2, PRIMASK
+ 800047a:       b672            cpsid   i               ; DISABLE interrupts
+ 800047c:       f8dc 3000       ldr.w   r3, [ip]        ; read CYCCNT
+ 8000480:       bf30            wfi                     ; SLEEP
+ 8000482:       f8dc 0000       ldr.w   r0, [ip]        ; read CYCCNT
+ 8000486:       f012 0f01       tst.w   r2, #1
+ 800048a:       eba0 0003       sub.w   r0, r0, r3
+ 800048e:       680b            ldr     r3, [r1, #0]
+ 8000490:       4418            add     r0, r3
+ 8000492:       6008            str     r0, [r1, #0]
+ 8000494:       d1ef            bne.n   8000476 &lt;blinky::idle+0x14&gt;
+ 8000496:       e7ed            b.n     8000474 &lt;blinky::idle+0x12&gt;
+</code></pre><p>The window is very small; it&rsquo;s a single instruction: <code>ldr.w   r3, [ip]</code>. That
+makes the likelihood of hitting this unbounded delay scenario <em>almost</em>
+impossible.</p>
+<h1 id="outro">Outro</h1>
+<p>All right. There you go: a noninvasive (no need for external monitoring
+hardware), low overhead CPU usage monitor. Until next time!</p>
+<hr>
+<p><strong>Thank you patrons! ❤️</strong></p>
+<p>I want to wholeheartedly thank:</p>
+<!-- raw HTML omitted -->
+<p><a href="https://github.com/Razican">Iban Eguia</a>, <a href="https://github.com/aturon">Aaron Turon</a>, <a href="https://github.com/archaelus">Geoff Cant</a>, <a href="http://www.harrisonchin.com/">Harrison Chin</a>, <a href="https://github.com/brandonedens">Brandon Edens</a>,
+<a href="https://github.com/whitequark">whitequark</a>, <a href="https://convolv.es/">J. Ryan Stinnett</a>, <a href="https://jamesmunns.com/">James Munns</a> and 20 more people
+for supporting my work on Patreon.</p>
+<hr>
+<p>Let&rsquo;s discuss on <a href="https://www.reddit.com/r/rust/comments/6f94t6/eir_a_cpu_usage_monitor_for_the_rtfm_framework/">reddit</a>.</p>
+<hr>
+<h1 id="appendix">Appendix</h1>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#75715e">#![feature(const_fn)]</span>
+<span style="color:#75715e">#![feature(used)]</span>
+<span style="color:#75715e">#![no_std]</span>
+
+<span style="color:#75715e">// version = &#34;0.2.9&#34;
+</span><span style="color:#75715e"></span><span style="color:#75715e">#[macro_use]</span>
+<span style="color:#66d9ef">extern</span> <span style="color:#66d9ef">crate</span> cortex_m;
+
+<span style="color:#75715e">// version = &#34;0.2.4&#34;
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">extern</span> <span style="color:#66d9ef">crate</span> cortex_m_rt;
+
+<span style="color:#75715e">// version = &#34;0.1.0&#34;
+</span><span style="color:#75715e"></span><span style="color:#75715e">#[macro_use]</span>
+<span style="color:#66d9ef">extern</span> <span style="color:#66d9ef">crate</span> cortex_m_rtfm <span style="color:#66d9ef">as</span> rtfm;
+
+<span style="color:#75715e">// git = &#34;https://github.com/japaric/blue-pill&#34;
+</span><span style="color:#75715e">// rev = &#34;63f2e6195546669f685606096db78ec73c5525b8&#34;
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">extern</span> <span style="color:#66d9ef">crate</span> blue_pill;
+
+<span style="color:#66d9ef">use</span> core::cell::Cell;
+
+<span style="color:#66d9ef">use</span> blue_pill::led::{Green, self};
+<span style="color:#66d9ef">use</span> blue_pill::stm32f103xx;
+<span style="color:#66d9ef">use</span> blue_pill:<span style="color:#960050;background-color:#1e0010">⏲</span>:<span style="color:#a6e22e">Timer</span>;
+<span style="color:#66d9ef">use</span> rtfm::{Local, C1, P0, P1, Resource, T0, T1, TMax};
+<span style="color:#66d9ef">use</span> stm32f103xx::interrupt::Tim1UpTim10;
+
+<span style="color:#75715e">// CONFIGURATION
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">const</span> FREQUENCY: <span style="color:#66d9ef">u32</span> <span style="color:#f92672">=</span> <span style="color:#ae81ff">1</span>; <span style="color:#75715e">// Hz
+</span><span style="color:#75715e"></span>
+<span style="color:#75715e">// RESOURCES
+</span><span style="color:#75715e"></span>peripherals<span style="color:#f92672">!</span>(stm32f103xx, {
+    DWT: <span style="color:#a6e22e">Peripheral</span> {
+        register_block: <span style="color:#a6e22e">Dwt</span>,
+        ceiling: <span style="color:#a6e22e">C0</span>,
+    },
+    GPIOC: <span style="color:#a6e22e">Peripheral</span> {
+        register_block: <span style="color:#a6e22e">Gpioc</span>,
+        ceiling: <span style="color:#a6e22e">C0</span>,
+    },
+    ITM: <span style="color:#a6e22e">Peripheral</span> {
+        register_block: <span style="color:#a6e22e">Itm</span>,
+        ceiling: <span style="color:#a6e22e">C1</span>,
+    },
+    RCC: <span style="color:#a6e22e">Peripheral</span> {
+        register_block: <span style="color:#a6e22e">Rcc</span>,
+        ceiling: <span style="color:#a6e22e">C0</span>,
+    },
+    TIM1: <span style="color:#a6e22e">Peripheral</span> {
+        register_block: <span style="color:#a6e22e">Tim1</span>,
+        ceiling: <span style="color:#a6e22e">C1</span>,
+    },
+});
+
+<span style="color:#75715e">// Total sleep time (in clock cycles)
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">static</span> SLEEP_TIME: <span style="color:#a6e22e">Resource</span><span style="color:#f92672">&lt;</span>Cell<span style="color:#f92672">&lt;</span><span style="color:#66d9ef">u32</span><span style="color:#f92672">&gt;</span>, C1<span style="color:#f92672">&gt;</span> <span style="color:#f92672">=</span> Resource::new(Cell::new(<span style="color:#ae81ff">0</span>));
+
+<span style="color:#75715e">// INITIALIZATION PHASE
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">init</span>(<span style="color:#66d9ef">ref</span> prio: <span style="color:#a6e22e">P0</span>, thr: <span style="color:#66d9ef">&amp;</span><span style="color:#a6e22e">TMax</span>) {
+    <span style="color:#66d9ef">let</span> dwt <span style="color:#f92672">=</span> <span style="color:#f92672">&amp;</span>DWT.access(prio, thr);
+    <span style="color:#66d9ef">let</span> gpioc <span style="color:#f92672">=</span> <span style="color:#f92672">&amp;</span>GPIOC.access(prio, thr);
+    <span style="color:#66d9ef">let</span> rcc <span style="color:#f92672">=</span> <span style="color:#f92672">&amp;</span>RCC.access(prio, thr);
+    <span style="color:#66d9ef">let</span> tim1 <span style="color:#f92672">=</span> <span style="color:#f92672">&amp;</span>TIM1.access(prio, thr);
+
+    <span style="color:#66d9ef">let</span> timer <span style="color:#f92672">=</span> Timer(tim1);
+
+    dwt.enable_cycle_counter();
+
+    led::init(gpioc, rcc);
+
+    timer.init(FREQUENCY, rcc);
+    timer.resume();
+}
+
+<span style="color:#75715e">// IDLE LOOP
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">idle</span>(<span style="color:#66d9ef">ref</span> prio: <span style="color:#a6e22e">P0</span>, _thr: <span style="color:#a6e22e">T0</span>) -&gt; <span style="color:#f92672">!</span> {
+    <span style="color:#66d9ef">loop</span> {
+        <span style="color:#75715e">// For the span of this critical section the processor will not service
+</span><span style="color:#75715e"></span>        <span style="color:#75715e">// interrupts (tasks)
+</span><span style="color:#75715e"></span>        rtfm::atomic(<span style="color:#f92672">|</span>thr<span style="color:#f92672">|</span> {
+            <span style="color:#66d9ef">let</span> dwt <span style="color:#f92672">=</span> DWT.access(prio, thr);
+            <span style="color:#66d9ef">let</span> sleep_time <span style="color:#f92672">=</span> SLEEP_TIME.access(prio, thr);
+
+            <span style="color:#75715e">// Sleep
+</span><span style="color:#75715e"></span>            <span style="color:#66d9ef">let</span> before <span style="color:#f92672">=</span> dwt.cyccnt.read();
+            rtfm::wfi();
+            <span style="color:#66d9ef">let</span> after <span style="color:#f92672">=</span> dwt.cyccnt.read();
+
+            <span style="color:#66d9ef">let</span> elapsed <span style="color:#f92672">=</span> after.wrapping_sub(before);
+
+            <span style="color:#75715e">// Accumulate sleep time
+</span><span style="color:#75715e"></span>            sleep_time.set(sleep_time.get() <span style="color:#f92672">+</span> elapsed);
+        });
+
+        <span style="color:#75715e">// Tasks are serviced at this point
+</span><span style="color:#75715e"></span>    }
+}
+
+<span style="color:#75715e">// TASKS
+</span><span style="color:#75715e"></span>tasks<span style="color:#f92672">!</span>(stm32f103xx, {
+    blinky: <span style="color:#a6e22e">Task</span> {
+        interrupt: <span style="color:#a6e22e">Tim1UpTim10</span>,
+        priority: <span style="color:#a6e22e">P1</span>,
+        enabled: <span style="color:#a6e22e">true</span>,
+    },
+});
+
+<span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">blinky</span>(<span style="color:#66d9ef">ref</span> <span style="color:#66d9ef">mut</span> task: <span style="color:#a6e22e">Tim1UpTim10</span>, <span style="color:#66d9ef">ref</span> prio: <span style="color:#a6e22e">P1</span>, <span style="color:#66d9ef">ref</span> thr: <span style="color:#a6e22e">T1</span>) {
+    <span style="color:#66d9ef">static</span> STATE: <span style="color:#a6e22e">Local</span><span style="color:#f92672">&lt;</span><span style="color:#66d9ef">bool</span>, Tim1UpTim10<span style="color:#f92672">&gt;</span> <span style="color:#f92672">=</span> Local::new(<span style="color:#66d9ef">false</span>);
+
+    <span style="color:#66d9ef">let</span> tim1 <span style="color:#f92672">=</span> <span style="color:#f92672">&amp;</span>TIM1.access(prio, thr);
+    <span style="color:#66d9ef">let</span> itm <span style="color:#f92672">=</span> ITM.access(prio, thr);
+    <span style="color:#66d9ef">let</span> sleep_time <span style="color:#f92672">=</span> SLEEP_TIME.access(prio, thr);
+    <span style="color:#66d9ef">let</span> state <span style="color:#f92672">=</span> STATE.borrow_mut(task);
+
+    <span style="color:#66d9ef">let</span> timer <span style="color:#f92672">=</span> Timer(tim1);
+
+    <span style="color:#66d9ef">if</span> timer.clear_update_flag().is_ok() {
+        <span style="color:#f92672">*</span>state <span style="color:#f92672">=</span> <span style="color:#f92672">!*</span>state;
+
+        <span style="color:#66d9ef">if</span> <span style="color:#f92672">*</span>state {
+            Green.on();
+        } <span style="color:#66d9ef">else</span> {
+            Green.off();
+        }
+
+        <span style="color:#75715e">// NEW!
+</span><span style="color:#75715e"></span>        <span style="color:#75715e">// Report clock cycles spent sleeping
+</span><span style="color:#75715e"></span>        iprintln<span style="color:#f92672">!</span>(<span style="color:#f92672">&amp;</span>itm.stim[<span style="color:#ae81ff">0</span>], <span style="color:#e6db74">&#34;{}&#34;</span>, sleep_time.get());
+
+        <span style="color:#75715e">// Reset sleep time back to zero
+</span><span style="color:#75715e"></span>        sleep_time.set(<span style="color:#ae81ff">0</span>);
+    } <span style="color:#66d9ef">else</span> {
+        <span style="color:#75715e">// Only reachable via `rtfm::request(blinky)`
+</span><span style="color:#75715e"></span>        unreachable<span style="color:#f92672">!</span>()
+    }
+}
+</code></pre></div>
+    </div>
+
+    
+    
+    <div class="article-toc" >
+        <h3>Contents</h3>
+        <nav id="TableOfContents"></nav>
+    </div>
+    
+    
+
+    
+  </div>
+</section>
+
+
+<section class="section">
+  <div class="container has-text-centered">
+    <p><a rel="license" href="http://creativecommons.org/licenses/by/4.0/"><img alt="Creative Commons License" src="https://i.creativecommons.org/l/by/4.0/80x15.png" /></a><br/>Jorge Aparicio</p>
+  </div>
+</section>
+
+
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/styles/tomorrow-night.min.css" />
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/highlight.min.js" integrity="sha256-aYTdUrn6Ow1DDgh5JTc3aDGnnju48y/1c8s1dgkYPQ8=" crossorigin="anonymous"></script>
+
+<script type="text/javascript" src="//cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/languages/armasm.min.js"></script>
+
+<script type="text/javascript" src="//cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/languages/c.min.js"></script>
+
+<script type="text/javascript" src="//cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/languages/diff.min.js"></script>
+
+<script type="text/javascript" src="//cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/languages/llvm.min.js"></script>
+
+<script type="text/javascript" src="//cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/languages/rust.min.js"></script>
+
+<script type="text/javascript" src="//cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/languages/shell.min.js"></script>
+
+<script>hljs.initHighlightingOnLoad();</script>
+
+
+</body>

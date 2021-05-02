@@ -1,0 +1,401 @@
+<!DOCTYPE html>
+<html lang="en-us">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta content="Rust, embedded, development" name="keywords">
+<meta content="Jorge Aparicio" name="author">
+<meta property="og:title" content="Embedded Rust in 2018 - Embedded in Rust">
+<meta property="og:url" content="https://blog.japaric.io/embedded-rust-in-2018/">
+<meta property="og:description" content="A blog about Rust and embedded stuff">
+<meta property="og:type" content="website" />
+<title>Embedded Rust in 2018 | Embedded in Rust</title>
+<link rel="stylesheet" href="https://blog.japaric.io//css/style.css">
+<link rel="shortcut icon" href="https://blog.japaric.io//wave.ico">
+<link rel="alternate" type="application/atom+xml" title="Embedded in Rust Posts" href="https://blog.japaric.io//index.xml">
+<link href="//maxcdn.bootstrapcdn.com/font-awesome/4.7.0/css/font-awesome.min.css" rel="stylesheet" integrity="sha384-wvfXpqpZZVQGK6TAh5PVlGOfQNHSoD2xbE+QkPxCAFlNEevoEH3Sl0sibVcOQVnN" crossorigin="anonymous">
+
+<link rel="stylesheet" href="//cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/styles/github.min.css">
+
+</head>
+
+<body>
+<section class="section">
+  <div class="container">
+    <nav class="nav">
+      <div class="nav-left">
+        <a class="nav-item" href="https://blog.japaric.io/"><h1 class="title is-4">Embedded in Rust</h1></a>
+      </div>
+      <div class="nav-right">
+        <nav class="nav-item level is-mobile">
+          
+          <a class="level-item" href="https://github.com/japaric" target="_blank">
+            <span class="icon">
+              <i class="fa fa-github"></i>
+            </span>
+          </a>
+          
+          <a class="level-item" href="/index.xml" target="_blank">
+            <span class="icon">
+              <i class="fa fa-rss"></i>
+            </span>
+          </a>
+          
+        </nav>
+      </div>
+    </nav>
+  </div>
+</section>
+
+<section class="section">
+  <div class="container">
+    <h1 class="title">Embedded Rust in 2018</h1>
+    <h2 class="subtitle is-5">January 21, 2018 by Jorge Aparicio</h2>
+    
+    <div class="content">
+      <p>This is my <a href="https://blog.rust-lang.org/2018/01/03/new-years-rust-a-call-for-community-blogposts.html">#Rust2018</a> blog post.</p>
+<p>These are some things I think the Rust team needs to address this year to make Rust a (more) viable
+alternative to C/C++ in the area of bare metal (i.e. <code>no_std</code>) embedded applications.</p>
+<h1 id="stability">Stability</h1>
+<p>Here&rsquo;s a list of breakage / regressions <em>I</em> encountered (i.e. that I had to work around / fix)
+during 2017:</p>
+<ul>
+<li>
+<p>Changes in target specification files broke compilation of no_std projects that use custom
+targets. Happened once or twice this year (it has happened in 2016 too); don&rsquo;t recall the exact
+number.</p>
+</li>
+<li>
+<p>Adding column information to panic messages, which changed the signature of <code>panic_fmt</code>, bloated
+binary size by 200-600%.</p>
+</li>
+<li>
+<p>ThinLTO, which became enabled by default, broke linking in release mode.</p>
+</li>
+<li>
+<p>Parallel codegen, which became enabled by default, broke linking in dev mode.</p>
+</li>
+<li>
+<p>Incremental compilation, which became enabled by default, broke linking in dev mode. Or maybe it
+was the <code>Termination</code> trait stuff. Neither is the direct cause but either change made <a href="https://github.com/rust-lang/rust/issues/18807">an old bug</a>
+resurface. This is still <a href="https://github.com/rust-lang/rust/issues/47074">unfixed</a> and disabling both incremental compilation and parallel codegen
+is the best way to avoid the problem.</p>
+</li>
+</ul>
+<ul>
+<li>
+<p>The <code>Termination</code> trait broke one of the core crates of the Cortex-M ecosystem (and every other
+user of the <code>start</code> lang item).</p>
+</li>
+<li>
+<p>A routine dependency update (<code>cargo update</code>) in rust-lang/rust broke one of Xargo use cases.
+Fixing the issue in Xargo broke another use case. Finally, undoing the fix a few days later fixed
+both use cases.</p>
+</li>
+<li>
+<p>A change in libcore broke compilation of it for ARMv6-M and MSP430, and probably other custom
+targets. This happened twice.</p>
+</li>
+<li>
+<p>I recall some breakage related to compiler-builtins but don&rsquo;t remember the details.</p>
+</li>
+</ul>
+<p>Note that only <em>two</em> of these are actually related to <em>feature gated</em> language features (<code>start</code> and
+<code>panic_fmt</code>). Target specification files are not feature gated even though they are considered
+unstable by the Rust team.</p>
+<p>Ideally, this list should be empty this year. <a href="http://railwayelectronics.blogspot.se/2018/01/i-recently-picked-up-embedded-project.html">As others have expressed</a> it&rsquo;s
+demotivating to come back to a project after a while and see that it no longer builds. And this
+instability can be exhausting for library crate authors / maintainers, let me explain:</p>
+<p>If a library crate has 10 users those users can potentially use up to 10 <em>different</em> nightly
+versions at any point in time. The bigger this nightly spread the higher the chance of (a) users
+reporting issues, which usually are rustc issues or language level breaking changes, that
+occur on nightlies newer than the one the crate author tested, and of (b) users reporting already
+fixed issues that occur on nightlies older than the one the author tested.</p>
+<p>I&rsquo;ve seen some people suggest pinning crates to some specific nightly version using a
+<code>rust-toolchain</code> file as a solution to the stability problem. That may work for projects centered
+around binary crates like Servo and for projects that use monorepos like Tock but it doesn&rsquo;t work
+for library crates because the <code>rust-toolchain</code> files of dependencies are ignored.</p>
+<p>Library authors could enforce their crates to only build for a certain range of nightlies by
+checking the compiler version in their crate build script but that makes them less composable: a
+downstream user may not be able to use your crate if they are also using some other crate that
+restricts its use to a range of nightlies incompatible with your crate&rsquo;s restrictions. There are
+other issues as well: I actually tried this approach and <a href="https://docs.rs/crate/f3/0.5.0/builds/82700">broke</a> the docs.rs build of my
+<code>cortex-m-rt</code> crate <em>and</em> the docs.rs builds of all the reverse dependencies of my crate.</p>
+<h2 id="establishing-a-first-line-of-defense">Establishing a first line of defense</h2>
+<p>Around half of the issues in my 2017 list were eventually fixed in rustc or in the std facade and
+required no modification of user code. These issues could have been spotted and fixed by Rust
+developers <em>before</em> they landed if the Rust test system incorporated building some embedded crates
+as one of its tests.</p>
+<p>Of course, compiler development should not be halted because some crate stops compiling due to a
+breaking change in an unstable feature. In those cases, the result of building <em>that</em> crate should
+explicitly marked as &ldquo;ignore&rdquo; to let the PR land.</p>
+<p>Being able to ignore a failed build seems to defeat the purpose but even in that scenario this
+system serves as a way to notify the crate author about the upcoming breakage; that way they can
+start taking measures before the PR lands.</p>
+<p>There&rsquo;s a mechanism for temporarily ignoring some parts of a CI build already in rust-lang/rust
+(it&rsquo;s used to test the RLS, clippy, etc.) that could be could be used for this purpose.</p>
+<h2 id="stabilization-in-baby-steps">Stabilization in baby steps</h2>
+<p>The ultimate solution to the instability problem is to make embedded development possible on stable.
+Unfortunately, that&rsquo;s unlikely to be accomplished in a single year: the number of unstable features
+used in embedded development is not only long but also includes the hardest ones to stabilize:
+language items, features for low level control of symbols, features tightly coupled to the backend,
+etc.</p>
+<p>Still, that doesn&rsquo;t mind we shouldn&rsquo;t make some progress this year. I think we can attack
+stabilization from two fronts: (a) get embedded no-std libraries working on stable, and (b) get a
+<em>minimal</em> no-std binary working on stable.</p>
+<p>The feature list for (a) is not that long and it probably overlaps with the needs of non embedded
+developers. The list contains:</p>
+<ul>
+<li>Xargo.</li>
+<li><code>const fn</code></li>
+<li><code>asm!</code></li>
+</ul>
+<p>There may be more features but those are the most common.</p>
+<p>The feature list for (b) in short:</p>
+<ul>
+<li>Xargo</li>
+<li><code>panic_fmt</code></li>
+</ul>
+<p>That should be enough for applications where the boot sequence and compiler intrinsics are written
+in C (e.g. when you link to newlibc, a libc for embedded systems). If you want to do everything in
+Rust while providing the functionality you would get from newlib then the list becomes much longer:</p>
+<ul>
+<li>The <code>compiler_builtins</code> library</li>
+<li><code>#[start]</code> entry point</li>
+<li><code>#[used]</code></li>
+<li><code>Termination</code> trait (this wasn&rsquo;t in last year list &hellip;.)</li>
+<li><code>#[linkage = &quot;weak&quot;]</code></li>
+</ul>
+<p>But I think it makes sense to start with the short version first.</p>
+<p>How can we tackle the most pressing unstable features?</p>
+<h3 id="xargo">Xargo</h3>
+<p>Xargo only works on nightly so if you it need for development you are stuck with nightly. The
+general fix is to land <a href="https://github.com/rust-lang/cargo/issues/4959">Xargo functionality in Cargo</a> and then stabilize it. But a more targeted and
+faster fix would be to make a <code>rust-core</code> component available for some embedded targets,
+<code>thumbv7m-none-eabi</code> for example.</p>
+<p>The Cargo team has <a href="https://github.com/japaric/xargo/issues/193#issuecomment-359180429">expressed</a> their intention on working on the general fix this year so we should
+see some progress.</p>
+<h3 id="const-fn"><code>const fn</code></h3>
+<p>I know the plan is to swap the current const evaluator with <a href="https://github.com/solson/miri">miri</a> to make const evaluation more
+powerful. Personally, I wouldn&rsquo;t want that improvement to <em>delay</em> stabilization of the <code>const fn</code>
+feature. Even in its current state, where it can only evaluate expression and other calls to const
+fn, <code>const fn</code> is already very useful and widely used. I&rsquo;d like to see the current, limited form
+stabilized sometime this year and the miri version behind a feature gate.</p>
+<h3 id="asm"><code>asm!</code></h3>
+<p>I saw someone posted an <code>asm!</code> like macro that works on stable by compiling external assembly files
+and using FFI to call into them. Unfortunately, that solution is not appropriate for this
+application space, for several reasons:</p>
+<ul>
+<li>
+<p>These assembly invocations can&rsquo;t be inlined (FFI works at the symbol level) so they will always
+have a function call indirection. <code>no_std</code> embedded applications are both performance and binary
+size sensitive; the indirection would put us behind C / C++ in both aspects.</p>
+</li>
+<li>
+<p>The function call indirection also makes impossible to have safe wrappers around things like &ldquo;read
+the   Program Counter&rdquo;, or &ldquo;read the Link Register&rdquo;. It also reduces the effectiveness of
+breakpoint instructions: the debugger ends in the wrong stack frame.</p>
+</li>
+<li>
+<p>You can&rsquo;t do <code>global_asm!</code> because of the FFI call. We use <code>global_asm!</code> in the ARM Cortex-M space
+to implement weak   aliasing since the language doesn&rsquo;t have support for it (C does).</p>
+</li>
+<li>
+<p>This adds a dependency on an external assembler or, worst, a C compiler (the implementation used a
+C compiler last time I checked). I would consider that a tooling regression. Today, building ARM
+Cortex-M applications only requires an external linker and we use <code>ld</code>, not <code>gcc</code>. LLD also
+works as a linker and as soon as LLD lands in rustc Cortex-M builds won&rsquo;t require <em>any external
+tool</em>.</p>
+</li>
+</ul>
+<p>Bottom line: we need proper inline assembly to be stabilized. And, yes, I know it&rsquo;s hard; which is
+why I don&rsquo;t have any suggestion here :-).</p>
+<h3 id="panic_fmt"><code>panic_fmt</code></h3>
+<p>I wrote an <a href="https://github.com/rust-lang/rfcs/blob/master/text/2070-panic-implementation.md">RFC</a> for adding a stable mechanism to specify panicking behavior in <code>no_std</code>
+applications that would remove the need for the <code>panic_fmt</code> lang item. The RFC has been accepted but
+it has not been implemented yet. If you are looking for ways to help solve the instability problem
+<a href="https://github.com/rust-lang/rust/issues/44489">implementing that RFC</a> would be a great contribution!</p>
+<h1 id="the-no_std--std-gap">The <code>no_std</code> / <code>std</code> gap</h1>
+<p>Only a small fragment of crates.io ecosystem is <code>no_std</code> compatible but there are several crates
+in the <code>std</code>-only category that could become <code>no_std</code> compatible:</p>
+<ul>
+<li>
+<p>Some <code>std</code>-only crates can become <code>no_std</code> compatible simply by adding <code>#![no_std]</code> to the source
+code. Many times this wasn&rsquo;t done from the beginning because the author wasn&rsquo;t aware it was possible
+or because <code>#![no_std]</code> wasn&rsquo;t a priority for them.</p>
+</li>
+<li>
+<p>Some <code>std</code>-only crates only depend on re-exported things that are defined in the <code>core</code> and
+<code>collections</code> crates. These could become <code>no_std</code> compatible by adding a <code>&quot;std&quot;</code> Cargo feature,
+<code>#[cfg(not(std))] extern collections</code>, and a few other <code>#[cfg]</code> statements here and there.</p>
+</li>
+<li>
+<p>Some <code>std</code>-only crates depend on abstractions, like <code>CStr</code> and <code>HashMap</code>, that are defined in
+<code>std</code> but that don&rsquo;t depend on OS abstractions like threads, sockets, etc.. This situation has led
+<code>no_std</code> developers to <em>fork</em> these <code>std</code> abstractions to make them <code>no_std</code> compatible (cf.
+<a href="https://crates.io/crates/cstr_core"><code>cstr_core</code></a> and <a href="https://crates.io/crates/hashmap_core"><code>hashmap_core</code></a>) with the goal of making these crates.io crates <code>no_std</code>
+compatible.</p>
+</li>
+</ul>
+<p>Making a crate <code>no_std</code> compatible needs to become simpler to avoid the scenario where people prefer
+to create a <em>new</em> <code>no_std</code> compatible crate instead of making the ones already published <code>no_std</code>
+compatible.</p>
+<p>I don&rsquo;t have good suggestions here. Perhaps the first scenario could be improved with some <code>rustc</code> /
+clippy lint that points out that the crate can be marked as <code>no_std</code> compatible. The second and
+third scenarios <em>might</em> be addressed by the portable lint stuff, but I&rsquo;m not familiar with that
+feature.</p>
+<p>UPDATE(2018-01-22) I think <a href="https://www.reddit.com/r/rust/comments/7s0m6f/eir_embedded_rust_in_2018/dt1f5r2/">this comment</a> by /u/Zoxc32 would be a great solution to the last two
+scenarios.</p>
+<h1 id="better-ide-support">Better IDE support</h1>
+<p>Another thing that C embedded developers are used to work with are IDEs with integrated embedded
+tooling: register views, tracing and profiling. Of course, I&rsquo;m not going to ask the Rust team to
+implement embedded tooling but improvements to the RLS improve the IDE experience for everyone so
+those are very welcome.</p>
+<h2 id="code-completion">Code completion</h2>
+<p>I&rsquo;m personally really looking forward to <em>awesome</em> code completion support in the RLS. Recently I&rsquo;ve
+been writing some crates using <a href="https://crates.io/crates/svd2rust">svd2rust</a> generated APIs and I&rsquo;m afraid to admit that I had to
+<em>disable</em> auto completion because it was slowing down my coding with delays of around one second and
+because it didn&rsquo;t provide assistance where I needed it (it didn&rsquo;t suggest methods). <code>svd2rust</code>
+generated crates are huge though; they usually contain thousands of structs, each one with a handful
+of methods. I hope RLS powered code completion will be able to handle them!</p>
+<h1 id="language-features">Language features</h1>
+<p>In embedded programs we tend to use a bunch of <code>static</code> variables. There are still some limitations
+around <code>static</code> variables but some planned features would solve them. I&rsquo;m personally looking forward
+to these features:</p>
+<h2 id="impl-trait-everywhere"><code>impl Trait</code> everywhere</h2>
+<p>As I mentioned in my <a href="/brave-new-io">previous</a> blog post we want to write generic async drivers but to do that we
+need traits whose methods return generators and that doesn&rsquo;t work right now so we are blocked on
+that front.</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#66d9ef">trait</span> Write {
+    <span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">write_all</span><span style="color:#f92672">&lt;</span>B<span style="color:#f92672">&gt;</span>(
+        self,
+        buffer: <span style="color:#a6e22e">B</span>,
+    ) -&gt; <span style="color:#a6e22e">impl</span> Generator<span style="color:#f92672">&lt;</span>Return <span style="color:#f92672">=</span> (Self, B), Yield <span style="color:#f92672">=</span> ()<span style="color:#f92672">&gt;</span> <span style="color:#66d9ef">where</span> ..;
+    <span style="color:#75715e">// `-&gt; Box&lt;..&gt;` would work but don&#39;t want to depend on a memory allocator
+</span><span style="color:#75715e"></span>}
+</code></pre></div><p>There&rsquo;s also a use case for storing generators in <code>static</code> variables. That could potentially let us
+write reactive code (code that gets dispatched in interrupt handlers) in a more natural way
+(&ldquo;straight line&rdquo; code). Today, that reactive style requires hand writing state machines.</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#75715e">// Some DSL (macro) could expand to something like this
+</span><span style="color:#75715e"></span>
+<span style="color:#66d9ef">static</span> <span style="color:#66d9ef">mut</span> GN: Option<span style="color:#f92672">&lt;</span><span style="color:#66d9ef">impl</span> Generator<span style="color:#f92672">&lt;</span>Return <span style="color:#f92672">=</span> (), Yield <span style="color:#f92672">=</span> ()<span style="color:#f92672">&gt;&gt;</span> <span style="color:#f92672">=</span> None;
+
+<span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">interrupt_handler</span>() {
+    <span style="color:#75715e">// do some magic with `GN`
+</span><span style="color:#75715e"></span>}
+</code></pre></div><h2 id="const-generics">Const generics</h2>
+<p>Often we need collections like <a href="https://docs.rs/heapless/0.2.1/heapless/struct.Vec.html"><code>Vec</code></a>s and <a href="https://docs.rs/heapless/0.2.1/heapless/ring_buffer/struct.RingBuffer.html">queues</a> with fixed, known at compile time, capacities.
+Those collections internally use arrays as buffers and need to have their capacity (the array size)
+parametrized in their types. The problem is that the capacity is a number not a type.</p>
+<p>I tried using <code>AsRef</code> and <code>AsMut</code> as bounds but they didn&rsquo;t cut it because they are limited to
+arrays of 32 elements.</p>
+<pre><code>fn example&lt;T&gt;(xs: &amp;T) where
+    T: AsRef&lt;[u8]&gt;,
+{
+    // ..
+}
+
+let xs = [0; 33];
+example(&amp;xs);
+//~^ error: `AsRef&lt;[u8]&gt;` not implemented for `[u8; 33]`
+</code></pre><p>So I&rsquo;m currently using the <code>Unsize</code> trait and it works for arrays of any size but it&rsquo;s a hack (not
+its intended usage) and it makes type signatures weird.</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#66d9ef">struct</span> Vec<span style="color:#f92672">&lt;</span>T, B<span style="color:#f92672">&gt;</span>
+<span style="color:#66d9ef">where</span>
+    B: <span style="color:#a6e22e">Unsize</span><span style="color:#f92672">&lt;</span>[T]<span style="color:#f92672">&gt;</span>,
+{
+    buffer: <span style="color:#a6e22e">B</span>, <span style="color:#75715e">// B is effectively `[T; N]`
+</span><span style="color:#75715e"></span>    <span style="color:#75715e">/* .. */</span>
+}
+
+<span style="color:#66d9ef">impl</span><span style="color:#f92672">&lt;</span>T, B<span style="color:#f92672">&gt;</span> Vec<span style="color:#f92672">&lt;</span>T, B<span style="color:#f92672">&gt;</span>
+<span style="color:#66d9ef">where</span>
+    B: <span style="color:#a6e22e">Unsize</span><span style="color:#f92672">&lt;</span>[T]<span style="color:#f92672">&gt;</span>,
+{
+    <span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">pop</span>(<span style="color:#f92672">&amp;</span><span style="color:#66d9ef">mut</span> self) -&gt; Option<span style="color:#f92672">&lt;</span>T<span style="color:#f92672">&gt;</span> {
+        <span style="color:#75715e">// unsize the array
+</span><span style="color:#75715e"></span>        <span style="color:#66d9ef">let</span> slice: <span style="color:#66d9ef">&amp;</span><span style="color:#a6e22e">mut</span> [T] <span style="color:#f92672">=</span> <span style="color:#f92672">&amp;</span><span style="color:#66d9ef">mut</span> self.array;
+        <span style="color:#75715e">// ..
+</span><span style="color:#75715e"></span>    }
+}
+
+<span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">example</span>(xs: <span style="color:#66d9ef">&amp;</span><span style="color:#a6e22e">mut</span> Vec<span style="color:#f92672">&lt;</span><span style="color:#66d9ef">u8</span>, [<span style="color:#66d9ef">u8</span>; <span style="color:#ae81ff">33</span>]<span style="color:#f92672">&gt;</span>) { .. }
+<span style="color:#75715e">//                      odd ^^^^^^^^
+</span></code></pre></div><p>With const generics we would be able to <em>directly</em> parametrize the capacity in the <code>Vec</code> type:</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#66d9ef">struct</span> Vec<span style="color:#f92672">&lt;</span>T, <span style="color:#66d9ef">const</span> N: <span style="color:#66d9ef">usize</span><span style="color:#f92672">&gt;</span> {
+    buffer: [T; N],
+    <span style="color:#75715e">/* .. */</span>
+}
+
+<span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">example</span>(xs: <span style="color:#66d9ef">&amp;</span><span style="color:#a6e22e">mut</span> Vec<span style="color:#f92672">&lt;</span><span style="color:#66d9ef">u8</span>, <span style="color:#ae81ff">33</span><span style="color:#f92672">&gt;</span>) { .. }
+<span style="color:#75715e">//                   better ^^
+</span></code></pre></div><p>This one&rsquo;s not a blocker but would be nice to have. We only need the most basic version of const
+generics, which has already been accepted, so I&rsquo;m hoping it gets implemented sooner than latter.</p>
+<hr>
+<p>That&rsquo;s my wishlist for the Rust team. Let&rsquo;s make 2018 a great year for embedded Rust!</p>
+<p>Let&rsquo;s discuss on <a href="https://www.reddit.com/r/rust/comments/7s0m6f/eir_embedded_rust_in_2018/">reddit</a>.</p>
+
+    </div>
+
+    
+    
+    <div class="article-toc" >
+        <h3>Contents</h3>
+        <nav id="TableOfContents">
+  <ul>
+    <li><a href="#establishing-a-first-line-of-defense">Establishing a first line of defense</a></li>
+    <li><a href="#stabilization-in-baby-steps">Stabilization in baby steps</a>
+      <ul>
+        <li><a href="#xargo">Xargo</a></li>
+        <li><a href="#const-fn"><code>const fn</code></a></li>
+        <li><a href="#asm"><code>asm!</code></a></li>
+        <li><a href="#panic_fmt"><code>panic_fmt</code></a></li>
+      </ul>
+    </li>
+  </ul>
+
+  <ul>
+    <li><a href="#code-completion">Code completion</a></li>
+  </ul>
+
+  <ul>
+    <li><a href="#impl-trait-everywhere"><code>impl Trait</code> everywhere</a></li>
+    <li><a href="#const-generics">Const generics</a></li>
+  </ul>
+</nav>
+    </div>
+    
+    
+
+    
+  </div>
+</section>
+
+
+<section class="section">
+  <div class="container has-text-centered">
+    <p><a rel="license" href="http://creativecommons.org/licenses/by/4.0/"><img alt="Creative Commons License" src="https://i.creativecommons.org/l/by/4.0/80x15.png" /></a><br/>Jorge Aparicio</p>
+  </div>
+</section>
+
+
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/styles/tomorrow-night.min.css" />
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/highlight.min.js" integrity="sha256-aYTdUrn6Ow1DDgh5JTc3aDGnnju48y/1c8s1dgkYPQ8=" crossorigin="anonymous"></script>
+
+<script type="text/javascript" src="//cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/languages/armasm.min.js"></script>
+
+<script type="text/javascript" src="//cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/languages/c.min.js"></script>
+
+<script type="text/javascript" src="//cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/languages/diff.min.js"></script>
+
+<script type="text/javascript" src="//cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/languages/llvm.min.js"></script>
+
+<script type="text/javascript" src="//cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/languages/rust.min.js"></script>
+
+<script type="text/javascript" src="//cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/languages/shell.min.js"></script>
+
+<script>hljs.initHighlightingOnLoad();</script>
+
+
+</body>

@@ -1,0 +1,1593 @@
+<!DOCTYPE html>
+<html lang="en-us">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta content="Rust, embedded, development" name="keywords">
+<meta content="Jorge Aparicio" name="author">
+<meta property="og:title" content="Overhead analysis of the RTFM framework - Embedded in Rust">
+<meta property="og:url" content="https://blog.japaric.io/rtfm-overhead/">
+<meta property="og:description" content="A blog about Rust and embedded stuff">
+<meta property="og:type" content="website" />
+<title>Overhead analysis of the RTFM framework | Embedded in Rust</title>
+<link rel="stylesheet" href="https://blog.japaric.io//css/style.css">
+<link rel="shortcut icon" href="https://blog.japaric.io//wave.ico">
+<link rel="alternate" type="application/atom+xml" title="Embedded in Rust Posts" href="https://blog.japaric.io//index.xml">
+<link href="//maxcdn.bootstrapcdn.com/font-awesome/4.7.0/css/font-awesome.min.css" rel="stylesheet" integrity="sha384-wvfXpqpZZVQGK6TAh5PVlGOfQNHSoD2xbE+QkPxCAFlNEevoEH3Sl0sibVcOQVnN" crossorigin="anonymous">
+
+<link rel="stylesheet" href="//cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/styles/github.min.css">
+
+</head>
+
+<body>
+<section class="section">
+  <div class="container">
+    <nav class="nav">
+      <div class="nav-left">
+        <a class="nav-item" href="https://blog.japaric.io/"><h1 class="title is-4">Embedded in Rust</h1></a>
+      </div>
+      <div class="nav-right">
+        <nav class="nav-item level is-mobile">
+          
+          <a class="level-item" href="https://github.com/japaric" target="_blank">
+            <span class="icon">
+              <i class="fa fa-github"></i>
+            </span>
+          </a>
+          
+          <a class="level-item" href="/index.xml" target="_blank">
+            <span class="icon">
+              <i class="fa fa-rss"></i>
+            </span>
+          </a>
+          
+        </nav>
+      </div>
+    </nav>
+  </div>
+</section>
+
+<section class="section">
+  <div class="container">
+    <h1 class="title">Overhead analysis of the RTFM framework</h1>
+    <h2 class="subtitle is-5">May 23, 2017 by Jorge Aparicio</h2>
+    
+      <div class="tags">
+    
+        <a class="button is-link" href="/tags/arm-cortex-m">ARM Cortex-M</a>
+    
+        <a class="button is-link" href="/tags/rtfm">rtfm</a>
+    
+        <a class="button is-link" href="/tags/analysis">analysis</a>
+    
+</div>
+
+    
+    <div class="content">
+      <hr>
+<p>In the <a href="/fearless-concurrency">last post</a> I introduced the RTFM framework, and made several claims
+about it being highly efficient both in memory usage and runtime overhead. In
+this post I&rsquo;ll analyze all the RTFM concurrency primitives to back up those
+claims. To do that I&rsquo;ll first introduce a <em>non-invasive</em> timing method that&rsquo;s
+accurate to a single clock cycle, which is the time the processor spends to
+execute one of the simplest instructions.</p>
+<p>Let&rsquo;s dive in.</p>
+<blockquote>
+<p><strong>NB</strong> All the measurements shown in this post have been performed on a Cortex
+M3 microcontroller (STM32F100RBT6B) running at 8 MHz with zero Flash memory
+wait states.</p>
+</blockquote>
+<h1 id="the-timing-method">The timing method</h1>
+<h2 id="dwt-and-cyccnt">DWT and CYCCNT</h2>
+<p>Cortex-M processors provide plenty of functionality for debugging and profiling
+programs in the form of <em>core</em> peripherals. One such peripheral is the Data
+Watchpoint and Trace (DWT) peripheral. This peripheral includes a <em>cycle
+counter</em> that counts every single <em>core</em> clock cycle. The core clock is the one
+driving the processor; its frequency is the processor frequency. This counter
+only makes progress when the processor is running; IOW, the counter will stop
+when, for example, the debugger halts the processor. The count of this cycle
+counter is available through the 32-bit CYCCNT register of the DWT peripheral.</p>
+<p>How can we use this counter to measure the runtime of routines?</p>
+<h2 id="the-obvious-approach">The obvious approach</h2>
+<p>Let&rsquo;s say that we want to measure how many clock cycles it takes to execute a
+NOP (No OPeration) instruction. Let&rsquo;s start by writing a task that executes only
+that instruction:</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#66d9ef">use</span> cortex_m::asm;
+
+<span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">t1</span>(_task: <span style="color:#a6e22e">Exti0Irq</span>, _prio: <span style="color:#a6e22e">P1</span>, _thr: <span style="color:#a6e22e">T1</span>) {
+    asm::nop();
+}
+</code></pre></div><p>This is the disassembly of the task when the program is compiled in release
+mode:</p>
+<pre><code class="language-armasm" data-lang="armasm">0800032e &lt;overhead::main::INTERRUPTS::t1&gt;:
+ 800032e:	bf00      	nop
+ 8000330:	4770      	bx	lr
+</code></pre><p>The obvious approach to time this NOP is to use <a href="https://doc.rust-lang.org/std/time/struct.Instant.html#method.elapsed">the <code>std</code> approach</a>. As long as
+we don&rsquo;t modify the CYCCNT register the cycle counter will effectively be a
+monotonically increasing timer. So, we can take a snapshot of CYCCNT before and
+after the NOP instruction; the difference between those two values will be the
+number of clock cycles spent executing the NOP instruction (<em>spoilers</em> well, not
+exactly).</p>
+<p>Here&rsquo;s a program that does that:</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">init</span>(<span style="color:#66d9ef">ref</span> prio: <span style="color:#a6e22e">P0</span>, thr: <span style="color:#a6e22e">TMax</span>) {
+    <span style="color:#75715e">// NB the cycle counter is disabled by default
+</span><span style="color:#75715e"></span>    <span style="color:#66d9ef">let</span> dwt <span style="color:#f92672">=</span> DWT.access(prio, thr);
+    dwt.enable_cycle_counter();
+}
+
+<span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">t1</span>(_task: <span style="color:#a6e22e">Exti0Irq</span>, <span style="color:#66d9ef">ref</span> prio: <span style="color:#a6e22e">P1</span>, <span style="color:#66d9ef">ref</span> thr: <span style="color:#a6e22e">T1</span>) {
+    <span style="color:#66d9ef">let</span> dwt <span style="color:#f92672">=</span> DWT.access(prio, thr);
+
+    <span style="color:#66d9ef">let</span> before <span style="color:#f92672">=</span> dwt.cyccnt.read();
+    asm::nop();
+    <span style="color:#66d9ef">let</span> after <span style="color:#f92672">=</span> dwt.cyccnt.read();
+
+    <span style="color:#66d9ef">let</span> elapsed <span style="color:#f92672">=</span> after.wrapping_sub(before);
+
+    <span style="color:#75715e">// volatile magic to prevent LLVM from optimizing away `elapsed`&#39;s value
+</span><span style="color:#75715e"></span>    <span style="color:#66d9ef">unsafe</span> { ptr::write_volatile(<span style="color:#ae81ff">0x2000_0000</span> <span style="color:#66d9ef">as</span> <span style="color:#f92672">*</span><span style="color:#66d9ef">mut</span> _, elapsed) }
+
+    rtfm::bkpt();
+}
+</code></pre></div><p>(The full code of this program is in the <a href="#appendix">appendix</a>. We&rsquo;ll perform
+several modifications to this program during the rest of this post.)</p>
+<p>This program will store the difference of the CYCCNT snapshots at address
+<code>0x2000_0000</code>. Let&rsquo;s debug the program and inspect that address.</p>
+<pre><code>$ arm-none-eabi-gdb target/thumbv7m-none-eabi/release/(..)
+(..)
+&gt; continue
+66          rtfm::bkpt();
+
+&gt; x 0x20000000
+0x20000000:     0x00000002
+</code></pre><p>The result, according to the measurement, is 2 clock cycles. That is <em>not</em> the
+number of clock cycles spent executing the NOP instruction because that number
+also includes the time spent reading the CYCCNT register. The correct answer is
+actually 1 clock cycle; the other cycle was spent reading the register.</p>
+<p>This method is rather invasive: it heavily changes the original program and
+makes use of processor registers that weren&rsquo;t being used before. Look at the
+disassembly:</p>
+<pre><code class="language-armasm" data-lang="armasm">0800032e &lt;overhead::main::INTERRUPTS::t1&gt;:
+ 800032e:	f241 0004 	movw	r0, #4100	; 0x1004
+ 8000332:	f2ce 0000 	movt	r0, #57344	; 0xe000
+ 8000336:	6801      	ldr	r1, [r0, #0]	; read CYCCNT
+ 8000338:	bf00      	nop
+ 800033a:	6800      	ldr	r0, [r0, #0]	; read CYCCNT
+ 800033c:	1a40      	subs	r0, r0, r1
+ 800033e:	f04f 5100 	mov.w	r1, #536870912	; 0x20000000
+ 8000342:	6008      	str	r0, [r1, #0]
+ 8000344:	be00      	bkpt	0x0000
+ 8000346:	4770      	bx	lr
+</code></pre><p>We can do much better than that.</p>
+<h2 id="a-better-approach">A better approach</h2>
+<p>Instead of reading the CYCCNT register in the program itself we can use GDB to
+read the register. With this approach no processor register has to be used. This
+approach can also be used in an <em>interactive</em> debug session since the cycle
+counter will pause its count when the processor is halted.</p>
+<p>Let&rsquo;s revise the program to use this new approach:</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">t1</span>(_task: <span style="color:#a6e22e">Exti0Irq</span>, _prio: <span style="color:#a6e22e">P1</span>, _thr: <span style="color:#a6e22e">T1</span>) {
+    rtfm::bkpt(); <span style="color:#75715e">// read CYCCNT in GDB
+</span><span style="color:#75715e"></span>    asm::nop();
+    rtfm::bkpt(); <span style="color:#75715e">// read CYCCNT in GDB
+</span><span style="color:#75715e"></span>}
+</code></pre></div><p>The disassembly now looks very similar to the original program&rsquo;s:</p>
+<pre><code class="language-armasm" data-lang="armasm">0800032e &lt;overhead::main::INTERRUPTS::t1&gt;:
+ 800032e:	be00      	bkpt	0x0000		; read CYCCNT
+ 8000330:	bf00      	nop
+ 8000332:	be00      	bkpt	0x0000		; read CYCCNT
+ 8000334:	4770      	bx	lr
+</code></pre><p>The CYCCNT register is located at address <code>0xe000_1004</code>; this location is the
+same regardless of the microcontroller. Let&rsquo;s debug this new program and inspect
+that address.</p>
+<pre><code class="language-console" data-lang="console">&gt; continue
+&gt; info registers pc
+pc             0x800032e        0x800032e &lt;overhead::main::INTERRUPTS::t1&gt;
+
+&gt; x 0xe0001004
+0xe0001004:     0x0074e9dc
+
+&gt; continue
+&gt; info registers pc
+pc             0x8000332        0x8000332 &lt;overhead::main::INTERRUPTS::t1+4&gt;
+
+&gt; x 0xe0001004
+0xe0001004:     0x0074e9dd
+
+&gt; print 0x0074e9dd - 0x0074e9dc
+$1 = 1
+</code></pre><p>This time the measurement returns the correct answer: Executing NOP took a
+single clock cycle.</p>
+<p>Armed with a proper timing method we can go ahead and start measuring the
+runtime overhead of the different RTFM primitives.</p>
+<h1 id="tasks">Tasks</h1>
+<p>Under the RTFM framework a program is split in tasks; tasks are the unit of
+concurrency in the RTFM framework. Tasks are usually triggered by events, but
+their execution can be manually requested as well. Each task is assigned a
+priority that indicates its urgency. Let&rsquo;s analyze them first.</p>
+<h2 id="scheduling">Scheduling</h2>
+<p>The RTFM scheduler is a tickless fully preemptive <em>task</em> scheduler. The
+scheduler decides which task to execute next depending on its priority: higher
+priority tasks are more urgent and have to be completed first so those tasks can
+preempt lower priority ones.</p>
+<p>In the Cortex-M implementation of the RTFM framework tasks <em>are</em> interrupts and
+the Nested Vectored Interrupt Controller (<a href="http://infocenter.arm.com/help/index.jsp?topic=/com.arm.doc.dui0552a/CIHIGCIF.html">NVIC</a>) is used as the task scheduler.
+The NVIC takes care of servicing interrupts: that is of launching interrupts
+handlers (tasks) as events arrive, and also of scheduling the execution of
+handlers (tasks) according to their priorities. Because RTFM leverages the NVIC
+no task bookkeeping is done in the program; the NVIC takes care of doing all
+the scheduling.</p>
+<p>IOW, the scheduling overhead is effectively zero. The NVIC, which is hardware
+independent of the processor, will take care of scheduling tasks, that is of
+deciding which task must be executed next, freeing the core processor from doing
+the job.</p>
+<blockquote>
+<p>The scheduling overhead is zero</p>
+</blockquote>
+<h2 id="context-switching">Context switching</h2>
+<p>Context switches do use processor time so let&rsquo;s measure their cost.</p>
+<h3 id="preemption">Preemption</h3>
+<p>We&rsquo;ll start measuring the context switching cost of going from a lower priority
+task to a higher priority task.</p>
+<p>This is the code we&rsquo;ll use to measure the context switching cost:</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">t1</span>(_task: <span style="color:#a6e22e">Exti0Irq</span>, _prio: <span style="color:#a6e22e">P1</span>, _thr: <span style="color:#a6e22e">T1</span>) {
+    rtfm::bkpt();
+
+    <span style="color:#75715e">// task `t2` will preempt this task
+</span><span style="color:#75715e"></span>    rtfm::request(t2);
+
+    rtfm::bkpt();
+}
+
+<span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">t2</span>(_task: <span style="color:#a6e22e">Exti1Irq</span>, _prio: <span style="color:#a6e22e">P2</span>, _thr: <span style="color:#a6e22e">T2</span>) {
+    rtfm::bkpt();
+}
+</code></pre></div><p>The disassembly is shown below:</p>
+<pre><code class="language-armasm" data-lang="armasm">08000324 &lt;overhead::main::INTERRUPTS::t1&gt;:
+ 8000324:	f24e 2000 	movw	r0, #57856	; 0xe200
+ 8000328:	2180      	movs	r1, #128	; 0x80
+ 800032a:	be00      	bkpt	0x0000
+ 800032c:	f2ce 0000 	movt	r0, #57344	; 0xe000
+ 8000330:	6001      	str	r1, [r0, #0]	; read CYCCNT
+ 8000332:	be00      	bkpt	0x0000		; read CYCCNT
+ 8000334:	4770      	bx	lr
+
+08000336 &lt;overhead::main::INTERRUPTS::t2&gt;:
+ 8000336:	be00      	bkpt	0x0000		; read CYCCNT
+ 8000338:	4770      	bx	lr
+</code></pre><p>The disassembly contains comments that indicate the points where the CYCCNT
+register will be read. The debug session of running this code is shown below:</p>
+<pre><code class="language-console" data-lang="console">&gt; continue
+&gt; stepi
+&gt; # PC = 0x08000330, (CYCCNT &amp; 0xff) = 0x3a
+
+&gt; continue
+&gt; # PC = 0x08000336, (CYCCNT &amp; 0xff) = 0x45
+
+&gt; continue
+&gt; # pc = 0x08000332, (CYCCNT &amp; 0xff) = 0x4f
+
+&gt; print 0x45 - 0x3a
+$1 = 11
+
+&gt; print 0x4f - 0x45
+$2 = 10
+</code></pre><p>The first difference is 11 cycles; this is the time spent switching from the
+lower priority task to the higher priority one. In the ARM documentation this
+switching time is known as interrupt latency <sup id="fnref:1"><a href="#fn:1" class="footnote-ref" role="doc-noteref">1</a></sup>, the latency between the
+interrupt signal arrival and the execution of the interrupt handler.</p>
+<p>The second difference is 10 cycles; this is the time spent switching from the
+higher priority task back to the lower priority one. So the total context
+switching cost is the sum: 21 cycles.</p>
+<blockquote>
+<p>Interrupt latency = 11 cycles</p>
+</blockquote>
+<blockquote>
+<p>Context switching cost (preemption) = 21 cycles</p>
+</blockquote>
+<h4 id="extra-register-stacking">Extra register stacking</h4>
+<p>In the previous measurement the higher priority task was an empty function, and
+didn&rsquo;t make use of any register. The context switching cost will increase if the
+higher priority task uses more than 5 registers because registers #6 and higher
+won&rsquo;t be automatically saved and restored by the NVIC, so extra instructions are
+needed to do that. Those extra instructions will be automatically inserted by
+the compiler as the <em>prologue</em> of the task function. We need to consider the
+time spent executing the prologue as part of the context switching cost because
+the prologue will be executed before the task code we wrote is executed.</p>
+<p>We can force the task <code>t2</code> to use more than 5 registers with some assembly:</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">t1</span>(_task: <span style="color:#a6e22e">Exti0Irq</span>, _prio: <span style="color:#a6e22e">P1</span>, _thr: <span style="color:#a6e22e">T1</span>) {
+    rtfm::bkpt();
+
+    <span style="color:#75715e">// task `t2` will preempt this task
+</span><span style="color:#75715e"></span>    rtfm::request(t2);
+
+    rtfm::bkpt();
+}
+
+<span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">t2</span>(_task: <span style="color:#a6e22e">Exti1Irq</span>, _prio: <span style="color:#a6e22e">P1</span>, _thr: <span style="color:#a6e22e">T1</span>) {
+    <span style="color:#75715e">// load values from 0 to 5 into 6 registers
+</span><span style="color:#75715e"></span>    <span style="color:#66d9ef">unsafe</span> {
+        asm<span style="color:#f92672">!</span>(<span style="color:#e6db74">&#34;&#34;</span> :: <span style="color:#e6db74">&#34;r&#34;</span>(<span style="color:#ae81ff">0</span>) <span style="color:#e6db74">&#34;r&#34;</span>(<span style="color:#ae81ff">1</span>) <span style="color:#e6db74">&#34;r&#34;</span>(<span style="color:#ae81ff">2</span>) <span style="color:#e6db74">&#34;r&#34;</span>(<span style="color:#ae81ff">3</span>) <span style="color:#e6db74">&#34;r&#34;</span>(<span style="color:#ae81ff">4</span>) <span style="color:#e6db74">&#34;r&#34;</span>(<span style="color:#ae81ff">5</span>) :: <span style="color:#e6db74">&#34;volatile&#34;</span>);
+    }
+
+    rtfm::bkpt();
+}
+</code></pre></div><p>The disassembly of the above code is shown below:</p>
+<pre><code class="language-armasm" data-lang="armasm">08000324 &lt;overhead::main::INTERRUPTS::t1&gt;:
+ 8000324:	f24e 2000 	movw	r0, #57856	; 0xe200
+ 8000328:	2180      	movs	r1, #128	; 0x80
+ 800032a:	be00      	bkpt	0x0000
+ 800032c:	f2ce 0000 	movt	r0, #57344	; 0xe000
+ 8000330:	6001      	str	r1, [r0, #0]	; read CYCCNT
+ 8000332:	be00      	bkpt	0x0000		; read CYCCNT
+ 8000334:	4770      	bx	lr
+
+08000336 &lt;overhead::main::INTERRUPTS::t2&gt;:
+ 8000336:	b580      	push	{r7, lr}
+ 8000338:	466f      	mov	r7, sp
+ 800033a:	f04f 0c00 	mov.w	ip, #0		; read CYCCNT
+ 800033e:	f04f 0e01 	mov.w	lr, #1
+ 8000342:	2202      	movs	r2, #2
+ 8000344:	2303      	movs	r3, #3
+ 8000346:	2004      	movs	r0, #4
+ 8000348:	2105      	movs	r1, #5
+ 800034a:	be00      	bkpt	0x0000		; read CYCCNT
+ 800034c:	bd80      	pop	{r7, pc}
+</code></pre><p>The <code>push</code> and the following <code>mov</code> instructions at address <code>0x08000336</code> are the
+prologue of the function <code>t2</code>. For the measurement we&rsquo;ll read the CYCCNT
+register <em>after</em> the prologue of <code>t2</code> has been executed as indicated in the
+comments of the disassembly.</p>
+<p>The debug session is shown bellow:</p>
+<pre><code class="language-console" data-lang="console">&gt; continue
+&gt; stepi
+&gt; # PC = 0x08000330, (CYCCNT &amp; 0xff) = 0xd4
+
+&gt; break overhead::main::INTERRUPTS::t2
+&gt; continue
+&gt; # PC = 0x0800033a, (CYCCNT &amp; 0xff) = 0xe3
+
+&gt; continue
+&gt; # PC = 0x0800034a, (CYCCNT &amp; 0xff) = 0xe9
+
+&gt; continue
+&gt; # PC = 0x08000332, (CYCCNT &amp; 0xff) = 0xf6
+
+&gt; print 0xe3 - 0xd4
+$1 = 15
+
+&gt; print 0xf6 - 0xe9
+$2 = 13
+</code></pre><p>The interrupt latency increases to 15 cycles and the total switching cost
+increases to 28 cycles. Let&rsquo;s update our numbers:</p>
+<blockquote>
+<p>Interrupt latency = 11-15 cycles</p>
+</blockquote>
+<blockquote>
+<p>Context switching cost (preemption) = 21-28 cycles</p>
+</blockquote>
+<h4 id="vs-function-calls">vs function calls</h4>
+<p>Task preemption looks very similar to function calls except that is the
+NVIC, and not the user, who calls the tasks. Let&rsquo;s see how the runtime cost of
+preemption compares to the runtime cost of doing a function call.</p>
+<p>Consider the following program:</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">t1</span>(_task: <span style="color:#a6e22e">Exti0Irq</span>, _prio: <span style="color:#a6e22e">P1</span>, _thr: <span style="color:#a6e22e">T1</span>) {
+    rtfm::bkpt();
+
+    foo();
+
+    rtfm::bkpt();
+}
+
+<span style="color:#75715e">#[inline(never)]</span>
+<span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">foo</span>() {
+    rtfm::bkpt();
+}
+</code></pre></div><p>With disassembly:</p>
+<pre><code class="language-armasm" data-lang="armasm">0800032e &lt;overhead::foo&gt;:
+ 800032e:	be00      	bkpt	0x0000		; read CYCCNT
+ 8000330:	4770      	bx	lr
+
+08000332 &lt;overhead::main::INTERRUPTS::t1&gt;:
+ 8000332:	b580      	push	{r7, lr}
+ 8000334:	466f      	mov	r7, sp
+ 8000336:	be00      	bkpt	0x0000		; read CYCCNT
+ 8000338:	f7ff fff9 	bl	800032e &lt;overhead::foo&gt;
+ 800033c:	be00      	bkpt	0x0000		; read CYCCNT
+ 800033e:	bd80      	pop	{r7, pc}
+</code></pre><p>The debug session reports 4 cycles of overhead:</p>
+<pre><code>&gt; continue
+&gt; # PC = 0x08000336, (CYCCNT &amp; 0xff) = 0x70
+
+&gt; continue
+&gt; # PC = 0x0800032e, (CYCCNT &amp; 0xff) = 0x72
+
+&gt; continue
+&gt; # PC = 0x0800033c, (CYCCNT &amp; 0xff) = 0x74
+
+&gt; print 0x74 - 0x70
+$1 = 4
+</code></pre><p>Like before we can repeat the measurement but changing <code>foo</code> to use more than 5
+registers.</p>
+<p>Here&rsquo;s the revised program:</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">t1</span>(_task: <span style="color:#a6e22e">Exti0Irq</span>, _prio: <span style="color:#a6e22e">P1</span>, _thr: <span style="color:#a6e22e">T1</span>) {
+    rtfm::bkpt();
+
+    foo();
+
+    rtfm::bkpt();
+}
+
+<span style="color:#75715e">#[inline(never)]</span>
+<span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">foo</span>() {
+    <span style="color:#66d9ef">unsafe</span> {
+        asm<span style="color:#f92672">!</span>(<span style="color:#e6db74">&#34;&#34;</span> :: <span style="color:#e6db74">&#34;r&#34;</span>(<span style="color:#ae81ff">0</span>) <span style="color:#e6db74">&#34;r&#34;</span>(<span style="color:#ae81ff">1</span>) <span style="color:#e6db74">&#34;r&#34;</span>(<span style="color:#ae81ff">2</span>) <span style="color:#e6db74">&#34;r&#34;</span>(<span style="color:#ae81ff">3</span>) <span style="color:#e6db74">&#34;r&#34;</span>(<span style="color:#ae81ff">4</span>) <span style="color:#e6db74">&#34;r&#34;</span>(<span style="color:#ae81ff">5</span>) :: <span style="color:#e6db74">&#34;volatile&#34;</span>);
+    }
+
+    rtfm::bkpt();
+}
+</code></pre></div><p>Disassembly:</p>
+<pre><code class="language-armasm" data-lang="armasm">0800032e &lt;overhead::foo&gt;:
+ 800032e:	b580      	push	{r7, lr}
+ 8000330:	466f      	mov	r7, sp
+ 8000332:	f04f 0c00 	mov.w	ip, #0		; read CYCCNT
+ 8000336:	f04f 0e01 	mov.w	lr, #1
+ 800033a:	2202      	movs	r2, #2
+ 800033c:	2303      	movs	r3, #3
+ 800033e:	2004      	movs	r0, #4
+ 8000340:	2105      	movs	r1, #5
+ 8000342:	be00      	bkpt	0x0000		; read CYCCNT
+ 8000344:	bd80      	pop	{r7, pc}
+
+08000346 &lt;overhead::main::INTERRUPTS::t1&gt;:
+ 8000346:	b580      	push	{r7, lr}
+ 8000348:	466f      	mov	r7, sp
+ 800034a:	be00      	bkpt	0x0000		; read CYCCNT
+ 800034c:	f7ff ffef 	bl	800032e &lt;overhead::foo&gt;
+ 8000350:	be00      	bkpt	0x0000		; read CYCCNT
+ 8000352:	bd80      	pop	{r7, pc}
+</code></pre><p>And the interactive session reports 12 cycles of overhead:</p>
+<pre><code class="language-console" data-lang="console">&gt; continue
+&gt; # PC = 0x0800034a, (CYCCNT &amp; 0xff) = 0x56
+
+&gt; break overhead::foo
+&gt; continue
+&gt; # PC = 0x08000332, (CYCCNT &amp; 0xff) = 0x5c
+
+&gt; continue
+&gt; # PC = 0x08000342, (CYCCNT &amp; 0xff) = 0x62
+
+&gt; continue
+&gt; # PC = 0x08000350, (CYCCNT &amp; 0xff) = 0x68
+
+&gt; print (0x5c - 0x56) + (0x68 - 0x62)
+$1 = 12
+</code></pre><p>In conclusion,</p>
+<blockquote>
+<p>Function call cost = 4-12 cycles</p>
+</blockquote>
+<p>So context switching due to preemption is about 2x slower than function calls.</p>
+<h3 id="tail-chaining">Tail chaining</h3>
+<p>Another case that we need to analyze is when an event arrives during the
+execution of a task but there&rsquo;s no preemption. The following program showcases
+that scenario:</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">t1</span>(_task: <span style="color:#a6e22e">Exti0Irq</span>, _prio: <span style="color:#a6e22e">P1</span>, _thr: <span style="color:#a6e22e">T1</span>) {
+    <span style="color:#75715e">// no preemption (tasks have the same priority)
+</span><span style="color:#75715e"></span>    rtfm::request(t2);
+
+    rtfm::bkpt();
+}
+
+<span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">t2</span>(_task: <span style="color:#a6e22e">Exti1Irq</span>, _prio: <span style="color:#a6e22e">P1</span>, _thr: <span style="color:#a6e22e">T1</span>) {
+    rtfm::bkpt();
+}
+</code></pre></div><p>As both tasks have the same priority no preemption occurs: task <code>t2</code> will be
+executed <em>after</em> task <code>t1</code> ends. This is known as tail chaining because the
+context will switch from <code>t1</code> to <code>t2</code> without returning to <code>idle</code>.</p>
+<p>Disassembly below:</p>
+<pre><code class="language-armasm" data-lang="armasm">08000324 &lt;overhead::main::INTERRUPTS::t1&gt;:
+ 8000324:	f24e 2000 	movw	r0, #57856	; 0xe200
+ 8000328:	2180      	movs	r1, #128	; 0x80
+ 800032a:	f2ce 0000 	movt	r0, #57344	; 0xe000
+ 800032e:	6001      	str	r1, [r0, #0]
+ 8000330:	be00      	bkpt	0x0000		; read CYCCNT
+ 8000332:	4770      	bx	lr
+
+08000334 &lt;overhead::main::INTERRUPTS::t2&gt;:
+ 8000334:	be00      	bkpt	0x0000		; read CYCCNT
+ 8000336:	4770      	bx	lr
+</code></pre><p>Debug session:</p>
+<pre><code>&gt; continue
+&gt; # PC = 0x08000330, CYCCNT = 0x54
+
+&gt; continue
+&gt; # PC = 0x08000334, CYCCNT = 0x5a
+
+&gt; print 0x5a - 0x54
+$1 = 6
+</code></pre><p>The cost of this kind of context switch is 6 cycles.</p>
+<p>Let&rsquo;s measure again but changing <code>t2</code> to use more than 5 registers.</p>
+<p>Revised program:</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">t1</span>(_task: <span style="color:#a6e22e">Exti0Irq</span>, _prio: <span style="color:#a6e22e">P1</span>, _thr: <span style="color:#a6e22e">T1</span>) {
+    rtfm::request(t2);
+
+    rtfm::bkpt();
+}
+
+<span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">t2</span>(_task: <span style="color:#a6e22e">Exti1Irq</span>, _prio: <span style="color:#a6e22e">P1</span>, _thr: <span style="color:#a6e22e">T1</span>) {
+    <span style="color:#66d9ef">unsafe</span> {
+        asm<span style="color:#f92672">!</span>(<span style="color:#e6db74">&#34;&#34;</span> :: <span style="color:#e6db74">&#34;r&#34;</span>(<span style="color:#ae81ff">0</span>) <span style="color:#e6db74">&#34;r&#34;</span>(<span style="color:#ae81ff">1</span>) <span style="color:#e6db74">&#34;r&#34;</span>(<span style="color:#ae81ff">2</span>) <span style="color:#e6db74">&#34;r&#34;</span>(<span style="color:#ae81ff">3</span>) <span style="color:#e6db74">&#34;r&#34;</span>(<span style="color:#ae81ff">4</span>) <span style="color:#e6db74">&#34;r&#34;</span>(<span style="color:#ae81ff">5</span>) :: <span style="color:#e6db74">&#34;volatile&#34;</span>);
+    }
+}
+</code></pre></div><p>Disassembly:</p>
+<pre><code class="language-armasm" data-lang="armasm">08000324 &lt;overhead::main::INTERRUPTS::t1&gt;:
+ 8000324:	f24e 2000 	movw	r0, #57856	; 0xe200
+ 8000328:	2180      	movs	r1, #128	; 0x80
+ 800032a:	f2ce 0000 	movt	r0, #57344	; 0xe000
+ 800032e:	6001      	str	r1, [r0, #0]
+ 8000330:	be00      	bkpt	0x0000		; read CYCCNT
+ 8000332:	4770      	bx	lr
+
+08000334 &lt;overhead::main::INTERRUPTS::t2&gt;:
+ 8000334:	b580      	push	{r7, lr}
+ 8000336:	466f      	mov	r7, sp
+ 8000338:	f04f 0c00 	mov.w	ip, #0		; read CYCCNT
+ 800033c:	f04f 0e01 	mov.w	lr, #1
+ 8000340:	2202      	movs	r2, #2
+ 8000342:	2303      	movs	r3, #3
+ 8000344:	2004      	movs	r0, #4
+ 8000346:	2105      	movs	r1, #5
+ 8000348:	bd80      	pop	{r7, pc}
+</code></pre><p>Debug session:</p>
+<pre><code class="language-console" data-lang="console">&gt; continue
+&gt; # PC = 0x08000330, CYCCNT = 0x50
+
+&gt; break overhead::main::INTERRUPTS::t2
+&gt; continue
+&gt; # PC = 0x08000338, CYCCNT = 0x5a
+
+&gt; print 0x5a - 0x50
+$1 = 10
+</code></pre><p>10 cycles of overhead in the case where <code>t2</code> includes a prologue. In conclusion:</p>
+<blockquote>
+<p>Context switching cost (tail chaining) = 6-10 cycles</p>
+</blockquote>
+<p>Which is around the overhead of function calls.</p>
+<h2 id="memory-overhead">Memory overhead</h2>
+<p>As the NVIC does all the scheduling the processor doesn&rsquo;t keep track of the
+running tasks so there&rsquo;s no memory use on that front. The RTFM framework uses
+task priorities in its API, but as priorities remain fixed at runtime they are
+tracked in the type system and not stored in memory at runtime. In conclusion:</p>
+<blockquote>
+<p>Memory overhead per task = 0 bytes of .bss / .data / .heap memory</p>
+</blockquote>
+<h2 id="setup-cost">Setup cost</h2>
+<p>There is no memory overhead per task, but there is a small setup cost per task.
+Let&rsquo;s take a look at that:</p>
+<h3 id="zero-tasks">Zero tasks</h3>
+<p>Consider the following program with zero tasks:</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#75715e">#[inline(never)]</span>
+<span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">init</span>(_prio: <span style="color:#a6e22e">P0</span>, _thr: <span style="color:#66d9ef">&amp;</span><span style="color:#a6e22e">TMax</span>) {
+    <span style="color:#75715e">// Just to make sure LLVM that doesn&#39;t optimize away this function
+</span><span style="color:#75715e"></span>    rtfm::bkpt();
+}
+
+<span style="color:#75715e">#[inline(never)]</span>
+<span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">idle</span>(_prio: <span style="color:#a6e22e">P0</span>, _thr: <span style="color:#a6e22e">T0</span>) -&gt; <span style="color:#f92672">!</span> {
+    <span style="color:#75715e">// Sleep
+</span><span style="color:#75715e"></span>    <span style="color:#66d9ef">loop</span> {
+        rtfm::wfi();
+    }
+}
+</code></pre></div><p>Both <code>init</code> and <code>idle</code> have been marked as <code>inline(never)</code> to make the analysis
+easier. Here&rsquo;s the disassembly of the program:</p>
+<pre><code class="language-armasm" data-lang="armasm">08000340 &lt;cortex_m_rt::reset_handler&gt;:
+ 8000340:	b5d0      	push	{r4, r6, r7, lr}
+ 8000342:	af02      	add	r7, sp, #8
+ 8000344:	f240 0000 	movw	r0, #0
+ 8000348:	f240 0100 	movw	r1, #0
+ 800034c:	f2c2 0000 	movt	r0, #8192	; 0x2000
+ 8000350:	f2c2 0100 	movt	r1, #8192	; 0x2000
+ 8000354:	1a09      	subs	r1, r1, r0
+ 8000356:	f021 0103 	bic.w	r1, r1, #3
+ 800035a:	f000 f85a 	bl	8000412 &lt;__aeabi_memclr4&gt;
+ 800035e:	f240 0000 	movw	r0, #0
+ 8000362:	f240 0100 	movw	r1, #0
+ 8000366:	f2c2 0000 	movt	r0, #8192	; 0x2000
+ 800036a:	f2c2 0100 	movt	r1, #8192	; 0x2000
+ 800036e:	1a09      	subs	r1, r1, r0
+ 8000370:	f021 0203 	bic.w	r2, r1, #3
+ 8000374:	f240 4124 	movw	r1, #1060	; 0x424
+ 8000378:	f6c0 0100 	movt	r1, #2048	; 0x800
+ 800037c:	f000 f83f 	bl	80003fe &lt;__aeabi_memcpy4&gt;
+ 8000380:	f240 0000 	movw	r0, #0
+ 8000384:	f2c0 0000 	movt	r0, #0
+ 8000388:	7800      	ldrb	r0, [r0, #0]
+ 800038a:	f3ef 8410 	mrs	r4, PRIMASK
+ 800038e:	b672      	cpsid	i
+ 8000390:	f7ff ffd2 	bl	8000338 &lt;overhead::init&gt;
+ 8000394:	f014 0f01 	tst.w	r4, #1
+ 8000398:	d100      	bne.n	800039c &lt;cortex_m_rt::reset_handler+0x5c&gt;
+ 800039a:	b662      	cpsie	i
+ 800039c:	f7ff ffce 	bl	800033c &lt;overhead::idle&gt;
+</code></pre><p><code>reset_handler</code> is the entry point of the program. This routine will call the
+<code>init</code> function and then <code>idle</code> function, but before it does that it initializes
+RAM as evidenced by the calls to <code>memclr4</code> and <code>memcpy4</code>. RAM initialization is
+required by all programs so we won&rsquo;t count it as part of the overhead of the
+RTFM framework.</p>
+<p>After RAM initialization <code>init</code> will be called within a <em>global</em> critical
+section (<code>rtfm::atomic</code>) hence the <code>cpsid i</code> and <code>cpsie i</code> instructions around
+the call. After <code>init</code> returns the critical section ends and <code>idle</code> gets called.</p>
+<h3 id="one-task">One task</h3>
+<p>Let&rsquo;s now add one task to the program:</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#75715e">#[inline(never)]</span>
+<span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">init</span>(_prio: <span style="color:#a6e22e">P0</span>, _thr: <span style="color:#66d9ef">&amp;</span><span style="color:#a6e22e">TMax</span>) {
+    rtfm::bkpt();
+}
+
+<span style="color:#75715e">#[inline(never)]</span>
+<span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">idle</span>(_prio: <span style="color:#a6e22e">P0</span>, _thr: <span style="color:#a6e22e">T0</span>) -&gt; <span style="color:#f92672">!</span> {
+    <span style="color:#66d9ef">loop</span> {
+        rtfm::wfi();
+    }
+}
+
+tasks<span style="color:#f92672">!</span>(stm32f100xx, {
+    t1: <span style="color:#a6e22e">Task</span> {
+        interrupt: <span style="color:#a6e22e">Exti0Irq</span>,
+        priority: <span style="color:#a6e22e">P1</span>,
+        enabled: <span style="color:#a6e22e">true</span>,
+    },
+});
+
+<span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">t1</span>(_task: <span style="color:#a6e22e">Exti0Irq</span>, _prio: <span style="color:#a6e22e">P1</span>, _thr: <span style="color:#a6e22e">T1</span>) {}
+</code></pre></div><p>The disassembly of <code>reset_handler</code> becomes:</p>
+<pre><code class="language-armasm" data-lang="armasm">08000338 &lt;cortex_m_rt::reset_handler&gt;:
+(..)
+ 8000386:	b672      	cpsid	i       	; start of critical section
+ 8000388:	f7ff ffd1 	bl	800032e &lt;overhead::init&gt;
+ 800038c:	f24e 4006 	movw	r0, #58374	; 0xe406
+ 8000390:	21f0      	movs	r1, #240	; 0xf0
+ 8000392:	f014 0f01 	tst.w	r4, #1
+ 8000396:	f2ce 0000 	movt	r0, #57344	; 0xe000
+ 800039a:	7001      	strb	r1, [r0, #0]
+ 800039c:	f24e 1000 	movw	r0, #57600	; 0xe100
+ 80003a0:	f04f 0140 	mov.w	r1, #64	; 0x40
+ 80003a4:	f2ce 0000 	movt	r0, #57344	; 0xe000
+ 80003a8:	6001      	str	r1, [r0, #0]
+ 80003aa:	d100      	bne.n	80003ae &lt;cortex_m_rt::reset_handler+0x76&gt;
+ 80003ac:	b662      	cpsie	i   		; end of critical section
+ 80003ae:	f7ff ffc0 	bl	8000332 &lt;overhead::idle&gt;
+</code></pre><p>There&rsquo;s now extra code between the call to <code>init</code> and the end of the global
+critical section. This extra code takes care of assigning priorities to tasks
+(interrupts), and also of enabling the tasks (interrupts) that were declared as
+<code>enabled: true</code> in the <code>tasks!</code> macro.</p>
+<p>The RTFM framework doesn&rsquo;t add any extra code to tasks. Only the code you have
+written will be executed. Here&rsquo;s the disassembly of the empty task <code>t1</code> as a
+proof:</p>
+<pre><code class="language-armasm" data-lang="armasm">0800032e &lt;overhead::main::INTERRUPTS::t1&gt;:
+ 800032e:	4770      	bx	lr
+</code></pre><h3 id="n-tasks">N tasks</h3>
+<p>Let&rsquo;s add one more task:</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust">tasks<span style="color:#f92672">!</span>(stm32f100xx, {
+    t1: <span style="color:#a6e22e">Task</span> {
+        interrupt: <span style="color:#a6e22e">Exti0Irq</span>,
+        priority: <span style="color:#a6e22e">P1</span>,
+        enabled: <span style="color:#a6e22e">true</span>,
+    },
+    t2: <span style="color:#a6e22e">Task</span> {
+        interrupt: <span style="color:#a6e22e">Exti1Irq</span>,
+        priority: <span style="color:#a6e22e">P2</span>,
+        enabled: <span style="color:#a6e22e">true</span>,
+    },
+});
+
+<span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">t1</span>(_task: <span style="color:#a6e22e">Exti0Irq</span>, _prio: <span style="color:#a6e22e">P1</span>, _thr: <span style="color:#a6e22e">T1</span>) {}
+
+<span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">t2</span>(_task: <span style="color:#a6e22e">Exti1Irq</span>, _prio: <span style="color:#a6e22e">P2</span>, _thr: <span style="color:#a6e22e">T2</span>) {}
+</code></pre></div><p>With this change the disassembly of <code>reset_handler</code> becomes:</p>
+<pre><code class="language-armasm" data-lang="armasm">08000330 &lt;cortex_m_rt::reset_handler&gt;:
+(..)
+ 800037e:	b672      	cpsid	i   		; start of critical section
+ 8000380:	f7ff ffd0 	bl	8000324 &lt;overhead::init&gt;
+ 8000384:	f24e 4006 	movw	r0, #58374	; 0xe406
+ 8000388:	21f0      	movs	r1, #240	; 0xf0
+ 800038a:	f014 0f01 	tst.w	r4, #1
+ 800038e:	f2ce 0000 	movt	r0, #57344	; 0xe000
+ 8000392:	7001      	strb	r1, [r0, #0]
+ 8000394:	f04f 01e0 	mov.w	r1, #224	; 0xe0
+ 8000398:	7041      	strb	r1, [r0, #1]
+ 800039a:	f24e 1000 	movw	r0, #57600	; 0xe100
+ 800039e:	f04f 0140 	mov.w	r1, #64	; 0x40
+ 80003a2:	f2ce 0000 	movt	r0, #57344	; 0xe000
+ 80003a6:	6001      	str	r1, [r0, #0]
+ 80003a8:	f04f 0180 	mov.w	r1, #128	; 0x80
+ 80003ac:	6001      	str	r1, [r0, #0]
+ 80003ae:	d100      	bne.n	80003b2 &lt;cortex_m_rt::reset_handler+0x82&gt;
+ 80003b0:	b662      	cpsie	i   		; end of critical section
+ 80003b2:	f7ff ffb9 	bl	8000328 &lt;overhead::idle&gt;
+</code></pre><p>If you keep adding tasks and measure the time that takes to go from the end of
+<code>init</code> to the start of <code>idle</code> you&rsquo;ll find out that the task setup code takes
+<code>O(N)</code> cycles where <code>N</code> is the number of tasks. The exact linear constant
+depends on whether all the task have the same priority, or each one has a
+different priority but 4 to 6 cycles per task is usual.</p>
+<blockquote>
+<p>Setup runtime cost = <code>O(N)</code> cycles where N = number of tasks</p>
+</blockquote>
+<h3 id="shared-call-stack">Shared call stack</h3>
+<p>How does the RTFM framework makes use of stack memory? How are tasks allocated
+on the stack? Let&rsquo;s see what threaded systems do first.</p>
+<p>On threaded systems each thread is assigned its own call stack as shown below:</p>
+<p><img src="/rtfm-overhead/threads.svg" alt="Multithreaded stack"></p>
+<p>The image depicts three threads: T1, T2 and T3. The stack of each thread can
+grow independently so its possible for the stack of one thread to <em>overflow</em>
+into the stack of the next thread, corrupting it. For this reason each thread is
+assigned a <em>maximum</em> stack size, depicted in the above figure by the black
+boundaries between each thread stack. To enforce these boundaries usually the
+Memory Protection Unit (MPU) is used; the MPU can detect stack overflows and
+raise an exception when they occur.</p>
+<p>The maximum stack size of a thread must be chosen carefully. A large stack size
+limits the number of threads that can be running at a given time. For example,
+in the above figure only 3 threads fit in memory. OTOH, a small stack size makes
+threads more prone to stack overflows.</p>
+<p>Under the RTFM framework all tasks <em>share</em> a single call stack as shown below:</p>
+<p><img src="/rtfm-overhead/tasks.svg" alt="RTFM stack"></p>
+<p>This looks like a compacted version of the multithreaded memory layout.</p>
+<p>Under the RTFM scheduler once a high priority task starts its execution all the
+other lower priority tasks can&rsquo;t resume execution <em>until after</em> the high
+priority task is over. Because of this the stacks of <em>suspended</em> tasks never
+grow so it&rsquo;s not necessary to reserve space for each task. That&rsquo;s why we don&rsquo;t
+have this empty space between the stack of each task as in the multithreaded
+case.</p>
+<p>Although less likely stack overflows are still possible: the shared call stack
+can overflow into the heap region. Again, one can use the MPU to protect against
+such condition.</p>
+<p>So how much stack space does each task use? Let&rsquo;s find out.</p>
+<p>Consider the following program:</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">idle</span>(_prio: <span style="color:#a6e22e">P0</span>, _thr: <span style="color:#a6e22e">T0</span>) -&gt; <span style="color:#f92672">!</span> {
+    rtfm::bkpt();
+    rtfm::request(t1);
+
+    <span style="color:#75715e">// Sleep
+</span><span style="color:#75715e"></span>    <span style="color:#66d9ef">loop</span> {
+        rtfm::wfi();
+    }
+}
+
+<span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">t1</span>(_task: <span style="color:#a6e22e">Exti0Irq</span>, _prio: <span style="color:#a6e22e">P1</span>, _thr: <span style="color:#a6e22e">T1</span>) {
+    <span style="color:#66d9ef">let</span> x <span style="color:#f92672">=</span> <span style="color:#ae81ff">42</span>;
+
+    rtfm::bkpt();
+
+    <span style="color:#75715e">// `t2` will immediately preempt this task
+</span><span style="color:#75715e"></span>    rtfm::request(t2);
+
+    <span style="color:#75715e">// Force LLVM to allocate `x` on the stack
+</span><span style="color:#75715e"></span>    <span style="color:#66d9ef">unsafe</span> {
+        ptr::read_volatile(<span style="color:#f92672">&amp;</span>x);
+   }
+}
+
+<span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">t2</span>(_task: <span style="color:#a6e22e">Exti1Irq</span>, _prio: <span style="color:#a6e22e">P2</span>, _thr: <span style="color:#a6e22e">T2</span>) {
+    <span style="color:#66d9ef">let</span> y <span style="color:#f92672">=</span> <span style="color:#ae81ff">24</span>;
+
+    rtfm::bkpt();
+
+    <span style="color:#75715e">// Force LLVM to allocate `y` on the stack
+</span><span style="color:#75715e"></span>    <span style="color:#66d9ef">unsafe</span> {
+        ptr::read_volatile(<span style="color:#f92672">&amp;</span>y);
+    }
+}
+</code></pre></div><p>Disassembly:</p>
+<pre><code class="language-armasm" data-lang="armasm">08000324 &lt;overhead::main::INTERRUPTS::t1&gt;:
+ 8000324:	b081      	sub	sp, #4
+ 8000326:	202a      	movs	r0, #42
+ 8000328:	2180      	movs	r1, #128
+ 800032a:	9000      	str	r0, [sp, #0]	; x = 42
+ 800032c:	f24e 2000 	movw	r0, #57856
+ 8000330:	be00      	bkpt	0x0000  	; t1's BKPT
+ 8000332:	f2ce 0000 	movt	r0, #57344
+ 8000336:	6001      	str	r1, [r0, #0]	; rtfm::request
+ 8000338:	9800      	ldr	r0, [sp, #0]	; ptr::read_volatile
+ 800033a:	b001      	add	sp, #4
+ 800033c:	4770      	bx	lr
+
+0800033e &lt;overhead::main::INTERRUPTS::t2&gt;:
+ 800033e:	b081      	sub	sp, #4
+ 8000340:	2018      	movs	r0, #24
+ 8000342:	9000      	str	r0, [sp, #0]	; y = 24
+ 8000344:	be00      	bkpt	0x0000  	; t2's BKPT
+ 8000346:	9800      	ldr	r0, [sp, #0]	; ptr::read_volatile
+ 8000348:	b001      	add	sp, #4
+ 800034a:	4770      	bx	lr
+
+0800034c &lt;cortex_m_rt::reset_handler&gt;:
+(..)
+ 80003d6:	b662      	cpsie	i
+ 80003d8:	f44f 4152 	mov.w	r1, #53760
+ 80003dc:	be00      	bkpt	0x0000      	; idle's BKPT
+ 80003de:	f840 c001 	str.w	ip, [r0, r1]	; rtfm::request
+ 80003e2:	bf30      	wfi
+ 80003e4:	e7fd      	b.n	80003e2 &lt;cortex_m_rt::reset_handler+0x96&gt;
+</code></pre><p>Now let&rsquo;s debug it:</p>
+<pre><code class="language-console" data-lang="console">&gt; continue
+&gt; # IDLE: PC = 0x080003dc, SP = 0x20001ff8
+</code></pre><p>We hit <code>idle</code>&rsquo;s breakpoint; just before <code>rtfm::request(t1)</code> is called. Let&rsquo;s
+print the values of some registers at this point. We&rsquo;ll see in a bit why they
+are relevant.</p>
+<pre><code>&gt; info registers r0 r1 r2 r3 r12 lr pc xPSR
+r0             0xe0001000
+r1             0xd200
+r2             0x0
+r3             0xd100
+r12            0x40
+lr             0x800038d
+pc             0x80003dc
+xPSR           0x61000000
+</code></pre><p>We continue the program execution and reach <code>t1</code>&rsquo;s breakpoint.</p>
+<pre><code class="language-console" data-lang="console">&gt; continue
+&gt; # T1: PC = 0x08000330, SP = 0x20001fd4
+</code></pre><p>At this point <code>x</code> has already been allocated on the stack so if we inspect the
+stack around the stack pointer (SP) we should see its value:</p>
+<pre><code class="language-console" data-lang="console">&gt; x/12x $sp
+0x20001fd4:    (0x0000002a)    [0xe0001000      0x0000d200      0x00000000
+0x20001fe4:     0x0000d100      0x00000040      0x0800038d      0x080003e4
+0x20001ff4:     0x61000000]     0x20001ff8      0xffffffff      0x00000000
+</code></pre><blockquote>
+<p><strong>NB</strong> The parentheses and square brackets were added by me; they are not part
+of GDB&rsquo;s output.</p>
+</blockquote>
+<p>At address <code>0x20001fd4</code> we see <code>(0x0000002a)</code>; this is the local variable <code>x</code>.
+Next to that value we see some familiar looking values: <code>[0xe0001000 .. 0x61000000]</code>; these values match the output of the <code>info registers</code> command
+executed before. Those values are, in fact, a snapshot of <code>idle</code>&rsquo;s <em>state</em> that
+was pushed into the stack by the NVIC. They&rsquo;re there because once <code>t1</code> returns
+the NVIC will <em>restore</em> those values to their corresponding registers to resume
+<code>idle</code>&rsquo;s execution.</p>
+<p>Here&rsquo;s a snapshot of the same registers at <code>PC = 0x08000336</code>:</p>
+<pre><code class="language-console" data-lang="console">&gt; stepi
+&gt; # T1: PC = 0x08000336, SP = 0x20001fd4
+
+&gt; info registers r0 r1 r2 r3 r12 lr pc xPSR
+r0             0xe000e200
+r1             0x80
+r2             0x0
+r3             0xd100
+r12            0x40
+lr             0xfffffff9
+pc             0x8000336
+xPSR           0x21000016
+</code></pre><p>These values don&rsquo;t (necessarily) match the ones that are stored in the stack.</p>
+<p>Let&rsquo;s now skip to <code>t2</code>&rsquo;s breakpoint:</p>
+<pre><code>&gt; continue
+&gt; # T2: PC = 0x08000344, SP = 0x20001fb0
+</code></pre><p>Here&rsquo;s the state of the stack at that point:</p>
+<pre><code>&gt; x/20x $sp
+0x20001fb0:    (0x00000018)    [0x0000002a      0x00000080      0x00000000
+0x20001fc0:     0x0000d100      0x00000040      0xfffffff9      0x0800033a
+0x20001fd0:     0x21000016]    (0x0000002a)    [0xe0001000      0x0000d200
+0x20001fe0:     0x00000000      0x0000d100      0x00000040      0x0800038d
+0x20001ff0:     0x080003e4      0x61000000]     0x20001ff8      0xffffffff
+</code></pre><p><code>(0x00000018)</code> is the local variable <code>y</code>, and <code>[0x0000002a .. 0x21000016]</code> is a
+snapshot of <code>t1</code>&rsquo;s state. If you are a careful reader then you probably noticed
+that not all those values match the output of the last <code>info register</code> command.
+The difference is due to <em>when</em> the registers were stacked: the stacked PC value
+is <code>0x0800033a</code> and the PC value from the <code>info register</code>&rsquo;s output is
+<code>0x08000336</code> so the stacking happened <em>after</em> the <code>info register</code> command was
+issued.</p>
+<p>Next on the stack is <code>(0x0000002a)</code>, <code>t1</code>&rsquo;s <code>x</code> value, and finally <code>[0xe0001000 .. 0x61000000]</code>, <code>idle</code>&rsquo;s state from before.</p>
+<p>So in conclusion to preserve the state of the lower priority task during
+preemption at least 8 words of information have to be stored on the stack.
+Remember the <code>push</code> instruction in function prologues? That instruction pushes
+more registers, the ones that are not stacked by default, into the stack. So,
+function with prologues use more stack space.</p>
+<blockquote>
+<p>Stack usage per <em>suspended</em> task = at least 8 words (32 bytes)</p>
+</blockquote>
+<p>That&rsquo;s all for the realm of tasks. Let&rsquo;s now move onto the data abstractions.</p>
+<h1 id="task-local-data">Task local data</h1>
+<p>The task local data abstraction, <code>Local</code>, is used to preserve state across the
+different runs of a task.</p>
+<h2 id="localborrow"><code>Local.borrow</code></h2>
+<p><code>Local</code> provides two methods to access the inner data: <code>borrow</code> and
+<code>borrow_mut</code>. Both methods have zero synchronization overhead as <code>Local</code> data is
+confined to a single task.</p>
+<p>Let&rsquo;s confirm this claim by comparing this program which increases a counter:</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">t1</span>(<span style="color:#66d9ef">ref</span> <span style="color:#66d9ef">mut</span> task: <span style="color:#a6e22e">Exti0Irq</span>, _prio: <span style="color:#a6e22e">P1</span>, _thr: <span style="color:#a6e22e">T1</span>) {
+    <span style="color:#66d9ef">static</span> COUNTER: <span style="color:#a6e22e">Local</span><span style="color:#f92672">&lt;</span><span style="color:#66d9ef">u32</span>, Exti0Irq<span style="color:#f92672">&gt;</span> <span style="color:#f92672">=</span> Local::new(<span style="color:#ae81ff">0</span>);
+
+    <span style="color:#66d9ef">let</span> state <span style="color:#f92672">=</span> COUNTER.borrow_mut(task);
+    <span style="color:#f92672">*</span>state <span style="color:#f92672">+=</span> <span style="color:#ae81ff">1</span>;
+}
+</code></pre></div><p>Disassembly:</p>
+<pre><code class="language-armasm" data-lang="armasm">0800032e &lt;overhead::main::INTERRUPTS::t1&gt;:
+ 800032e:	f240 0000 	movw	r0, #0
+ 8000332:	f2c2 0000 	movt	r0, #8192	; 0x2000
+ 8000336:	6801      	ldr	r1, [r0, #0]
+ 8000338:	3101      	adds	r1, #1
+ 800033a:	6001      	str	r1, [r0, #0]
+ 800033c:	4770      	bx	lr
+</code></pre><p>Against its unsynchronized, memory unsafe version shown below:</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">t1</span>(_task: <span style="color:#a6e22e">Exti0Irq</span>, _prio: <span style="color:#a6e22e">P1</span>, _thr: <span style="color:#a6e22e">T1</span>) {
+    <span style="color:#66d9ef">static</span> <span style="color:#66d9ef">mut</span> COUNTER: <span style="color:#66d9ef">u32</span> <span style="color:#f92672">=</span> <span style="color:#ae81ff">0</span>;
+
+    <span style="color:#66d9ef">unsafe</span> { COUNTER <span style="color:#f92672">+=</span> <span style="color:#ae81ff">1</span> }
+}
+</code></pre></div><p>Disassembly:</p>
+<pre><code class="language-armasm" data-lang="armasm">0800032e &lt;overhead::main::INTERRUPTS::t1&gt;:
+ 800032e:	f240 0000 	movw	r0, #0
+ 8000332:	f2c2 0000 	movt	r0, #8192	; 0x2000
+ 8000336:	6801      	ldr	r1, [r0, #0]
+ 8000338:	3101      	adds	r1, #1
+ 800033a:	6001      	str	r1, [r0, #0]
+ 800033c:	4770      	bx	lr
+</code></pre><p>Both versions produce exactly the same code, but the <code>Local</code> version is verified
+to be memory safe by the compiler. Note how the <code>task</code> token doesn&rsquo;t appear in
+the disassembly; as the <code>task</code> token is a zero sized type it doesn&rsquo;t exit at
+runtime.</p>
+<h2 id="memory-overhead-1">Memory overhead</h2>
+<p><code>Local</code> is just a newtype over the protected data and imposes no overhead in
+terms of memory.</p>
+<p>You can confirm that with the following program:</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">t1</span>(_task: <span style="color:#a6e22e">Exti0Irq</span>, _prio: <span style="color:#a6e22e">P1</span>, _thr: <span style="color:#a6e22e">T1</span>) {
+    <span style="color:#66d9ef">static</span> L1: <span style="color:#a6e22e">Local</span><span style="color:#f92672">&lt;</span>(), Exti0Irq<span style="color:#f92672">&gt;</span> <span style="color:#f92672">=</span> Local::new(());
+    <span style="color:#66d9ef">static</span> L2: <span style="color:#a6e22e">Local</span><span style="color:#f92672">&lt;</span><span style="color:#66d9ef">u8</span>, Exti0Irq<span style="color:#f92672">&gt;</span> <span style="color:#f92672">=</span> Local::new(<span style="color:#ae81ff">0</span>);
+    <span style="color:#66d9ef">static</span> L3: <span style="color:#a6e22e">Local</span><span style="color:#f92672">&lt;</span><span style="color:#66d9ef">u16</span>, Exti0Irq<span style="color:#f92672">&gt;</span> <span style="color:#f92672">=</span> Local::new(<span style="color:#ae81ff">0</span>);
+    <span style="color:#66d9ef">static</span> L4: <span style="color:#a6e22e">Local</span><span style="color:#f92672">&lt;</span><span style="color:#66d9ef">u32</span>, Exti0Irq<span style="color:#f92672">&gt;</span> <span style="color:#f92672">=</span> Local::new(<span style="color:#ae81ff">0</span>);
+    <span style="color:#66d9ef">static</span> L5: <span style="color:#a6e22e">Local</span><span style="color:#f92672">&lt;</span><span style="color:#66d9ef">u64</span>, Exti0Irq<span style="color:#f92672">&gt;</span> <span style="color:#f92672">=</span> Local::new(<span style="color:#ae81ff">0</span>);
+
+    hprintln<span style="color:#f92672">!</span>(<span style="color:#e6db74">&#34;{}&#34;</span>, mem::size_of_val(<span style="color:#f92672">&amp;</span>L1));
+    hprintln<span style="color:#f92672">!</span>(<span style="color:#e6db74">&#34;{}&#34;</span>, mem::size_of_val(<span style="color:#f92672">&amp;</span>L2));
+    hprintln<span style="color:#f92672">!</span>(<span style="color:#e6db74">&#34;{}&#34;</span>, mem::size_of_val(<span style="color:#f92672">&amp;</span>L3));
+    hprintln<span style="color:#f92672">!</span>(<span style="color:#e6db74">&#34;{}&#34;</span>, mem::size_of_val(<span style="color:#f92672">&amp;</span>L4));
+    hprintln<span style="color:#f92672">!</span>(<span style="color:#e6db74">&#34;{}&#34;</span>, mem::size_of_val(<span style="color:#f92672">&amp;</span>L5));
+}
+</code></pre></div><p>which prints:</p>
+<pre><code>$ openocd -f (..)
+(..)
+0
+1
+2
+4
+8
+</code></pre><h2 id="conclusion">Conclusion</h2>
+<p>In conclusion the <code>Local</code> abstraction is no different than using an unsafe
+<code>static mut</code> variable in terms of memory usage and the runtime cost of accessing
+it. In Rust we call these abstractions <em>zero cost</em> abstractions. <code>Local</code> is a
+zero cost abstraction that makes global variables memory safe by pinning them to
+a single task.</p>
+<h1 id="resources">Resources</h1>
+<p>The RTFM framework provides a <code>Resource</code> abstraction that can be used to safely
+share data <em>between</em> tasks. Let&rsquo;s analyze their overhead.</p>
+<h2 id="resourceaccess"><code>Resource.access</code></h2>
+<p><code>Resource</code> provides an <code>access</code> method that grants access to its inner data.
+<a href="/fearless-concurrency/#the-ceiling-system">Some conditions</a> need to be met for <code>access</code> to work; if any of those
+conditions is not met then the program doesn&rsquo;t compile. Once the conditions are
+met the <code>access</code> method, itself, is zero cost.</p>
+<p>Let&rsquo;s confirm that by comparing the counting program ported to use a <code>Resource</code>:</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#66d9ef">static</span> COUNTER: <span style="color:#a6e22e">Resource</span><span style="color:#f92672">&lt;</span>Cell<span style="color:#f92672">&lt;</span><span style="color:#66d9ef">u32</span><span style="color:#f92672">&gt;</span>, C1<span style="color:#f92672">&gt;</span> <span style="color:#f92672">=</span> Resource::new(Cell::new(<span style="color:#ae81ff">0</span>));
+
+<span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">t1</span>(_: <span style="color:#a6e22e">Exti0</span>, <span style="color:#66d9ef">ref</span> prio: <span style="color:#a6e22e">P1</span>, <span style="color:#66d9ef">ref</span> thr: <span style="color:#a6e22e">T1</span>) {
+    <span style="color:#66d9ef">let</span> counter <span style="color:#f92672">=</span> COUNTER.access(prio, thr);
+    counter.set(counter.get() <span style="color:#f92672">+</span> <span style="color:#ae81ff">1</span>);
+}
+</code></pre></div><p>Disassembly:</p>
+<pre><code class="language-armasm" data-lang="armasm">0800032e &lt;overhead::main::INTERRUPTS::t1&gt;:
+ 800032e:	f240 0000 	movw	r0, #0
+ 8000332:	f2c2 0000 	movt	r0, #8192	; 0x2000
+ 8000336:	6801      	ldr	r1, [r0, #0]
+ 8000338:	3101      	adds	r1, #1
+ 800033a:	6001      	str	r1, [r0, #0]
+ 800033c:	4770      	bx	lr
+</code></pre><p>Against its unsynchronized, memory unsafe version (which we already saw in <a href="#local-borrow">the
+<code>Local.borrow</code> section</a>):</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">t1</span>(_task: <span style="color:#a6e22e">Exti0Irq</span>, _prio: <span style="color:#a6e22e">P1</span>, _thr: <span style="color:#a6e22e">T1</span>) {
+    <span style="color:#66d9ef">static</span> <span style="color:#66d9ef">mut</span> COUNTER: <span style="color:#66d9ef">u32</span> <span style="color:#f92672">=</span> <span style="color:#ae81ff">0</span>;
+
+    <span style="color:#66d9ef">unsafe</span> { COUNTER <span style="color:#f92672">+=</span> <span style="color:#ae81ff">1</span> }
+}
+</code></pre></div><p>Disassembly:</p>
+<pre><code class="language-armasm" data-lang="armasm">0800032e &lt;overhead::main::INTERRUPTS::t1&gt;:
+ 800032e:	f240 0000 	movw	r0, #0
+ 8000332:	f2c2 0000 	movt	r0, #8192	; 0x2000
+ 8000336:	6801      	ldr	r1, [r0, #0]
+ 8000338:	3101      	adds	r1, #1
+ 800033a:	6001      	str	r1, [r0, #0]
+ 800033c:	4770      	bx	lr
+</code></pre><p>The produced code is exactly the same. Again, the tokens don&rsquo;t exist at runtime.</p>
+<h2 id="thresholdraise"><code>Threshold.raise</code></h2>
+<p>When a resource is accessed by two tasks that have different priorities the
+lowest priority task will have to create a critical section using the
+<code>Threshold.raise</code> method. For the span of this critical section the task&rsquo;s
+preemption threshold is temporarily raised to prevent the higher priority task
+from preempting the lower priority one. Only within this critical section can
+the lower priority task access the resource in a memory safe manner that&rsquo;s free
+of data races.</p>
+<p>Let&rsquo;s see what&rsquo;s the overhead of a <code>Threshold.raise</code> critical section by timing
+the following program:</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#66d9ef">static</span> R1: <span style="color:#a6e22e">Resource</span><span style="color:#f92672">&lt;</span>(), C2<span style="color:#f92672">&gt;</span> <span style="color:#f92672">=</span> Resource::new(());
+
+<span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">t1</span>(_: <span style="color:#a6e22e">Exti0</span>, _: <span style="color:#a6e22e">P1</span>, thr: <span style="color:#a6e22e">T1</span>) {
+    rtfm::bkpt(); <span style="color:#75715e">// before
+</span><span style="color:#75715e"></span>
+    thr.raise(
+        <span style="color:#f92672">&amp;</span>R1, <span style="color:#f92672">|</span>_thr<span style="color:#f92672">|</span> {
+            rtfm::bkpt(); <span style="color:#75715e">// inside
+</span><span style="color:#75715e"></span>        }
+    );
+
+    rtfm::bkpt(); <span style="color:#75715e">// after
+</span><span style="color:#75715e"></span>}
+</code></pre></div><p>Disassembly:</p>
+<pre><code class="language-armasm" data-lang="armasm">0800032e &lt;overhead::main::INTERRUPTS::t1&gt;:
+ 800032e:	21e0      	movs	r1, #224	; 0xe0
+ 8000330:	be00      	bkpt	0x0000		; before
+ 8000332:	f3ef 8011 	mrs	r0, BASEPRI
+ 8000336:	f381 8812 	msr	BASEPRI_MAX, r1
+ 800033a:	be00      	bkpt	0x0000		; inside
+ 800033c:	f380 8811 	msr	BASEPRI, r0
+ 8000340:	be00      	bkpt	0x0000		; after
+ 8000342:	4770      	bx	lr
+</code></pre><p>In the disassembly you can see the secret sauce of the RTFM framework: the
+<a href="http://infocenter.arm.com/help/topic/com.arm.doc.dui0552a/CHDBIBGJ.html#BABHCGDA">BASEPRI</a> register. The value of this register <em>is</em> the preemption threshold of
+the system. The critical section is started by raising the preemption threshold,
+using the <code>msr BASEPRI_MAX</code> instruction, and then finished by restoring the
+previous preemption threshold, using the <code>msr BASEPRI</code> instruction.</p>
+<p>So how long does it take to enter and exit the critical section?</p>
+<pre><code class="language-console" data-lang="console">&gt; continue
+&gt; # PC = 0x08000330, (CYCCNT &amp; 0xff) = 0xdb
+
+&gt; continue
+&gt; # PC = 0x0800033a, (CYCCNT &amp; 0xff) = 0xde
+
+&gt; continue
+&gt; # PC = 0x08000340, (CYCCNT &amp; 0xff) = 0xdf
+
+&gt; print 0xdf - 0xdb
+$1 = 4
+</code></pre><p>Entering and leaving the critical section takes only 4 cycles. This overhead is
+the same regardless of the number of tasks that get blocked by the critical
+section. So, <code>O(1)</code> runtime cost.</p>
+<blockquote>
+<p>Critical section overhead = 4 cycles</p>
+</blockquote>
+<h3 id="vs-rtfmatomic">vs <code>rtfm::atomic</code></h3>
+<p>How does this overhead compare to the overhead of a global <sup id="fnref:2"><a href="#fn:2" class="footnote-ref" role="doc-noteref">2</a></sup> critical
+section (<code>rtfm::atomic</code>)? Let&rsquo;s find out with this program:</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">t1</span>(_task: <span style="color:#a6e22e">Exti0Irq</span>, _prio: <span style="color:#a6e22e">P1</span>, <span style="color:#66d9ef">ref</span> thr: <span style="color:#a6e22e">T1</span>) {
+    rtfm::bkpt(); <span style="color:#75715e">// before
+</span><span style="color:#75715e"></span>
+    rtfm::atomic(
+        <span style="color:#f92672">|</span>_<span style="color:#f92672">|</span> {
+            rtfm::bkpt(); <span style="color:#75715e">// inside
+</span><span style="color:#75715e"></span>        }
+    );
+
+    rtfm::bkpt(); <span style="color:#75715e">// after
+</span><span style="color:#75715e"></span>}
+</code></pre></div><p>Here&rsquo;s the disassembly of the program:</p>
+<pre><code class="language-armasm" data-lang="armasm">0800032e &lt;overhead::main::INTERRUPTS::t1&gt;:
+ 800032e:	be00      	bkpt	0x0000		; before
+ 8000330:	f3ef 8010 	mrs	r0, PRIMASK
+ 8000334:	b672      	cpsid	i
+ 8000336:	be00      	bkpt	0x0000		; inside
+ 8000338:	f010 0f01 	tst.w	r0, #1
+ 800033c:	d100      	bne.n	8000340 &lt;overhead::main::INTERRUPTS::t1+0x12&gt;
+ 800033e:	b662      	cpsie	i
+ 8000340:	be00      	bkpt	0x0000		; after
+ 8000342:	4770      	bx	lr
+</code></pre><p>Global critical sections use the <a href="http://infocenter.arm.com/help/topic/com.arm.doc.dui0552a/CHDBIBGJ.html#BABBBGEA">PRIMASK</a> register to block all tasks. The
+critical section is started by disabling all the tasks, using the <code>cpsid i</code>
+instruction (sets PRIMASK to 1), and finished by re-enabling them, using the
+<code>cpsie i</code> instruction (sets PRIMASK to 0). There&rsquo;s a catch here: if the tasks
+were already disabled <em>before</em> the critical section started then they should
+<em>not</em> be re-enabled when the critical section ends &ndash; if you were wondering:
+this situation occurs when <code>rtfm::atomic</code> sections are nested. This is why
+PRIMASK is read before starting the critical section: to check whether the
+tasks were already disabled or not.</p>
+<p>How do critical sections fare in terms of runtime overhead?</p>
+<pre><code class="language-console" data-lang="console">&gt; continue
+&gt; # PC = 0x0800032e, (CYCCNT &amp; 0xff) = 0xe7
+
+&gt; continue
+&gt; # PC = 0x08000336, (CYCCNT &amp; 0xff) = 0xea
+
+&gt; continue
+&gt; # PC = 0x08000340, (CYCCNT &amp; 0xff) = 0xed
+
+&gt; print 0xed - 0xe7
+$1 = 6
+</code></pre><p>Entering and leaving a global critical section takes 6 cycles; this is slower
+than the <code>Threshold.raise</code> critical section!</p>
+<p>In conclusion RTFM style critical sections not only <a href="/fearless-concurrency/#not-your-typical-critical-section">impose less task blocking</a>
+than <em>global</em> critical sections; they also have a lower runtime overhead.</p>
+<h2 id="memory-overhead-2">Memory overhead</h2>
+<p>Resources have zero memory overhead. Like <code>Local</code>, <code>Resource</code> is just a newtype
+over the protected data. The ceiling of each resource is fixed, and it&rsquo;s tracked
+in the type system so it&rsquo;s not stored in memory at runtime.</p>
+<p>You can confirm that with the following program:</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#66d9ef">static</span> R1: <span style="color:#a6e22e">Resource</span><span style="color:#f92672">&lt;</span>(), C1<span style="color:#f92672">&gt;</span> <span style="color:#f92672">=</span> Resource::new(());
+<span style="color:#66d9ef">static</span> R2: <span style="color:#a6e22e">Resource</span><span style="color:#f92672">&lt;</span><span style="color:#66d9ef">u8</span>, C1<span style="color:#f92672">&gt;</span> <span style="color:#f92672">=</span> Resource::new(<span style="color:#ae81ff">0</span>);
+<span style="color:#66d9ef">static</span> R3: <span style="color:#a6e22e">Resource</span><span style="color:#f92672">&lt;</span><span style="color:#66d9ef">u16</span>, C1<span style="color:#f92672">&gt;</span> <span style="color:#f92672">=</span> Resource::new(<span style="color:#ae81ff">0</span>);
+<span style="color:#66d9ef">static</span> R4: <span style="color:#a6e22e">Resource</span><span style="color:#f92672">&lt;</span><span style="color:#66d9ef">u32</span>, C1<span style="color:#f92672">&gt;</span> <span style="color:#f92672">=</span> Resource::new(<span style="color:#ae81ff">0</span>);
+<span style="color:#66d9ef">static</span> R5: <span style="color:#a6e22e">Resource</span><span style="color:#f92672">&lt;</span><span style="color:#66d9ef">u64</span>, C1<span style="color:#f92672">&gt;</span> <span style="color:#f92672">=</span> Resource::new(<span style="color:#ae81ff">0</span>);
+
+<span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">t1</span>(_task: <span style="color:#a6e22e">Exti0Irq</span>, _prio: <span style="color:#a6e22e">P1</span>, _thr: <span style="color:#a6e22e">T1</span>) {
+    hprintln<span style="color:#f92672">!</span>(<span style="color:#e6db74">&#34;{}&#34;</span>, mem::size_of_val(<span style="color:#f92672">&amp;</span>R1));
+    hprintln<span style="color:#f92672">!</span>(<span style="color:#e6db74">&#34;{}&#34;</span>, mem::size_of_val(<span style="color:#f92672">&amp;</span>R2));
+    hprintln<span style="color:#f92672">!</span>(<span style="color:#e6db74">&#34;{}&#34;</span>, mem::size_of_val(<span style="color:#f92672">&amp;</span>R3));
+    hprintln<span style="color:#f92672">!</span>(<span style="color:#e6db74">&#34;{}&#34;</span>, mem::size_of_val(<span style="color:#f92672">&amp;</span>R4));
+    hprintln<span style="color:#f92672">!</span>(<span style="color:#e6db74">&#34;{}&#34;</span>, mem::size_of_val(<span style="color:#f92672">&amp;</span>R5));
+}
+</code></pre></div><p>which prints:</p>
+<pre><code>$ openocd -f (..)
+(..)
+0
+1
+2
+4
+8
+</code></pre><h2 id="a-nonzero-cost-pattern">A nonzero cost pattern</h2>
+<p>There is catch with resources: they don&rsquo;t hand out mutable references (<code>&amp;mut-</code>)
+to their inner data, only shared references. To achieve mutation through shared
+references either a <code>Cell</code> or a <code>RefCell</code> must be used. If you are dealing with
+primitives like <code>i32</code> and <code>bool</code> then <code>Cell</code> gives you a zero cost way to mutate
+the data, but anything more complex that requires mutation via <code>&amp;mut self</code> will
+require a <code>RefCell</code>. The problem with <code>RefCell</code>s is that they have obligatory
+runtime checks to enforce that <a href="https://doc.rust-lang.org/nightly/book/second-edition/ch04-02-references-and-borrowing.html#the-rules-of-references">Rust borrowing rules</a> are preserved.</p>
+<h3 id="access_mut"><code>access_mut</code>?</h3>
+<p>From the POV of concurrency if a task meets the conditions to <code>access</code> a
+resource then it <em>has</em> exclusive access to that resource as no other task can
+preempt it <em>and</em> access the same resource. So, from the POV of concurrency
+<code>access</code> returning a mutable reference is perfectly valid. However, <code>access</code>
+returning a mutable reference doesn&rsquo;t sit well with Rust borrowing rules:
+mutable aliasing <em>is</em> a problem even within a single thread / context / task as
+it can lead to pointer invalidation <sup id="fnref:3"><a href="#fn:3" class="footnote-ref" role="doc-noteref">3</a></sup> <sup id="fnref:4"><a href="#fn:4" class="footnote-ref" role="doc-noteref">4</a></sup>.</p>
+<p>The task local data abstraction faces the same situation, but <code>Local</code> does
+provide a <em>safe</em> <code>borrow_mut</code> method that hands out mutable references. Why is
+that method safe? Because of its signature:</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#66d9ef">impl</span><span style="color:#f92672">&lt;</span>DATA, TASK<span style="color:#f92672">&gt;</span> Local<span style="color:#f92672">&lt;</span>DATA, TASK<span style="color:#f92672">&gt;</span> {
+    <span style="color:#66d9ef">pub</span> <span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">borrow_mut</span><span style="color:#f92672">&lt;</span><span style="color:#a6e22e">&#39;task</span><span style="color:#f92672">&gt;</span>(
+        <span style="color:#f92672">&amp;</span>&#39;static self,
+        _task: <span style="color:#66d9ef">&amp;</span><span style="color:#a6e22e">&#39;task</span> <span style="color:#66d9ef">mut</span> TASK,
+    ) -&gt; <span style="color:#66d9ef">&amp;</span><span style="color:#a6e22e">&#39;task</span> <span style="color:#66d9ef">mut</span> DATA {
+        ..
+    }
+}
+</code></pre></div><p><code>borrow_mut</code> takes a mutable reference to the task token; this <em>freezes</em> the
+task token making it impossible to use <code>borrow_mut</code> for as long as the returned
+mutable reference is in scope. This does prevent mutable aliasing as shown
+below:</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">t1</span>(<span style="color:#66d9ef">ref</span> <span style="color:#66d9ef">mut</span> task: <span style="color:#a6e22e">Exti0Irq</span>, _prio: <span style="color:#a6e22e">P1</span>, _thr: <span style="color:#a6e22e">T1</span>) {
+    <span style="color:#66d9ef">static</span> STATE: <span style="color:#a6e22e">Local</span><span style="color:#f92672">&lt;</span><span style="color:#66d9ef">i32</span>, Exti0Irq<span style="color:#f92672">&gt;</span> <span style="color:#f92672">=</span> Local::new(<span style="color:#ae81ff">0</span>);
+
+    <span style="color:#66d9ef">let</span> state: <span style="color:#66d9ef">&amp;</span><span style="color:#a6e22e">mut</span> <span style="color:#66d9ef">i32</span> <span style="color:#f92672">=</span> STATE.borrow_mut(task);
+    <span style="color:#66d9ef">let</span> aliased_state: <span style="color:#66d9ef">&amp;</span><span style="color:#a6e22e">mut</span> <span style="color:#66d9ef">i32</span> <span style="color:#f92672">=</span> STATE.borrow_mut(task);
+    <span style="color:#75715e">//~^ error: cannot borrow `*task` as mutable more than once at a time
+</span><span style="color:#75715e"></span>}
+</code></pre></div><p>However this safety mechanism is also rather restrictive because you can&rsquo;t
+mutably borrow two <em>different</em> resources within the same scope:</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">t1</span>(<span style="color:#66d9ef">ref</span> <span style="color:#66d9ef">mut</span> task: <span style="color:#a6e22e">Exti0Irq</span>, _prio: <span style="color:#a6e22e">P1</span>, _thr: <span style="color:#a6e22e">T1</span>) {
+    <span style="color:#66d9ef">static</span> A: <span style="color:#a6e22e">Local</span><span style="color:#f92672">&lt;</span><span style="color:#66d9ef">i32</span>, Exti0Irq<span style="color:#f92672">&gt;</span> <span style="color:#f92672">=</span> Local::new(<span style="color:#ae81ff">0</span>);
+    <span style="color:#66d9ef">static</span> B: <span style="color:#a6e22e">Local</span><span style="color:#f92672">&lt;</span><span style="color:#66d9ef">i32</span>, Exti0Irq<span style="color:#f92672">&gt;</span> <span style="color:#f92672">=</span> Local::new(<span style="color:#ae81ff">0</span>);
+
+    <span style="color:#75715e">// this is valid and safe but ...
+</span><span style="color:#75715e"></span>    <span style="color:#66d9ef">let</span> a: <span style="color:#66d9ef">&amp;</span><span style="color:#a6e22e">mut</span> <span style="color:#66d9ef">i32</span> <span style="color:#f92672">=</span> A.borrow_mut(task);
+    <span style="color:#66d9ef">let</span> b: <span style="color:#66d9ef">&amp;</span><span style="color:#a6e22e">mut</span> <span style="color:#66d9ef">i32</span> <span style="color:#f92672">=</span> B.borrow_mut(task);
+    <span style="color:#75715e">//~^ error: cannot borrow `*task` as mutable more than once at a time
+</span><span style="color:#75715e"></span>
+    <span style="color:#f92672">*</span>a <span style="color:#f92672">+=</span> <span style="color:#ae81ff">1</span>;
+    <span style="color:#f92672">*</span>b <span style="color:#f92672">+=</span> <span style="color:#ae81ff">2</span>;
+}
+</code></pre></div><p>This can, somehow, be worked around by minimizing the spans of the mutable
+borrows as shown below:</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">t1</span>(<span style="color:#66d9ef">ref</span> <span style="color:#66d9ef">mut</span> task: <span style="color:#a6e22e">Exti0Irq</span>, _prio: <span style="color:#a6e22e">P1</span>, _thr: <span style="color:#a6e22e">T1</span>) {
+    <span style="color:#66d9ef">static</span> A: <span style="color:#a6e22e">Local</span><span style="color:#f92672">&lt;</span><span style="color:#66d9ef">i32</span>, Exti0Irq<span style="color:#f92672">&gt;</span> <span style="color:#f92672">=</span> Local::new(<span style="color:#ae81ff">0</span>);
+    <span style="color:#66d9ef">static</span> B: <span style="color:#a6e22e">Local</span><span style="color:#f92672">&lt;</span><span style="color:#66d9ef">i32</span>, Exti0Irq<span style="color:#f92672">&gt;</span> <span style="color:#f92672">=</span> Local::new(<span style="color:#ae81ff">0</span>);
+
+    <span style="color:#f92672">*</span>A.borrow_mut(task) <span style="color:#f92672">+=</span> <span style="color:#ae81ff">1</span>;
+    <span style="color:#f92672">*</span>B.borrow_mut(task) <span style="color:#f92672">+=</span> <span style="color:#ae81ff">2</span>;
+}
+</code></pre></div><p>But this workaround is rather unergonomic, and doesn&rsquo;t work when you need to
+pass two mutable references to a function / method.</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">t1</span>(<span style="color:#66d9ef">ref</span> <span style="color:#66d9ef">mut</span> task: <span style="color:#a6e22e">Exti0Irq</span>, _prio: <span style="color:#a6e22e">P1</span>, _thr: <span style="color:#a6e22e">T1</span>) {
+    <span style="color:#66d9ef">static</span> A: <span style="color:#a6e22e">Local</span><span style="color:#f92672">&lt;</span><span style="color:#66d9ef">i32</span>, Exti0Irq<span style="color:#f92672">&gt;</span> <span style="color:#f92672">=</span> Local::new(<span style="color:#ae81ff">0</span>);
+    <span style="color:#66d9ef">static</span> B: <span style="color:#a6e22e">Local</span><span style="color:#f92672">&lt;</span><span style="color:#66d9ef">i32</span>, Exti0Irq<span style="color:#f92672">&gt;</span> <span style="color:#f92672">=</span> Local::new(<span style="color:#ae81ff">0</span>);
+
+    mem::swap(A.borrow_mut(task), B.borrow_mut(task));
+    <span style="color:#75715e">//~^ error: cannot borrow `*task` as mutable more than once at a time
+</span><span style="color:#75715e"></span>}
+</code></pre></div><p>So can we add an <code>access_mut</code> method to <code>Resource</code> that behaves like
+<code>Local.borrow_mut</code>? Turns out making the lifetime constraints work out is tricky
+because the <code>access</code> takes two arguments and already has lifetime constraint wrt
+to the threshold token. It&rsquo;s also likely that <code>access_mut</code> will hit the borrow
+restrictions shown above much more often that in the <code>Local</code> case so I&rsquo;m not
+sure if <code>access_mut</code> will actually help or rather only cause more frustration
+<sup id="fnref:5"><a href="#fn:5" class="footnote-ref" role="doc-noteref">5</a></sup>.</p>
+<h3 id="refcell-overhead"><code>RefCell</code> overhead</h3>
+<p>Until we find a proper solution to the borrow restriction we have to use
+<code>RefCell</code>s but how much overhead do they impose over the ideal solution that has
+no runtime checks? Let&rsquo;s check with this program:</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#66d9ef">static</span> COUNTER: <span style="color:#a6e22e">Resource</span><span style="color:#f92672">&lt;</span>RefCell<span style="color:#f92672">&lt;</span><span style="color:#66d9ef">u32</span><span style="color:#f92672">&gt;</span>, C1<span style="color:#f92672">&gt;</span> <span style="color:#f92672">=</span> Resource::new(RefCell::new(<span style="color:#ae81ff">0</span>));
+
+<span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">t1</span>(_task: <span style="color:#a6e22e">Exti0Irq</span>, <span style="color:#66d9ef">ref</span> prio: <span style="color:#a6e22e">P1</span>, <span style="color:#66d9ef">ref</span> thr: <span style="color:#a6e22e">T1</span>) {
+    rtfm::bkpt();
+
+    <span style="color:#66d9ef">let</span> counter <span style="color:#f92672">=</span> COUNTER.access(prio, thr);
+    <span style="color:#f92672">*</span>counter.borrow_mut() <span style="color:#f92672">+=</span> <span style="color:#ae81ff">1</span>;
+
+    rtfm::bkpt();
+}
+</code></pre></div><p>This is our running example of increasing a counter. Here&rsquo;s the disassembly of
+the <code>RefCell</code> version:</p>
+<pre><code class="language-armasm" data-lang="armasm">08000336 &lt;overhead::main::INTERRUPTS::t1&gt;:
+ 8000336:	f240 0000 	movw	r0, #0
+ 800033a:	be00      	bkpt	0x0000
+ 800033c:	f2c2 0000 	movt	r0, #8192	; 0x2000
+ 8000340:	6801      	ldr	r1, [r0, #0]
+ 8000342:	b931      	cbnz	r1, 8000352 &lt;overhead::main::INTERRUPTS::t1+0x1c&gt;
+ 8000344:	6841      	ldr	r1, [r0, #4]
+ 8000346:	2200      	movs	r2, #0
+ 8000348:	3101      	adds	r1, #1
+ 800034a:	e9c0 2100 	strd	r2, r1, [r0]
+ 800034e:	be00      	bkpt	0x0000
+ 8000350:	4770      	bx	lr
+ 8000352:	b580      	push	{r7, lr}
+ 8000354:	466f      	mov	r7, sp
+ 8000356:	f7ff feeb 	bl	8000130 &lt;core::result::unwrap_failed&gt;
+</code></pre><p>And the runtime cost is 12 cycles.</p>
+<pre><code class="language-console" data-lang="console">&gt; continue
+&gt; # PC = 0x0800033a, (CYCCNT &amp; 0xff) = 0xb9
+
+&gt; continue
+&gt; # PC = 0x0800034e, (CYCCNT &amp; 0xff) = 0xc5
+
+&gt; print 0xc5 - 0xb9
+$1 = 12
+</code></pre><p>Remember that we measured the <code>Cell</code> version and the unsafe <code>static mut</code> version
+of this example before and they both took 6 cycles. So is the overhead a fixed
+cost of 6 cycles? Let&rsquo;s confirm with another program:</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#66d9ef">static</span> COUNTER: <span style="color:#a6e22e">Resource</span><span style="color:#f92672">&lt;</span>RefCell<span style="color:#f92672">&lt;</span>()<span style="color:#f92672">&gt;</span>, C1<span style="color:#f92672">&gt;</span> <span style="color:#f92672">=</span> Resource::new(RefCell::new(()));
+
+<span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">t1</span>(_task: <span style="color:#a6e22e">Exti0Irq</span>, <span style="color:#66d9ef">ref</span> prio: <span style="color:#a6e22e">P1</span>, <span style="color:#66d9ef">ref</span> thr: <span style="color:#a6e22e">T1</span>) {
+    rtfm::bkpt();
+
+    <span style="color:#66d9ef">let</span> counter <span style="color:#f92672">=</span> COUNTER.access(prio, thr);
+    counter.borrow_mut();
+
+    rtfm::bkpt();
+}
+</code></pre></div><p>Disassembly:</p>
+<pre><code class="language-armasm" data-lang="armasm">08000336 &lt;overhead::main::INTERRUPTS::t1&gt;:
+ 8000336:	f240 0000 	movw	r0, #0
+ 800033a:	be00      	bkpt	0x0000
+ 800033c:	f2c2 0000 	movt	r0, #8192	; 0x2000
+ 8000340:	6801      	ldr	r1, [r0, #0]
+ 8000342:	b919      	cbnz	r1, 800034c &lt;overhead::main::INTERRUPTS::t1+0x16&gt;
+ 8000344:	2100      	movs	r1, #0
+ 8000346:	6001      	str	r1, [r0, #0]
+ 8000348:	be00      	bkpt	0x0000
+ 800034a:	4770      	bx	lr
+ 800034c:	b580      	push	{r7, lr}
+ 800034e:	466f      	mov	r7, sp
+ 8000350:	f7ff feee 	bl	8000130 &lt;core::result::unwrap_failed&gt;
+</code></pre><p>Debug session:</p>
+<pre><code class="language-console" data-lang="console">&gt; continue
+&gt; # PC = 0x0800033a, (CYCCNT &amp; 0xff) = 0x93
+
+&gt; continue
+&gt; # PC = 0x08000348, (CYCCNT &amp; 0xff) = 0x9a
+
+&gt; print 0x9a - 0x93
+$1 = 7
+</code></pre><p>The measurement says 7 cycles of overhead for doing a no-op <code>borrow_mut()</code>. So
+around 6 or 7 cycles seems to be the overhead of using <code>RefCell.borrow_mut</code>.</p>
+<p>The worst part of <code>RefCell</code>s is that they inhibit optimizations. If we rewrite
+our program like this:</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#66d9ef">static</span> COUNTER: <span style="color:#a6e22e">Resource</span><span style="color:#f92672">&lt;</span>RefCell<span style="color:#f92672">&lt;</span><span style="color:#66d9ef">u32</span><span style="color:#f92672">&gt;</span>, C1<span style="color:#f92672">&gt;</span> <span style="color:#f92672">=</span> Resource::new(RefCell::new(<span style="color:#ae81ff">0</span>));
+
+<span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">t1</span>(_task: <span style="color:#a6e22e">Exti0Irq</span>, <span style="color:#66d9ef">ref</span> prio: <span style="color:#a6e22e">P1</span>, <span style="color:#66d9ef">ref</span> thr: <span style="color:#a6e22e">T1</span>) {
+    rtfm::bkpt();
+
+    <span style="color:#66d9ef">let</span> counter <span style="color:#f92672">=</span> COUNTER.access(prio, thr);
+    <span style="color:#66d9ef">let</span> curr <span style="color:#f92672">=</span> <span style="color:#f92672">*</span>counter.borrow();
+    <span style="color:#f92672">*</span>counter.borrow_mut() <span style="color:#f92672">=</span> curr <span style="color:#f92672">+</span> <span style="color:#ae81ff">1</span>;
+
+    rtfm::bkpt();
+}
+</code></pre></div><p>We get a much worse disassembly:</p>
+<pre><code class="language-armasm" data-lang="armasm">0800033e &lt;overhead::main::INTERRUPTS::t1&gt;:
+ 800033e:	b580      	push	{r7, lr}
+ 8000340:	466f      	mov	r7, sp
+ 8000342:	f240 0000 	movw	r0, #0
+ 8000346:	be00      	bkpt	0x0000
+ 8000348:	f2c2 0000 	movt	r0, #8192	; 0x2000
+ 800034c:	6801      	ldr	r1, [r0, #0]
+ 800034e:	b931      	cbnz	r1, 800035e &lt;overhead::main::INTERRUPTS::t1+0x20&gt;
+ 8000350:	6841      	ldr	r1, [r0, #4]
+ 8000352:	2200      	movs	r2, #0
+ 8000354:	3101      	adds	r1, #1
+ 8000356:	e9c0 2100 	strd	r2, r1, [r0]
+ 800035a:	be00      	bkpt	0x0000
+ 800035c:	bd80      	pop	{r7, pc}
+ 800035e:	1c48      	adds	r0, r1, #1
+ 8000360:	d101      	bne.n	8000366 &lt;overhead::main::INTERRUPTS::t1+0x28&gt;
+ 8000362:	f7ff fee9 	bl	8000138 &lt;core::result::unwrap_failed&gt;
+ 8000366:	f7ff fee3 	bl	8000130 &lt;core::result::unwrap_failed&gt;
+</code></pre><p>If you do the measurement:</p>
+<pre><code class="language-console" data-lang="console">&gt; continue
+&gt; # PC = 0x08000346, (CYCCNT &amp; 0xff) = 0x95
+
+&gt; continue
+&gt; # PC = 0x0800035a, (CYCCNT &amp; 0xff) = 0xa1
+
+&gt; print 0xa1 - 0x95
+$1 = 12
+</code></pre><p>You get 12 cycles as before but that&rsquo;s not the full story. The task now
+has a prologue, which increases the context switching cost, and now has <em>two</em>
+panic branches instead of one.</p>
+<p><code>RefCell</code>s also impose a memory overhead of 1 word (4 bytes) per resource:</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#66d9ef">static</span> COUNTER: <span style="color:#a6e22e">Resource</span><span style="color:#f92672">&lt;</span>RefCell<span style="color:#f92672">&lt;</span>()<span style="color:#f92672">&gt;</span>, C1<span style="color:#f92672">&gt;</span> <span style="color:#f92672">=</span> Resource::new(RefCell::new(()));
+
+<span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">t1</span>(_task: <span style="color:#a6e22e">Exti0Irq</span>, <span style="color:#66d9ef">ref</span> prio: <span style="color:#a6e22e">P1</span>, <span style="color:#66d9ef">ref</span> thr: <span style="color:#a6e22e">T1</span>) {
+    hprintln<span style="color:#f92672">!</span>(<span style="color:#e6db74">&#34;{}&#34;</span>, mem::size_of_val(<span style="color:#f92672">&amp;</span>COUNTER));
+}
+</code></pre></div><p>This program outputs:</p>
+<pre><code>$ openocd -f (.)
+(..)
+4
+</code></pre><h3 id="less-overhead-using-unsafe">Less overhead using <code>unsafe</code></h3>
+<p>Can we improve the situation somehow? Well, one can use <code>unsafe</code> to optimize
+away the <code>RefCell</code> runtime check. But is that actually safe?</p>
+<p>Resources have the following property: &ldquo;once a task has accessed a resource then
+no other task that may access the same resource can start&rdquo;, where &ldquo;start&rdquo; here
+means preempt the current task. You can flip that property into: &ldquo;by the time a
+task accesses a resource no other outstanding borrows to the resource data can
+exist in other tasks&rdquo;. Taking this to the <code>RefCell</code> context: &ldquo;the first time a
+task accesses a <code>RefCell</code> resource the borrow count of the <code>RefCell</code> is zero&rdquo;.
+Or conversely: &ldquo;as long as Rust borrowing rules are not broken <em>within</em> a task
+the dynamic borrows of a <code>RefCell</code> can&rsquo;t fail&rdquo;.</p>
+<p>Translating that into code:</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#66d9ef">static</span> COUNTER: <span style="color:#a6e22e">Resource</span><span style="color:#f92672">&lt;</span>RefCell<span style="color:#f92672">&lt;</span><span style="color:#66d9ef">u32</span><span style="color:#f92672">&gt;</span>, C1<span style="color:#f92672">&gt;</span> <span style="color:#f92672">=</span> Resource::new(RefCell::new(<span style="color:#ae81ff">0</span>));
+
+<span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">t1</span>(_task: <span style="color:#a6e22e">Exti0Irq</span>, <span style="color:#66d9ef">ref</span> prio: <span style="color:#a6e22e">P1</span>, <span style="color:#66d9ef">ref</span> thr: <span style="color:#a6e22e">T1</span>) {
+    rtfm::bkpt();
+
+    <span style="color:#75715e">// first access to COUNTER in this task
+</span><span style="color:#75715e"></span>    <span style="color:#66d9ef">let</span> counter <span style="color:#f92672">=</span> COUNTER.access(prio, thr);
+
+    <span style="color:#66d9ef">match</span> counter.try_borrow_mut() {
+        Ok(<span style="color:#66d9ef">mut</span> counter) <span style="color:#f92672">=&gt;</span> <span style="color:#f92672">*</span>counter <span style="color:#f92672">+=</span> <span style="color:#ae81ff">1</span>,
+        <span style="color:#75715e">// we know that this is not reachable because no other task can have
+</span><span style="color:#75715e"></span>        <span style="color:#75715e">// a reference to COUNTER&#39;s inner data and this is the first dynamic
+</span><span style="color:#75715e"></span>        <span style="color:#75715e">// borrow of COUNTER in this task
+</span><span style="color:#75715e"></span>        Err(_) <span style="color:#f92672">=&gt;</span> <span style="color:#66d9ef">unsafe</span> { intrinsics::unreachable() },
+    }
+
+    rtfm::bkpt();
+}
+</code></pre></div><p>Disassembly:</p>
+<pre><code class="language-armasm" data-lang="armasm">0800032e &lt;overhead::main::INTERRUPTS::t1&gt;:
+ 800032e:	f240 0000 	movw	r0, #0
+ 8000332:	be00      	bkpt	0x0000
+ 8000334:	2200      	movs	r2, #0
+ 8000336:	f2c2 0000 	movt	r0, #8192	; 0x2000
+ 800033a:	6841      	ldr	r1, [r0, #4]
+ 800033c:	3101      	adds	r1, #1
+ 800033e:	e9c0 2100 	strd	r2, r1, [r0]
+ 8000342:	be00      	bkpt	0x0000
+ 8000344:	4770      	bx	lr
+</code></pre><p>The measurement says that this program takes 9 cycles. Remember than the ideal
+version took 6 cycles.</p>
+<pre><code class="language-console" data-lang="console">&gt; continue
+&gt; # PC = 0x08000332, (CYCCNT &amp; 0xff) = 0x9f
+
+&gt; continue
+&gt; # PC = 0x08000342, (CYCCNT &amp; 0xff) = 0xa8
+
+&gt; print 0xa8 - 0x9f
+$1 = 9
+</code></pre><p>This helps a bit with the runtime overhead, but doesn&rsquo;t remove the borrow
+counter from the resource so the resource still has a memory overhead of one
+word. At the end it&rsquo;s probably not worth to lose memory safety to reduce a bit
+of runtime overhead.</p>
+<h1 id="outro">Outro</h1>
+<p>Wow, that&rsquo;s was a lot (again). Sorry, I probably overdid myself a little up
+there. I hope you now have a better idea of what RTFM does under the hood; it
+actually does very little! And I hope that&rsquo;s also clear that most of the
+guarantees that RTFM provides are enforced at compile time and don&rsquo;t involve
+runtime checks. Hopefully we&rsquo;ll get rid of <code>RefCell</code> at some point.</p>
+<p>Next up: measuring performance at runtime, and then, finally, some applications.</p>
+<hr>
+<p><strong>Thank you patrons! ❤️</strong></p>
+<p>I want to wholeheartedly thank <a href="https://github.com/Razican">Iban Eguia</a>, <a href="https://github.com/aturon">Aaron Turon</a>, <a href="https://github.com/archaelus">Geoff Cant</a>,
+<a href="http://www.harrisonchin.com/">Harrison Chin</a>, <a href="https://github.com/brandonedens">Brandon Edens</a>, <a href="https://github.com/whitequark">whitequark</a>, <a href="https://convolv.es/">J. Ryan Stinnett</a> and 14
+more people for supporting my work on Patreon.</p>
+<hr>
+<p>Let&rsquo;s discuss on <a href="https://www.reddit.com/r/rust/comments/6cv2in/eir_overhead_analysis_of_the_rtfm_framework/">reddit</a>.</p>
+<hr>
+<h1 id="appendix">Appendix</h1>
+<p>Initial version of the program used throughout this post:</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#75715e">#![feature(const_fn)]</span>
+<span style="color:#75715e">#![feature(used)]</span>
+<span style="color:#75715e">#![no_std]</span>
+
+<span style="color:#75715e">// version = &#34;0.2.7&#34;
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">extern</span> <span style="color:#66d9ef">crate</span> cortex_m;
+<span style="color:#75715e">// version = &#34;0.2.0&#34;
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">extern</span> <span style="color:#66d9ef">crate</span> cortex_m_rt;
+<span style="color:#75715e">// version = &#34;0.1.0&#34;
+</span><span style="color:#75715e"></span><span style="color:#75715e">#[macro_use]</span>
+<span style="color:#66d9ef">extern</span> <span style="color:#66d9ef">crate</span> cortex_m_rtfm <span style="color:#66d9ef">as</span> rtfm;
+<span style="color:#75715e">// git = &#34;https://github.com/japaric/vl&#34;
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">extern</span> <span style="color:#66d9ef">crate</span> vl;
+
+<span style="color:#66d9ef">use</span> core::ptr;
+
+<span style="color:#66d9ef">use</span> cortex_m::asm;
+<span style="color:#66d9ef">use</span> rtfm::{P0, P1, T0, T1, TMax};
+<span style="color:#66d9ef">use</span> vl::stm32f100xx::interrupt::Exti0Irq;
+<span style="color:#66d9ef">use</span> vl::stm32f100xx;
+
+<span style="color:#75715e">// RESOURCES
+</span><span style="color:#75715e"></span>peripherals<span style="color:#f92672">!</span>(stm32f100xx, {
+    DWT: <span style="color:#a6e22e">Peripheral</span> {
+        register_block: <span style="color:#a6e22e">Dwt</span>,
+        ceiling: <span style="color:#a6e22e">C1</span>,
+    },
+});
+
+<span style="color:#75715e">// INITIALIZATION PHASE
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">init</span>(<span style="color:#66d9ef">ref</span> prio: <span style="color:#a6e22e">P0</span>, thr: <span style="color:#66d9ef">&amp;</span><span style="color:#a6e22e">TMax</span>) {
+    <span style="color:#75715e">// NB the cycle counter is disabled by default
+</span><span style="color:#75715e"></span>    <span style="color:#66d9ef">let</span> dwt <span style="color:#f92672">=</span> DWT.access(prio, thr);
+    dwt.enable_cycle_counter();
+}
+
+<span style="color:#75715e">// IDLE LOOP
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">idle</span>(_prio: <span style="color:#a6e22e">P0</span>, _thr: <span style="color:#a6e22e">T0</span>) -&gt; <span style="color:#f92672">!</span> {
+    <span style="color:#75715e">// Start task `t1`
+</span><span style="color:#75715e"></span>    rtfm::request(t1);
+
+    <span style="color:#75715e">// Sleep
+</span><span style="color:#75715e"></span>    <span style="color:#66d9ef">loop</span> {
+        rtfm::wfi();
+    }
+}
+
+<span style="color:#75715e">// TASKS
+</span><span style="color:#75715e"></span>tasks<span style="color:#f92672">!</span>(stm32f100xx, {
+    t1: <span style="color:#a6e22e">Task</span> {
+        interrupt: <span style="color:#a6e22e">Exti0Irq</span>,
+        priority: <span style="color:#a6e22e">P1</span>,
+        enabled: <span style="color:#a6e22e">true</span>,
+    },
+});
+
+<span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">t1</span>(_task: <span style="color:#a6e22e">Exti0Irq</span>, <span style="color:#66d9ef">ref</span> prio: <span style="color:#a6e22e">P1</span>, <span style="color:#66d9ef">ref</span> thr: <span style="color:#a6e22e">T1</span>) {
+    <span style="color:#66d9ef">let</span> dwt <span style="color:#f92672">=</span> DWT.access(prio, thr);
+
+    <span style="color:#66d9ef">let</span> before <span style="color:#f92672">=</span> dwt.cyccnt.read();
+    asm::nop();
+    <span style="color:#66d9ef">let</span> after <span style="color:#f92672">=</span> dwt.cyccnt.read();
+
+    <span style="color:#66d9ef">let</span> elapsed <span style="color:#f92672">=</span> after.wrapping_sub(before);
+
+    <span style="color:#66d9ef">unsafe</span> { ptr::write_volatile(<span style="color:#ae81ff">0x2000_0000</span> <span style="color:#66d9ef">as</span> <span style="color:#f92672">*</span><span style="color:#66d9ef">mut</span> _, elapsed) }
+
+    rtfm::bkpt();
+}
+</code></pre></div><section class="footnotes" role="doc-endnotes">
+<hr>
+<ol>
+<li id="fn:1" role="doc-endnote">
+<p>The <a href="http://infocenter.arm.com/help/topic/com.arm.doc.ddi0337e/DDI0337E_cortex_m3_r1p1_trm.pdf">technical reference manual</a> (<em>warning</em> big PDF file),
+in figure 5-2, indicates a worst case scenario of 12 cycles for the
+interrupt latency. <a href="#fnref:1" class="footnote-backref" role="doc-backlink">&#x21a9;&#xfe0e;</a></p>
+</li>
+<li id="fn:2" role="doc-endnote">
+<p>Remember that <code>Threshold.raise</code> critical sections <a href="/fearless-concurrency/#not-your-typical-critical-section">are not <em>global</em></a>
+as they don&rsquo;t block <em>all</em> the other tasks; instead they only block tasks
+that could cause data races. <a href="#fnref:2" class="footnote-backref" role="doc-backlink">&#x21a9;&#xfe0e;</a></p>
+</li>
+<li id="fn:3" role="doc-endnote">
+<p><a href="http://manishearth.github.io/blog/2015/05/17/the-problem-with-shared-mutability/">http://manishearth.github.io/blog/2015/05/17/the-problem-with-shared-mutability/</a> <a href="#fnref:3" class="footnote-backref" role="doc-backlink">&#x21a9;&#xfe0e;</a></p>
+</li>
+<li id="fn:4" role="doc-endnote">
+<p><a href="http://smallcultfollowing.com/babysteps/blog/2013/06/11/on-the-connection-between-memory-management-and-data-race-freedom/">http://smallcultfollowing.com/babysteps/blog/2013/06/11/on-the-connection-between-memory-management-and-data-race-freedom/</a> <a href="#fnref:4" class="footnote-backref" role="doc-backlink">&#x21a9;&#xfe0e;</a></p>
+</li>
+<li id="fn:5" role="doc-endnote">
+<p>You can find more details about <code>access_mut</code> in [this thread]
+[this thread]: <a href="https://github.com/japaric/cortex-m-rtfm/issues/24">https://github.com/japaric/cortex-m-rtfm/issues/24</a> <a href="#fnref:5" class="footnote-backref" role="doc-backlink">&#x21a9;&#xfe0e;</a></p>
+</li>
+</ol>
+</section>
+
+    </div>
+
+    
+    
+    <div class="article-toc" >
+        <h3>Contents</h3>
+        <nav id="TableOfContents">
+  <ul>
+    <li><a href="#dwt-and-cyccnt">DWT and CYCCNT</a></li>
+    <li><a href="#the-obvious-approach">The obvious approach</a></li>
+    <li><a href="#a-better-approach">A better approach</a></li>
+  </ul>
+
+  <ul>
+    <li><a href="#scheduling">Scheduling</a></li>
+    <li><a href="#context-switching">Context switching</a>
+      <ul>
+        <li><a href="#preemption">Preemption</a></li>
+        <li><a href="#tail-chaining">Tail chaining</a></li>
+      </ul>
+    </li>
+    <li><a href="#memory-overhead">Memory overhead</a></li>
+    <li><a href="#setup-cost">Setup cost</a>
+      <ul>
+        <li><a href="#zero-tasks">Zero tasks</a></li>
+        <li><a href="#one-task">One task</a></li>
+        <li><a href="#n-tasks">N tasks</a></li>
+        <li><a href="#shared-call-stack">Shared call stack</a></li>
+      </ul>
+    </li>
+  </ul>
+
+  <ul>
+    <li><a href="#localborrow"><code>Local.borrow</code></a></li>
+    <li><a href="#memory-overhead-1">Memory overhead</a></li>
+    <li><a href="#conclusion">Conclusion</a></li>
+  </ul>
+
+  <ul>
+    <li><a href="#resourceaccess"><code>Resource.access</code></a></li>
+    <li><a href="#thresholdraise"><code>Threshold.raise</code></a>
+      <ul>
+        <li><a href="#vs-rtfmatomic">vs <code>rtfm::atomic</code></a></li>
+      </ul>
+    </li>
+    <li><a href="#memory-overhead-2">Memory overhead</a></li>
+    <li><a href="#a-nonzero-cost-pattern">A nonzero cost pattern</a>
+      <ul>
+        <li><a href="#access_mut"><code>access_mut</code>?</a></li>
+        <li><a href="#refcell-overhead"><code>RefCell</code> overhead</a></li>
+        <li><a href="#less-overhead-using-unsafe">Less overhead using <code>unsafe</code></a></li>
+      </ul>
+    </li>
+  </ul>
+</nav>
+    </div>
+    
+    
+
+    
+  </div>
+</section>
+
+
+<section class="section">
+  <div class="container has-text-centered">
+    <p><a rel="license" href="http://creativecommons.org/licenses/by/4.0/"><img alt="Creative Commons License" src="https://i.creativecommons.org/l/by/4.0/80x15.png" /></a><br/>Jorge Aparicio</p>
+  </div>
+</section>
+
+
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/styles/tomorrow-night.min.css" />
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/highlight.min.js" integrity="sha256-aYTdUrn6Ow1DDgh5JTc3aDGnnju48y/1c8s1dgkYPQ8=" crossorigin="anonymous"></script>
+
+<script type="text/javascript" src="//cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/languages/armasm.min.js"></script>
+
+<script type="text/javascript" src="//cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/languages/c.min.js"></script>
+
+<script type="text/javascript" src="//cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/languages/diff.min.js"></script>
+
+<script type="text/javascript" src="//cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/languages/llvm.min.js"></script>
+
+<script type="text/javascript" src="//cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/languages/rust.min.js"></script>
+
+<script type="text/javascript" src="//cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/languages/shell.min.js"></script>
+
+<script>hljs.initHighlightingOnLoad();</script>
+
+
+</body>

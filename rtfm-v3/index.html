@@ -1,0 +1,542 @@
+<!DOCTYPE html>
+<html lang="en-us">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta content="Rust, embedded, development" name="keywords">
+<meta content="Jorge Aparicio" name="author">
+<meta property="og:title" content="RTFM v0.3.0: safe `&amp;&#39;static mut T` and less locks - Embedded in Rust">
+<meta property="og:url" content="https://blog.japaric.io/rtfm-v3/">
+<meta property="og:description" content="A blog about Rust and embedded stuff">
+<meta property="og:type" content="website" />
+<title>RTFM v0.3.0: safe `&amp;&#39;static mut T` and less locks | Embedded in Rust</title>
+<link rel="stylesheet" href="https://blog.japaric.io//css/style.css">
+<link rel="shortcut icon" href="https://blog.japaric.io//wave.ico">
+<link rel="alternate" type="application/atom+xml" title="Embedded in Rust Posts" href="https://blog.japaric.io//index.xml">
+<link href="//maxcdn.bootstrapcdn.com/font-awesome/4.7.0/css/font-awesome.min.css" rel="stylesheet" integrity="sha384-wvfXpqpZZVQGK6TAh5PVlGOfQNHSoD2xbE+QkPxCAFlNEevoEH3Sl0sibVcOQVnN" crossorigin="anonymous">
+
+<link rel="stylesheet" href="//cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/styles/github.min.css">
+
+</head>
+
+<body>
+<section class="section">
+  <div class="container">
+    <nav class="nav">
+      <div class="nav-left">
+        <a class="nav-item" href="https://blog.japaric.io/"><h1 class="title is-4">Embedded in Rust</h1></a>
+      </div>
+      <div class="nav-right">
+        <nav class="nav-item level is-mobile">
+          
+          <a class="level-item" href="https://github.com/japaric" target="_blank">
+            <span class="icon">
+              <i class="fa fa-github"></i>
+            </span>
+          </a>
+          
+          <a class="level-item" href="/index.xml" target="_blank">
+            <span class="icon">
+              <i class="fa fa-rss"></i>
+            </span>
+          </a>
+          
+        </nav>
+      </div>
+    </nav>
+  </div>
+</section>
+
+<section class="section">
+  <div class="container">
+    <h1 class="title">RTFM v0.3.0: safe `&amp;&#39;static mut T` and less locks</h1>
+    <h2 class="subtitle is-5">January 22, 2018 by Jorge Aparicio</h2>
+    
+      <div class="tags">
+    
+        <a class="button is-link" href="/tags/arm-cortex-m">ARM Cortex-M</a>
+    
+        <a class="button is-link" href="/tags/concurrency">concurrency</a>
+    
+        <a class="button is-link" href="/tags/rtfm">RTFM</a>
+    
+</div>
+
+    
+    <div class="content">
+      <p>RTFM (Real Time For the Masses) v0.3.0 is <a href="https://docs.rs/cortex-m-rtfm/~0.3.1">out</a>! This blog post will cover the goodies of this new
+release.</p>
+<p>The minor (breaking) release was mainly to become compatible with the new IO model presented in my
+<a href="/brave-new-io">previous blog post</a>, but a new feature also shipped with this release: <em>safe</em>
+creation of <code>&amp;'static mut</code> references.</p>
+<p>First, let&rsquo;s look at one feature that landed in v0.2.1 but that didn&rsquo;t get documented in this blog,
+yet it was essential to adapt RTFM to the new IO model:</p>
+<h1 id="late-resources">Late resources</h1>
+<p>In RTFM all <em>resources</em>, the main mechanism to share memory between <em>tasks</em>, are implemented as
+<code>static</code> variables. In Rust <code>static</code> variables need to have an initial value so, in v0.2.0, you had
+to declare an initial value for all resources declared in the <code>app!</code> macro.</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#75715e">// cortex-m-rtfm v0.2.0
+</span><span style="color:#75715e"></span>app<span style="color:#f92672">!</span> {
+    resources: {
+        <span style="color:#66d9ef">static</span> COUNTER: <span style="color:#66d9ef">u32</span> <span style="color:#f92672">=</span> <span style="color:#ae81ff">0</span>;
+        <span style="color:#66d9ef">static</span> ON: <span style="color:#66d9ef">bool</span> <span style="color:#f92672">=</span> <span style="color:#66d9ef">false</span>;
+    }
+}
+
+<span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">init</span>(p: <span style="color:#a6e22e">init</span>::Peripherals, r: <span style="color:#a6e22e">init</span>::Resources) {
+    assert<span style="color:#f92672">!</span>(r.COUNTER, <span style="color:#ae81ff">0</span>);
+    assert<span style="color:#f92672">!</span>(<span style="color:#f92672">!</span>r.ON);
+}
+</code></pre></div><p>In v0.2.1, RTFM gained support for &ldquo;late resources&rdquo;, resources with runtime (&ldquo;late&rdquo;)
+initialization. Resources that are not assigned an initial value in <code>app!</code> are considered to be late
+resources. These resources need to be assigned an initial value by the end of the <code>init</code> function.</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#75715e">// cortex-m-rtfm v0.2.1
+</span><span style="color:#75715e"></span>app<span style="color:#f92672">!</span> {
+    resources: {
+        <span style="color:#66d9ef">static</span> NORMAL: <span style="color:#66d9ef">u32</span> <span style="color:#f92672">=</span> <span style="color:#ae81ff">0</span>;
+        <span style="color:#66d9ef">static</span> LATE: <span style="color:#66d9ef">u32</span>;
+    },
+
+    idle: {
+        resources: [LATE],
+    }
+}
+
+<span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">init</span>(p: <span style="color:#a6e22e">init</span>::Peripherals, r: <span style="color:#a6e22e">init</span>::Resources) -&gt; <span style="color:#a6e22e">init</span>::LateResources {
+    <span style="color:#75715e">// normal resources can be accessed via `init::Resources`
+</span><span style="color:#75715e"></span>    r.NORMAL <span style="color:#f92672">+=</span> <span style="color:#ae81ff">1</span>;
+
+    <span style="color:#75715e">// but late resources can not because they have not been initialized
+</span><span style="color:#75715e"></span>    <span style="color:#75715e">// at this point
+</span><span style="color:#75715e"></span>    <span style="color:#75715e">//r.LATE += 1;
+</span><span style="color:#75715e"></span>    <span style="color:#75715e">//~^ error: no field named `LATE` found in `init::Resources`
+</span><span style="color:#75715e"></span>
+    <span style="color:#66d9ef">let</span> private_key <span style="color:#f92672">=</span> load_from_eeprom();
+
+    <span style="color:#75715e">// late resources get assigned their initial value here
+</span><span style="color:#75715e"></span>    init::LateResources {
+        LATE: <span style="color:#a6e22e">private_key</span>,
+    }
+}
+
+<span style="color:#75715e">// late resources, the actual static variables, get initialized somewhere
+</span><span style="color:#75715e">// between `init` and `idle`
+</span><span style="color:#75715e">// (recall that the start of `idle` is also when tasks become enabled (can start))
+</span><span style="color:#75715e"></span>
+<span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">idle</span>(t: <span style="color:#66d9ef">&amp;</span><span style="color:#a6e22e">mut</span> Threshold, r: <span style="color:#a6e22e">idle</span>::Resources) -&gt; <span style="color:#f92672">!</span> {
+    <span style="color:#75715e">// late resources can be used at this point
+</span><span style="color:#75715e"></span>    <span style="color:#66d9ef">let</span> private_key <span style="color:#f92672">=</span> <span style="color:#f92672">*</span>r.LATE;
+
+    <span style="color:#66d9ef">loop</span> {
+        <span style="color:#75715e">// do stuff with `private_key`
+</span><span style="color:#75715e"></span>    }
+}
+</code></pre></div><p>This allows initialization of resources in <code>init</code> without the use of <code>Option</code>. In v0.2.0, you could
+achieve more or less the same using a normal resource with an initial value of <code>None</code> but then you
+needed to <code>unwrap</code> the resource to access its value.</p>
+<h1 id="new-io-model--less-locks">New I/O model = less locks</h1>
+<p>The breaking change that moved RTFM to v0.3.0 is: peripherals are no longer special. In v0.2.0,
+any resource associated to a task that didn&rsquo;t appear in the list of declared resources was
+considered a peripheral. Here&rsquo;s an example:</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#75715e">// cortex-m-rtfm v0.2.x
+</span><span style="color:#75715e"></span>
+app<span style="color:#f92672">!</span> {
+    <span style="color:#75715e">// declared resources
+</span><span style="color:#75715e"></span>    resources: {
+        <span style="color:#66d9ef">static</span> COUNTER: <span style="color:#66d9ef">u32</span> <span style="color:#f92672">=</span> <span style="color:#ae81ff">0</span>;
+        <span style="color:#75715e">// no USART1 here!
+</span><span style="color:#75715e"></span>    },
+
+    tasks: {
+        EXTI0: {
+            path: <span style="color:#a6e22e">exti0</span>,
+            <span style="color:#75715e">// yet it appears here!
+</span><span style="color:#75715e"></span>            resources: [USART1],
+            priority: <span style="color:#ae81ff">1</span>,
+        },
+
+        EXTI1: {
+            path: <span style="color:#a6e22e">exti1</span>,
+            <span style="color:#75715e">// and here!
+</span><span style="color:#75715e"></span>            resources: [USART1],
+            priority: <span style="color:#ae81ff">2</span>,
+        },
+    }
+}
+
+<span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">init</span>(p: <span style="color:#a6e22e">init</span>::Peripherals, r: <span style="color:#a6e22e">init</span>::Resources) {
+    <span style="color:#66d9ef">let</span> usart1: <span style="color:#66d9ef">&amp;</span><span style="color:#a6e22e">mut</span> USART1 <span style="color:#f92672">=</span> p.USART1;
+
+    <span style="color:#75715e">// omitted: initialization of the serial interface
+</span><span style="color:#75715e"></span>}
+
+<span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">exti0</span>(t: <span style="color:#66d9ef">&amp;</span><span style="color:#a6e22e">mut</span> Threshold, r: <span style="color:#a6e22e">EXTI0</span>::Resources) {
+    r.USART1.lock_mut(<span style="color:#f92672">|</span>usart1: <span style="color:#66d9ef">&amp;</span><span style="color:#a6e22e">mut</span> USART1<span style="color:#f92672">|</span> {
+        <span style="color:#66d9ef">let</span> tx <span style="color:#f92672">=</span> Tx(usart1);
+        <span style="color:#75715e">// do stuff with `tx` (transmitter)
+</span><span style="color:#75715e"></span>    });
+}
+
+<span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">exti1</span>(t: <span style="color:#66d9ef">&amp;</span><span style="color:#a6e22e">mut</span> Threshold, r: <span style="color:#a6e22e">EXTI1</span>::Resources) {
+    <span style="color:#66d9ef">let</span> usart1: <span style="color:#66d9ef">&amp;</span><span style="color:#a6e22e">mut</span> USART1 <span style="color:#f92672">=</span> r.USART1;
+    <span style="color:#66d9ef">let</span> rx <span style="color:#f92672">=</span> Rx(usart1);
+    <span style="color:#75715e">// do stuff with `rx` (receiver)
+</span><span style="color:#75715e"></span>}
+</code></pre></div><p>Here RTFM assumes that <code>USART1</code> is a peripheral since it doesn&rsquo;t appear in the list of resources.
+v0.3.x is less magic: if you assign an undeclared resource to a task you get a compile time (proc
+macro) error.</p>
+<p>Following the new I/O model in v0.3.x you get <em>ownership</em> over all the peripherals in <code>init</code> &ndash; no
+need to call <code>Peripherals::take().unwrap()</code> &ndash; and you are free to put them in <em>late</em> resources or
+not.</p>
+<p>Let&rsquo;s port the USART example to v0.3.x.</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#75715e">// cortex-m-rtfm v0.3.x
+</span><span style="color:#75715e"></span>app<span style="color:#f92672">!</span> {
+    resources: {
+        <span style="color:#75715e">// (the Rx and Tx used here are simplified versions of what you&#39;d find
+</span><span style="color:#75715e"></span>        <span style="color:#75715e">//  in stm32f30x-hal)
+</span><span style="color:#75715e"></span>        <span style="color:#66d9ef">static</span> RX: <span style="color:#a6e22e">Rx</span><span style="color:#f92672">&lt;</span>USART1<span style="color:#f92672">&gt;</span>;
+        <span style="color:#66d9ef">static</span> TX: <span style="color:#a6e22e">Tx</span><span style="color:#f92672">&lt;</span>USART1<span style="color:#f92672">&gt;</span>;
+    },
+
+    tasks: {
+        EXTI0: {
+            path: <span style="color:#a6e22e">exti0</span>,
+            resources: [TX],
+            priority: <span style="color:#ae81ff">1</span>,
+        },
+
+        EXTI1: {
+            path: <span style="color:#a6e22e">exti1</span>,
+            resources: [RX],
+            priority: <span style="color:#ae81ff">2</span>,
+        },
+    }
+}
+
+<span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">init</span>(p: <span style="color:#a6e22e">init</span>::Peripherals) -&gt; <span style="color:#a6e22e">init</span>::LateResources {
+    <span style="color:#75715e">// Note that this is now an owned value, not a reference
+</span><span style="color:#75715e"></span>    <span style="color:#66d9ef">let</span> usart1: <span style="color:#a6e22e">USART1</span> <span style="color:#f92672">=</span> p.device.USART1;
+
+    <span style="color:#75715e">// omitted: GPIO and clock configuration
+</span><span style="color:#75715e"></span>
+    <span style="color:#75715e">// `pa9` and `pa10` are the Tx and Rx pins that `serial` will use
+</span><span style="color:#75715e"></span>    <span style="color:#66d9ef">let</span> serial <span style="color:#f92672">=</span>
+        Serial::new(usart1, (pa9, pa10), <span style="color:#ae81ff">9_600.</span>bps(), clocks, <span style="color:#f92672">&amp;</span><span style="color:#66d9ef">mut</span> rcc.APB2);
+
+    <span style="color:#75715e">// split `serial` in transmitter and receiver halves
+</span><span style="color:#75715e"></span>    <span style="color:#66d9ef">let</span> (tx, rx) <span style="color:#f92672">=</span> serial.split();
+
+    init::LateResources { TX: <span style="color:#a6e22e">tx</span>, RX: <span style="color:#a6e22e">rx</span> }
+}
+
+<span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">exti0</span>(t: <span style="color:#66d9ef">&amp;</span><span style="color:#a6e22e">mut</span> Threshold, r: <span style="color:#a6e22e">EXTI0</span>::Resources) {
+    <span style="color:#66d9ef">let</span> tx: <span style="color:#66d9ef">&amp;</span><span style="color:#a6e22e">mut</span> Tx<span style="color:#f92672">&lt;</span>USART1<span style="color:#f92672">&gt;</span> <span style="color:#f92672">=</span> r.TX;
+    <span style="color:#75715e">// do stuff with `tx`
+</span><span style="color:#75715e"></span>}
+
+<span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">exti1</span>(t: <span style="color:#66d9ef">&amp;</span><span style="color:#a6e22e">mut</span> Threshold, r: <span style="color:#a6e22e">EXTI1</span>::Resources) {
+    <span style="color:#66d9ef">let</span> rx: <span style="color:#66d9ef">&amp;</span><span style="color:#a6e22e">mut</span> Rx<span style="color:#f92672">&lt;</span>USART1<span style="color:#f92672">&gt;</span> <span style="color:#f92672">=</span> r.RX;
+    <span style="color:#75715e">// do stuff with `rx`
+</span><span style="color:#75715e"></span>}
+</code></pre></div><p>In this new version the task <code>EXTI0</code> doesn&rsquo;t have to lock the USART1 peripheral to use the
+transmitter functionality even though the <code>RX</code> in task <code>EXTI1</code> is <em>also</em> using the USART1
+peripheral. This is OK because the <code>Tx</code> and <code>Rx</code> abstractions are written to operate on USART1
+concurrently without needing to lock it.</p>
+<p>Why wasn&rsquo;t the same possible in the v0.2.x version? The problem with that version is that <code>Tx</code> and
+<code>Rx</code> are constructed in the tasks themselves so there&rsquo;s no way to guarantee, at compile time, that a
+user won&rsquo;t construct a <code>Rx</code> instance in both tasks &ndash; if they do that then the lock becomes
+necessary.</p>
+<p>In the v0.3.x version <code>Tx</code> and <code>Rx</code> are constructed during <code>init</code> and then stored in resources. The
+resources have the types <code>Tx</code> and <code>Rx</code> which mean that there will <em>always</em> be <em>one</em> <code>Tx</code> and <em>one</em>
+<code>Rx</code> &ndash; remember that resources are <code>static</code> variables so the values stored in them can&rsquo;t never be
+destroyed nor can&rsquo;t their types change.</p>
+<p>So with move semantics of the new I/O model and late resources we can achieve even finer grained
+concurrency (less locks) than what was possible to do in v0.2.x.</p>
+<h1 id="safe-static-mut-references">Safe <code>&amp;'static mut</code> references</h1>
+<p>This is the new feature that landed in v0.3.0. Let me first describe how to use it and then I&rsquo;ll
+explain what use cases it enables.</p>
+<p>The <code>init</code> function can modify all <em>non-late</em> resources because it runs before all the tasks can
+run. In v0.2.x, every non-late resource appears under <code>init::Resources</code> as a field with type <code>&amp;mut T</code>; the lifetime of this reference is constrained to the scoped of the <code>init</code> function.</p>
+<p>In v0.3.x, you can assign non-late resources to <code>init</code>; this was not allowed in v0.2.x. When
+you assign a resource to <code>init</code> it becomes <em>owned</em> by <code>init</code>; it will still appear as a field of
+<code>init::Resources</code> but it will have type <code>&amp;'static mut T</code>.</p>
+<p>Example below:</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#75715e">// rtfm v0.3.x
+</span><span style="color:#75715e"></span>app<span style="color:#f92672">!</span> {
+    resources: {
+        <span style="color:#66d9ef">static</span> A: <span style="color:#66d9ef">u32</span> <span style="color:#f92672">=</span> <span style="color:#ae81ff">0</span>;
+        <span style="color:#66d9ef">static</span> B: <span style="color:#66d9ef">u32</span> <span style="color:#f92672">=</span> <span style="color:#ae81ff">0</span>;
+    },
+
+    init: {
+        <span style="color:#75715e">// `init.resources` only exists in v0.3.x
+</span><span style="color:#75715e"></span>        resources: [A],
+    },
+}
+
+<span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">init</span>(p: <span style="color:#a6e22e">init</span>::Peripherals, r: <span style="color:#a6e22e">init</span>::Resources) {
+    <span style="color:#66d9ef">let</span> a: <span style="color:#66d9ef">&amp;</span>&#39;static <span style="color:#66d9ef">mut</span> <span style="color:#66d9ef">u32</span> <span style="color:#f92672">=</span> r.A;
+    <span style="color:#75715e">// note: non-static lifetime
+</span><span style="color:#75715e"></span>    <span style="color:#66d9ef">let</span> b: <span style="color:#66d9ef">&amp;</span> <span style="color:#a6e22e">mut</span> <span style="color:#66d9ef">u32</span> <span style="color:#f92672">=</span> r.B;
+}
+</code></pre></div><p>Some restrictions apply: a resource assigned to <code>init</code> can&rsquo;t be assigned to (i.e. shared with) any
+task; the other restriction, which I already mentioned, is that only <em>non-late</em> resources can be
+assigned to <code>init</code>.</p>
+<p>This doesn&rsquo;t seem too exciting on its own &hellip; so</p>
+<h2 id="why-static-mut">Why <code>&amp;'static mut</code>?</h2>
+<p><code>&amp;'static mut T</code> is very similar to <code>Box&lt;T&gt;</code>. They are both pointer sized and they both <em>own</em> the
+value <code>T</code> so they both have move semantics <em>and</em> implement <code>Send</code> (if <code>T: Send</code>). That makes them
+handy for cheaply <em>sending</em> stuff like buffers from one context of execution (thread or task) to
+another. Sending an owned <code>*mut [u8; 1024]</code> is much cheaper than sending <code>[u8; 1024]</code> because the
+later involves memcpy-ing  the whole array &ndash; whoops!</p>
+<p>The main difference between the two is that to create a <code>Box&lt;T&gt;</code> you need a (dynamic) memory
+allocator whereas <code>&amp;'static mut T</code> can be created without one.</p>
+<p>Sometimes you may not want to use a memory allocator in your application for performance, code size
+and / or reliability <sup id="fnref:1"><a href="#fn:1" class="footnote-ref" role="doc-noteref">1</a></sup> reasons so being able to safely create a <code>&amp;'static mut T</code> is a great
+alternative to <code>Box</code>! Provided that you don&rsquo;t really need a dynamic allocation: for instance, you
+can&rsquo;t create a <code>&amp;'static mut [T]</code> of arbitrary size; it has to be of a known size, or at least the
+upper bound of the size must be known at compile time.</p>
+<h3 id="lockless-queue">Lockless queue</h3>
+<p>The use case that originally prompted the need for <code>&amp;'static mut</code> references was a mechanism for
+inter task communication: a single producer single consumer ring buffer.</p>
+<p>What&rsquo;s that useful for? It&rsquo;s a lockless queue. A producer can queue new items into the ring buffer
+and a consumer can dequeue items from it. If only a single producer and a single consumer exist then
+they can both locklessly operate on the buffer even if they are being used from different execution
+contexts that can preempt each other. This mechanism would let us exchange data between a task and
+the idle loop without locking so it was a welcome addition!</p>
+<p>A <code>static</code> variable friendly <a href="https://docs.rs/heapless/0.2.1/heapless/ring_buffer/struct.RingBuffer.html">implementation</a> of such ring buffer is available in the <a href="https://docs.rs/heapless"><code>heapless</code></a>
+crate but its API produced a consumer and a producer with a lifetime <a href="https://docs.rs/heapless/0.2.1/heapless/ring_buffer/struct.RingBuffer.html#method.split">parameter</a> equal to the
+lifetime of the ring buffer. That API works fine with scoped threads in <code>std</code> land:</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#66d9ef">use</span> heapless::RingBuffer;
+<span style="color:#66d9ef">use</span> scoped_threadpool::Pool;
+
+<span style="color:#75715e">// (the signature is kind of odd due to the lack of const generics;
+</span><span style="color:#75715e">//  ideally it should simply be `RingBuffer&lt;i32, 4&gt;`)
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">let</span> <span style="color:#66d9ef">mut</span> rb: <span style="color:#a6e22e">RingBuffer</span><span style="color:#f92672">&lt;</span><span style="color:#66d9ef">i32</span>, [<span style="color:#66d9ef">i32</span>; <span style="color:#ae81ff">4</span>]<span style="color:#f92672">&gt;</span> <span style="color:#f92672">=</span> RingBuffer::new();
+
+rb.enqueue(<span style="color:#ae81ff">0</span>).unwrap();
+
+{
+    <span style="color:#66d9ef">let</span> (<span style="color:#66d9ef">mut</span> p, <span style="color:#66d9ef">mut</span> c) <span style="color:#f92672">=</span> rb.split();
+
+    Pool::new(<span style="color:#ae81ff">2</span>).scoped(<span style="color:#66d9ef">move</span> <span style="color:#f92672">|</span>scope<span style="color:#f92672">|</span> {
+        scope.execute(<span style="color:#66d9ef">move</span> <span style="color:#f92672">||</span> {
+            p.enqueue(<span style="color:#ae81ff">1</span>).unwrap();
+        });
+
+        scope.execute(<span style="color:#66d9ef">move</span> <span style="color:#f92672">||</span> {
+            c.dequeue().unwrap();
+        });
+    });
+}
+
+rb.dequeue().unwrap();
+</code></pre></div><p>But to use it with RTFM both the producer and consumer need to have a <code>'static</code> lifetime parameter,
+otherwise they can&rsquo;t be stored in a resource (in a <code>static</code> variable). And that&rsquo;s only possible if
+one has a <code>&amp;'static mut</code> reference to a <code>RingBuffer</code>.</p>
+<p>Which became possible with v0.3.x. Here&rsquo;s an example that uses <code>RingBuffer</code> for task-idle
+communication:</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#66d9ef">use</span> heapless::ring_buffer::{Consumer, Producer, RingBuffer},
+
+<span style="color:#66d9ef">enum</span> <span style="color:#a6e22e">Event</span> { A, B, C }
+
+<span style="color:#75715e">// cortex-m-rtfm v0.3.x
+</span><span style="color:#75715e"></span>app<span style="color:#f92672">!</span> {
+    resources: {
+        <span style="color:#75715e">// (again: with const generics we would be able to write `8` instead of
+</span><span style="color:#75715e"></span>        <span style="color:#75715e">//  `[Event; 8]`)
+</span><span style="color:#75715e"></span>        <span style="color:#66d9ef">static</span> RB: <span style="color:#a6e22e">RingBuffer</span><span style="color:#f92672">&lt;</span>Event, [Event; <span style="color:#ae81ff">8</span>]<span style="color:#f92672">&gt;</span> <span style="color:#f92672">=</span> RingBuffer::new();
+        <span style="color:#66d9ef">static</span> C: <span style="color:#a6e22e">Consumer</span><span style="color:#f92672">&lt;</span>&#39;static, Event, [Event; <span style="color:#ae81ff">8</span>]<span style="color:#f92672">&gt;</span>;
+        <span style="color:#66d9ef">static</span> P: <span style="color:#a6e22e">Producer</span><span style="color:#f92672">&lt;</span>&#39;static, Event, [Event; <span style="color:#ae81ff">8</span>]<span style="color:#f92672">&gt;</span>;
+    },
+
+    init: {
+        resources: [RB],
+    },
+
+    idle: {
+        resources: [C],
+    },
+
+    tasks: {
+        EXTI0: {
+            path: <span style="color:#a6e22e">exti0</span>,
+            resources: [P],
+        },
+    },
+}
+
+<span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">init</span>(p: <span style="color:#a6e22e">init</span>::Peripherals, r: <span style="color:#a6e22e">init</span>::Resources) -&gt; <span style="color:#a6e22e">init</span>::LateResources {
+    <span style="color:#66d9ef">let</span> rb: <span style="color:#66d9ef">&amp;</span>&#39;static <span style="color:#66d9ef">mut</span> RingBuffer<span style="color:#f92672">&lt;</span>_, _<span style="color:#f92672">&gt;</span> <span style="color:#f92672">=</span> p.RB;
+
+    <span style="color:#66d9ef">let</span> (p, c) <span style="color:#f92672">=</span> rb.split();
+
+    init::LateResources { P: <span style="color:#a6e22e">p</span>, C: <span style="color:#a6e22e">c</span> }
+}
+
+<span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">idle</span>(t: <span style="color:#66d9ef">&amp;</span><span style="color:#a6e22e">mut</span> Threshold, r: <span style="color:#a6e22e">idle</span>::Resources) {
+    <span style="color:#66d9ef">let</span> c: <span style="color:#66d9ef">&amp;</span><span style="color:#a6e22e">mut</span> Consumer<span style="color:#f92672">&lt;</span>&#39;static, _, _<span style="color:#f92672">&gt;</span> <span style="color:#f92672">=</span> r.C;
+
+    <span style="color:#66d9ef">loop</span> {
+        <span style="color:#66d9ef">if</span> <span style="color:#66d9ef">let</span> Ok(event) <span style="color:#f92672">=</span> c.dequeue() {
+            <span style="color:#75715e">// process event
+</span><span style="color:#75715e"></span>            <span style="color:#66d9ef">match</span> event {
+                Event::A <span style="color:#f92672">=&gt;</span> { <span style="color:#75715e">/* .. */</span> }
+                Event::B <span style="color:#f92672">=&gt;</span> { <span style="color:#75715e">/* .. */</span> }
+                Event::C <span style="color:#f92672">=&gt;</span> { <span style="color:#75715e">/* .. */</span> }
+            }
+        } <span style="color:#66d9ef">else</span> {
+            <span style="color:#75715e">// no event to process: go to sleep
+</span><span style="color:#75715e"></span>            asm::wfi();
+        }
+    }
+}
+
+<span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">exti0</span>(t: <span style="color:#66d9ef">&amp;</span><span style="color:#a6e22e">mut</span> Threshold, r: <span style="color:#a6e22e">EXTI0</span>::Resources) {
+    <span style="color:#66d9ef">let</span> p: <span style="color:#66d9ef">&amp;</span><span style="color:#a6e22e">mut</span> Producer<span style="color:#f92672">&lt;</span>&#39;static, _, _<span style="color:#f92672">&gt;</span> <span style="color:#f92672">=</span> r.P;
+
+    <span style="color:#75715e">// ..
+</span><span style="color:#75715e"></span>
+    <span style="color:#75715e">// notify `idle` about a new event
+</span><span style="color:#75715e"></span>    <span style="color:#66d9ef">if</span> cond {
+        p.queue(Event::A).unwrap();
+    } <span style="color:#66d9ef">else</span> <span style="color:#66d9ef">if</span> another_cond {
+        p.queue(Event::B).unwrap();
+    } <span style="color:#66d9ef">else</span> {
+        p.queue(Event::C).unwrap();
+    }
+}
+</code></pre></div><h3 id="dma-transfers">DMA transfers</h3>
+<p>The other use case that I had for <code>&amp;'static mut</code> references was a memory safe API for DMA transfers.
+But that topic deserves its own blog post so I won&rsquo;t cover it here.</p>
+<h2 id="outside-rtfm">Outside RTFM</h2>
+<p>Not everyone wants to use RTFM (I guess some people don&rsquo;t like the procedural <code>app!</code> macro?) so I
+always try to make RTFM abstractions available outside of the RTFM framework, when possible at all.
+This time it was possible so I brought safe <code>&amp;'static mut</code> references to the <code>cortex-m</code> crate in
+the form of a <a href="https://docs.rs/cortex-m/0.4.2/cortex_m/macro.singleton.html"><code>singleton!</code></a> macro. Unlike the RTFM mechanism, the <code>singleton!</code> macro is not zero
+cost.</p>
+<p>Here&rsquo;s an example of using the macro:</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#75715e">#![no_std]</span>
+
+<span style="color:#75715e">#[macro_use(singleton)]</span>
+<span style="color:#66d9ef">extern</span> <span style="color:#66d9ef">crate</span> cortex_m;
+<span style="color:#66d9ef">extern</span> <span style="color:#66d9ef">crate</span> cortex_m_rt;
+
+<span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">main</span>() {
+    <span style="color:#66d9ef">let</span> a: <span style="color:#66d9ef">&amp;</span>&#39;static <span style="color:#66d9ef">mut</span> <span style="color:#66d9ef">u32</span> <span style="color:#f92672">=</span> singleton<span style="color:#f92672">!</span>(_: <span style="color:#66d9ef">u32</span> <span style="color:#f92672">=</span> <span style="color:#ae81ff">0</span>).unwrap();
+    assert_eq<span style="color:#f92672">!</span>(<span style="color:#f92672">*</span>a, <span style="color:#ae81ff">0</span>);
+
+    <span style="color:#66d9ef">let</span> b: <span style="color:#66d9ef">&amp;</span>&#39;static <span style="color:#66d9ef">mut</span> <span style="color:#66d9ef">u32</span> <span style="color:#f92672">=</span> singleton<span style="color:#f92672">!</span>(_: <span style="color:#66d9ef">u32</span> <span style="color:#f92672">=</span> <span style="color:#ae81ff">1</span>).unwrap();
+    assert_eq<span style="color:#f92672">!</span>(<span style="color:#f92672">*</span>b, <span style="color:#ae81ff">1</span>);
+
+    <span style="color:#75715e">// pointers to different memory locations
+</span><span style="color:#75715e"></span>    assert_ne<span style="color:#f92672">!</span>(a <span style="color:#66d9ef">as</span> <span style="color:#f92672">*</span><span style="color:#66d9ef">mut</span> _ <span style="color:#66d9ef">as</span> <span style="color:#66d9ef">usize</span>, b <span style="color:#66d9ef">as</span> <span style="color:#f92672">*</span><span style="color:#66d9ef">mut</span> _ <span style="color:#66d9ef">as</span> <span style="color:#66d9ef">usize</span>);
+}
+</code></pre></div><p>This program completes without panicking. Each <code>singleton!</code> invocation has a memory overhead of one
+(<code>.bss</code>) byte so 10 bytes total of (<code>.bss + .data</code>) RAM are used in this example. Each <code>singleton!</code>
+invocation also involves a runtime check and that&rsquo;s why the macro returns an <code>Option</code>.</p>
+<p>But why is the runtime check required? The runtime check is actually an aliasing check. Look at the
+next example:</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#75715e">#![no_std]</span>
+
+<span style="color:#75715e">#[macro_use(singleton)]</span>
+<span style="color:#66d9ef">extern</span> <span style="color:#66d9ef">crate</span> cortex_m;
+<span style="color:#66d9ef">extern</span> <span style="color:#66d9ef">crate</span> cortex_m_rt;
+
+<span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">main</span>() {
+    <span style="color:#66d9ef">let</span> a <span style="color:#f92672">=</span> alias(); <span style="color:#75715e">// OK
+</span><span style="color:#75715e"></span>    <span style="color:#66d9ef">let</span> b <span style="color:#f92672">=</span> alias(); <span style="color:#75715e">// `panic!`s
+</span><span style="color:#75715e"></span>}
+
+<span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">alias</span>() -&gt; <span style="color:#66d9ef">&amp;</span>&#39;static <span style="color:#66d9ef">mut</span> <span style="color:#66d9ef">u32</span> {
+    singleton<span style="color:#f92672">!</span>(_: <span style="color:#66d9ef">u32</span> <span style="color:#f92672">=</span> <span style="color:#ae81ff">0</span>).unwrap()
+}
+</code></pre></div><p>This program will <code>panic!</code> because <code>alias</code> returns a pointer to the <em>same</em> memory location in both
+invocations. Without the runtime check <code>b</code> would have become an alias of <code>a</code> and that would have
+broken Rust aliasing model.</p>
+<p>That&rsquo;s it for this post. In the next one I&rsquo;ll present an API for memory safe DMA transfers.</p>
+<hr>
+<p><strong>Thank you patrons! ❤️</strong></p>
+<p>I want to wholeheartedly thank:</p>
+<!-- raw HTML omitted -->
+<!-- raw HTML omitted -->
+<!-- raw HTML omitted -->
+<p><a href="https://github.com/Razican">Iban Eguia</a>,
+<a href="https://github.com/aturon">Aaron Turon</a>,
+<a href="https://github.com/archaelus">Geoff Cant</a>,
+<a href="http://www.harrisonchin.com/">Harrison Chin</a>,
+<a href="https://github.com/brandonedens">Brandon Edens</a>,
+<a href="https://github.com/whitequark">whitequark</a>,
+<a href="https://jamesmunns.com/">James Munns</a>,
+<a href="https://github.com/flundstrom2">Fredrik Lundström</a>,
+<a href="https://github.com/kjetilkjeka">Kjetil Kjeka</a>,
+Kor Nielsen,
+<a href="https://myrrlyn.net/">Alexander Payne</a>,
+<a href="https://metafluff.com/">Dietrich Ayala</a>,
+<a href="http://kenkeiter.com/">Kenneth Keiter</a>
+and 42 more people for supporting my work on Patreon.</p>
+<!-- raw HTML omitted -->
+<hr>
+<p>Let&rsquo;s discuss on <a href="https://www.reddit.com/r/rust/comments/7s81h1/eir_real_time_for_the_masses_v030_safe_static_mut/">reddit</a>.</p>
+<section class="footnotes" role="doc-endnotes">
+<hr>
+<ol>
+<li id="fn:1" role="doc-endnote">
+<p>e.g. can&rsquo;t afford the possibility of the abort that an OOM condition triggers <a href="#fnref:1" class="footnote-backref" role="doc-backlink">&#x21a9;&#xfe0e;</a></p>
+</li>
+</ol>
+</section>
+
+    </div>
+
+    
+    
+    <div class="article-toc" >
+        <h3>Contents</h3>
+        <nav id="TableOfContents">
+  <ul>
+    <li><a href="#why-static-mut">Why <code>&amp;'static mut</code>?</a>
+      <ul>
+        <li><a href="#lockless-queue">Lockless queue</a></li>
+        <li><a href="#dma-transfers">DMA transfers</a></li>
+      </ul>
+    </li>
+    <li><a href="#outside-rtfm">Outside RTFM</a></li>
+  </ul>
+</nav>
+    </div>
+    
+    
+
+    
+  </div>
+</section>
+
+
+<section class="section">
+  <div class="container has-text-centered">
+    <p><a rel="license" href="http://creativecommons.org/licenses/by/4.0/"><img alt="Creative Commons License" src="https://i.creativecommons.org/l/by/4.0/80x15.png" /></a><br/>Jorge Aparicio</p>
+  </div>
+</section>
+
+
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/styles/tomorrow-night.min.css" />
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/highlight.min.js" integrity="sha256-aYTdUrn6Ow1DDgh5JTc3aDGnnju48y/1c8s1dgkYPQ8=" crossorigin="anonymous"></script>
+
+<script type="text/javascript" src="//cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/languages/armasm.min.js"></script>
+
+<script type="text/javascript" src="//cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/languages/c.min.js"></script>
+
+<script type="text/javascript" src="//cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/languages/diff.min.js"></script>
+
+<script type="text/javascript" src="//cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/languages/llvm.min.js"></script>
+
+<script type="text/javascript" src="//cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/languages/rust.min.js"></script>
+
+<script type="text/javascript" src="//cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/languages/shell.min.js"></script>
+
+<script>hljs.initHighlightingOnLoad();</script>
+
+
+</body>

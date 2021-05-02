@@ -1,0 +1,812 @@
+<!DOCTYPE html>
+<html lang="en-us">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta content="Rust, embedded, development" name="keywords">
+<meta content="Jorge Aparicio" name="author">
+<meta property="og:title" content="Memory safe DMA transfers - Embedded in Rust">
+<meta property="og:url" content="https://blog.japaric.io/safe-dma/">
+<meta property="og:description" content="A blog about Rust and embedded stuff">
+<meta property="og:type" content="website" />
+<title>Memory safe DMA transfers | Embedded in Rust</title>
+<link rel="stylesheet" href="https://blog.japaric.io//css/style.css">
+<link rel="shortcut icon" href="https://blog.japaric.io//wave.ico">
+<link rel="alternate" type="application/atom+xml" title="Embedded in Rust Posts" href="https://blog.japaric.io//index.xml">
+<link href="//maxcdn.bootstrapcdn.com/font-awesome/4.7.0/css/font-awesome.min.css" rel="stylesheet" integrity="sha384-wvfXpqpZZVQGK6TAh5PVlGOfQNHSoD2xbE+QkPxCAFlNEevoEH3Sl0sibVcOQVnN" crossorigin="anonymous">
+
+<link rel="stylesheet" href="//cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/styles/github.min.css">
+
+</head>
+
+<body>
+<section class="section">
+  <div class="container">
+    <nav class="nav">
+      <div class="nav-left">
+        <a class="nav-item" href="https://blog.japaric.io/"><h1 class="title is-4">Embedded in Rust</h1></a>
+      </div>
+      <div class="nav-right">
+        <nav class="nav-item level is-mobile">
+          
+          <a class="level-item" href="https://github.com/japaric" target="_blank">
+            <span class="icon">
+              <i class="fa fa-github"></i>
+            </span>
+          </a>
+          
+          <a class="level-item" href="/index.xml" target="_blank">
+            <span class="icon">
+              <i class="fa fa-rss"></i>
+            </span>
+          </a>
+          
+        </nav>
+      </div>
+    </nav>
+  </div>
+</section>
+
+<section class="section">
+  <div class="container">
+    <h1 class="title">Memory safe DMA transfers</h1>
+    <h2 class="subtitle is-5">February 9, 2018 by Jorge Aparicio</h2>
+    
+      <div class="tags">
+    
+        <a class="button is-link" href="/tags/i/o">I/O</a>
+    
+        <a class="button is-link" href="/tags/microcontroller">microcontroller</a>
+    
+</div>
+
+    
+    <div class="content">
+      <p><strong>UPDATE</strong> Given the comments I&rsquo;ve received so far I think I should more explicitly mention that the
+context here are systems that lack a MMU and where a memory allocator may or may not be available or
+desirable, e.g. Cortex-M microcontrollers.</p>
+<hr>
+<p>In this post I&rsquo;ll describe an approach to building memory safe DMA based APIs.</p>
+<h1 id="dma">DMA?</h1>
+<p>DMA stands for Direct Memory Access and it&rsquo;s a peripheral used for transferring data between two
+memory locations <em>in parallel</em> to the operation of the core processor. I like to think of the DMA as
+providing asynchronous <code>memcpy</code> functionality.</p>
+<p>Let me show you the awesomeness of the DMA with an example:</p>
+<p>Let&rsquo;s say we want to send the string <code>&quot;Hello, world&quot;</code> through the serial interface. As you probably
+know by now, using the serial interface involves writing to registers. In particular, sending a byte
+through the interface requires writing that byte to a register &ndash; let&rsquo;s call that register the <em>DR</em>
+register.</p>
+<p>The serial interface operates at a slower frequency than the processor so to avoid a buffer
+<em>overrun</em> is necessary to wait until the byte has been shifted out from the DR register before
+writing a new byte to it. In other words, if you write bytes to the DR register too fast you&rsquo;ll end
+up overwriting the previous byte before it has chance to be sent through the serial interface &ndash;
+that condition is known as buffer overrun.</p>
+<p>The straightforward approach to performing this task is to do several blocking &ldquo;write a single byte&rdquo;
+operations:</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#66d9ef">for</span> byte <span style="color:#66d9ef">in</span> <span style="color:#e6db74">b&#34;Hello, world!&#34;</span>.iter() {
+    block<span style="color:#f92672">!</span>(serial.write(<span style="color:#f92672">*</span>byte));
+}
+</code></pre></div><p>Here <code>block!</code> will busy wait until the previous byte gets sent through the serial interface, and
+<code>serial.write</code> will write the <code>*byte</code> into the DR register.</p>
+<p>This gets the job done but it uses precious CPU time: the processor will be completely busy
+executing the <code>for</code> loop.</p>
+<p>If we use the DMA the task can be performed with almost 0% CPU usage:</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#66d9ef">static</span> MSG: <span style="color:#66d9ef">&amp;</span>&#39;static [<span style="color:#66d9ef">u8</span>] <span style="color:#f92672">=</span> <span style="color:#e6db74">b&#34;Hello, world!&#34;</span>;
+
+<span style="color:#75715e">// this block is executed in a few instructions
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">unsafe</span> {
+    <span style="color:#75715e">// address of the DR register in the USART1 register block
+</span><span style="color:#75715e"></span>    <span style="color:#66d9ef">const</span> USART1_DR: <span style="color:#66d9ef">u32</span> <span style="color:#f92672">=</span> <span style="color:#ae81ff">0x4001_3804</span>;
+
+    <span style="color:#75715e">// (some configuration has been omitted)
+</span><span style="color:#75715e"></span>
+    <span style="color:#75715e">// transfer this number of bytes
+</span><span style="color:#75715e"></span>    dma1_channel4.set_transfer_size(MSG.len()); <span style="color:#75715e">// in bytes
+</span><span style="color:#75715e"></span>
+    <span style="color:#75715e">// from here
+</span><span style="color:#75715e"></span>    dma1_channel4.set_src_address(MSG.as_ptr() <span style="color:#66d9ef">as</span> <span style="color:#66d9ef">usize</span> <span style="color:#66d9ef">as</span> <span style="color:#66d9ef">u32</span>);
+
+    <span style="color:#75715e">// to here
+</span><span style="color:#75715e"></span>    dma1_channel4.set_dst_address(USART1_DR);
+
+    <span style="color:#75715e">// go!
+</span><span style="color:#75715e"></span>    dma1_channel4.start_transfer();
+}
+
+<span style="color:#75715e">// now the processor is free to perform other tasks
+</span><span style="color:#75715e">// while the DMA sends out the &#34;Hello, world!&#34; string
+</span></code></pre></div><p>This code performs the same task but now the processor is free to do other tasks while the serial
+operation is performed in the background.</p>
+<p>Although not shown above, the processor can check if the DMA transfer has finished by reading some
+register.</p>
+<h1 id="when-dma-transfers-go-wrong">When DMA transfers go wrong</h1>
+<p>DMA transfers are pretty useful because they can free up a lot of CPU time but they can be very
+dangerous when misused.</p>
+<p>Let&rsquo;s look at an example where a DMA transfer goes wrong:</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">start</span>() {
+    <span style="color:#66d9ef">let</span> <span style="color:#66d9ef">mut</span> buf <span style="color:#f92672">=</span> [<span style="color:#ae81ff">0</span><span style="color:#66d9ef">u8</span>; <span style="color:#ae81ff">256</span>];
+
+    <span style="color:#75715e">// starts a DMA transfer to fill `buf` with data from the serial interface
+</span><span style="color:#75715e"></span>    <span style="color:#66d9ef">unsafe</span> {
+        <span style="color:#75715e">// ..
+</span><span style="color:#75715e"></span>        dma1_channel5.set_transfer_size(buf.len());
+        dma1_channel5.set_src_address(USART1_DR);
+        dma1_channel5.set_dst_address(buf.as_mut_ptr());
+        dma1_channel5.start_transfer();
+    }
+
+    <span style="color:#75715e">// `buf` deallocated here
+</span><span style="color:#75715e"></span>}
+
+<span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">corrupted</span>() {
+    <span style="color:#66d9ef">let</span> <span style="color:#66d9ef">mut</span> x <span style="color:#f92672">=</span> <span style="color:#ae81ff">0</span>;
+    <span style="color:#66d9ef">let</span> y <span style="color:#f92672">=</span> <span style="color:#ae81ff">0</span>;
+
+    <span style="color:#75715e">// do stuff with `x` and `y`
+</span><span style="color:#75715e"></span>}
+
+start();
+corrupted();
+</code></pre></div><p>Here the problem is that a transfer is started on a stack allocated buffer but then the buffer is
+immediately deallocated. The call to <code>corrupted</code> reuses the stack memory <em>that the DMA is operating
+on</em> for the stack variables <code>x</code> and <code>y</code>; this lets the DMA overwrite the values of <code>x</code> and <code>y</code>,
+wreaking havoc. If you add optimization into the mix it becomes impossible to predict what will
+happen at runtime.</p>
+<p>In this case it&rsquo;s a bit obvious that there&rsquo;s a programmer error as <code>buf</code> is never used. The problem
+becomes less obvious if you return <code>buf</code> from the <code>start</code> function; in that case you can still get
+undefined behavior depending on how the compiler decides to optimize the code.</p>
+<h1 id="trying-to-make-it-safe">Trying to make it safe</h1>
+<p>Using the DMA like that is <code>unsafe</code> because a lot of things can go wrong. In this section we&rsquo;ll try
+to wrap all that <code>unsafe</code> code into a safe abstraction.</p>
+<p>We start with a newtype over the buffer on which the DMA is operating:</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#e6db74">/// Ongoing DMA transfer
+</span><span style="color:#e6db74"></span><span style="color:#66d9ef">struct</span> <span style="color:#a6e22e">Transfer</span><span style="color:#f92672">&lt;</span><span style="color:#a6e22e">&#39;a</span><span style="color:#f92672">&gt;</span> {
+    buf: <span style="color:#66d9ef">&amp;</span><span style="color:#a6e22e">&#39;a</span> <span style="color:#66d9ef">mut</span> [<span style="color:#66d9ef">u8</span>],
+    ongoing: <span style="color:#66d9ef">bool</span>,
+}
+</code></pre></div><p>We can use this to <em>freeze</em> the original buffer while the DMA operation is in progress. That
+prevents the buffer from being modified (that would be mutable aliasing &ndash; the DMA is already
+mutating the buffer) and from being deallocated (that would let the DMA corrupt memory if the
+allocation is reused).</p>
+<p>Dropping the <code>Transfer</code> instance would let us modify, and also destroy, the original buffer so that
+operation should <em>stop</em> the transfer to prevent mutable aliasing and memory unsafety:</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#66d9ef">impl</span><span style="color:#f92672">&lt;</span><span style="color:#a6e22e">&#39;a</span><span style="color:#f92672">&gt;</span> Drop <span style="color:#66d9ef">for</span> Transfer<span style="color:#f92672">&lt;</span><span style="color:#a6e22e">&#39;a</span><span style="color:#f92672">&gt;</span> {
+    <span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">drop</span>(<span style="color:#f92672">&amp;</span><span style="color:#66d9ef">mut</span> self) {
+        <span style="color:#75715e">// NOTE For now I&#39;m not going to explain where this
+</span><span style="color:#75715e"></span>        <span style="color:#75715e">// `dma1_channel5` value comes from. I&#39;ll come back to it later
+</span><span style="color:#75715e"></span>
+        <span style="color:#75715e">// on drop we stop the ongoing transfer
+</span><span style="color:#75715e"></span>        <span style="color:#66d9ef">if</span> self.ongoing {
+            dma1_channel5.stop_transfer();
+        }
+    }
+}
+</code></pre></div><p>We want to be able to get the buffer back when the transfer is over so we add a <code>wait</code> method that
+waits until the transfer is over and returns back the buffer:</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#66d9ef">impl</span><span style="color:#f92672">&lt;</span><span style="color:#a6e22e">&#39;a</span><span style="color:#f92672">&gt;</span> Transfer<span style="color:#f92672">&lt;</span><span style="color:#a6e22e">&#39;a</span><span style="color:#f92672">&gt;</span> {
+    <span style="color:#66d9ef">pub</span> <span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">wait</span>(<span style="color:#66d9ef">mut</span> self) -&gt; <span style="color:#66d9ef">&amp;</span><span style="color:#a6e22e">&#39;a</span> <span style="color:#66d9ef">mut</span> [<span style="color:#66d9ef">u8</span>] {
+        <span style="color:#75715e">// wait until the transfer is over
+</span><span style="color:#75715e"></span>        <span style="color:#66d9ef">while</span> dma1_channel5.transfer_is_in_progress() {}
+
+        <span style="color:#75715e">// defuse the `drop` method
+</span><span style="color:#75715e"></span>        self.ongoing <span style="color:#f92672">=</span> <span style="color:#66d9ef">false</span>;
+
+        self.buf
+    }
+}
+</code></pre></div><p>Now we can pair this <code>Transfer</code> API with a <code>Serial</code> interface abstraction to provide a safe API for
+the asynchronous read operation we had before:</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#66d9ef">impl</span> Serial {
+    <span style="color:#e6db74">/// Starts a DMA transfer to fill `buf` with data from the serial interface
+</span><span style="color:#e6db74"></span>    <span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">read_exact</span><span style="color:#f92672">&lt;</span><span style="color:#a6e22e">&#39;a</span><span style="color:#f92672">&gt;</span>(<span style="color:#f92672">&amp;</span><span style="color:#66d9ef">mut</span> self, buf: <span style="color:#66d9ef">&amp;</span><span style="color:#a6e22e">&#39;a</span> <span style="color:#66d9ef">mut</span> [<span style="color:#66d9ef">u8</span>]) -&gt; <span style="color:#a6e22e">Transfer</span><span style="color:#f92672">&lt;</span><span style="color:#a6e22e">&#39;a</span><span style="color:#f92672">&gt;</span> {
+        <span style="color:#66d9ef">unsafe</span> {
+            dma1_channel5.set_src_address(USART1_DR);
+            dma1_channel5.set_dst_address(buf.as_mut_ptr());
+            dma1_channel5.set_transfer_size(buf.len());
+            dma1_channel5.start_transfer();
+        }
+
+        Transfer { buf, ongoing: <span style="color:#a6e22e">true</span> }
+    }
+}
+</code></pre></div><p>Usage looks like this:</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#66d9ef">let</span> <span style="color:#66d9ef">mut</span> buf <span style="color:#f92672">=</span> [<span style="color:#ae81ff">0</span>; <span style="color:#ae81ff">16</span>];
+
+<span style="color:#66d9ef">let</span> transfer <span style="color:#f92672">=</span> serial.read_exact(<span style="color:#f92672">&amp;</span><span style="color:#66d9ef">mut</span> buf);
+
+<span style="color:#75715e">// do other stuff
+</span><span style="color:#75715e"></span>
+<span style="color:#66d9ef">let</span> buf <span style="color:#f92672">=</span> transfer.wait();
+
+<span style="color:#75715e">// do stuff with the now filled `buf`fer
+</span></code></pre></div><p>Now let&rsquo;s see if the API can prevent us from shooting ourselves in the foot:</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">start</span>(serial: <span style="color:#66d9ef">&amp;</span><span style="color:#a6e22e">mut</span> Serial) -&gt; <span style="color:#a6e22e">Transfer</span> {
+    <span style="color:#66d9ef">let</span> <span style="color:#66d9ef">mut</span> buf <span style="color:#f92672">=</span> [<span style="color:#ae81ff">0</span>; <span style="color:#ae81ff">16</span>];
+
+    serial.read_exact(<span style="color:#f92672">&amp;</span><span style="color:#66d9ef">mut</span> buf)
+    <span style="color:#75715e">//~^ error: borrowed value does not live long enough
+</span><span style="color:#75715e"></span>}   <span style="color:#75715e">// `buf` dropped / deallocated here
+</span></code></pre></div><p>Good. This won&rsquo;t compile because <code>buf</code> is both allocated and deallocated in <code>start</code> thus the
+<code>Transfer</code> can&rsquo;t outlive the scope of <code>start</code>.</p>
+<p>Let&rsquo;s try the stack corruption example from before:</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">start</span>(serial: <span style="color:#66d9ef">&amp;</span><span style="color:#a6e22e">mut</span> Serial) {
+    <span style="color:#66d9ef">let</span> <span style="color:#66d9ef">mut</span> buf <span style="color:#f92672">=</span> [<span style="color:#ae81ff">0</span>; <span style="color:#ae81ff">16</span>];
+
+    <span style="color:#75715e">// (the `Transfer` value will get `drop`ped here even if I don&#39;t call `drop`)
+</span><span style="color:#75715e"></span>    drop(serial.read_exact(<span style="color:#f92672">&amp;</span><span style="color:#66d9ef">mut</span> buf));
+}
+
+<span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">corrupted</span>() {
+    <span style="color:#66d9ef">let</span> <span style="color:#66d9ef">mut</span> x <span style="color:#f92672">=</span> <span style="color:#ae81ff">0</span>;
+    <span style="color:#66d9ef">let</span> y <span style="color:#f92672">=</span> <span style="color:#ae81ff">0</span>;
+
+    <span style="color:#75715e">// do stuff with `x` and `y`
+</span><span style="color:#75715e"></span>}
+
+start(<span style="color:#f92672">&amp;</span><span style="color:#66d9ef">mut</span> serial);
+corrupted();
+</code></pre></div><p>There won&rsquo;t be stack corruption this time because when <code>Transfer</code> is dropped in <code>start</code> the DMA
+transfer is stopped. Great!</p>
+<h2 id="leakpocalypse"><a href="http://cglab.ca/~abeinges/blah/everyone-poops/#leakpocalypse">Leakpocalypse</a></h2>
+<p>Seems like a pretty solid abstraction, right? Unfortunately, it&rsquo;s not completely safe because it
+relies on destructors for safety and destructors are not guaranteed to run in Rust.</p>
+<p>Here&rsquo;s how to break the abstraction:</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">start</span>(serial: <span style="color:#66d9ef">&amp;</span><span style="color:#a6e22e">mut</span> Serial) {
+    <span style="color:#66d9ef">let</span> <span style="color:#66d9ef">mut</span> buf <span style="color:#f92672">=</span> [<span style="color:#ae81ff">0</span>; <span style="color:#ae81ff">16</span>];
+
+    <span style="color:#75715e">// not `unsafe`!
+</span><span style="color:#75715e"></span>    mem::forget(serial.read_exact(<span style="color:#f92672">&amp;</span><span style="color:#66d9ef">mut</span> buf));
+}
+
+<span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">corrupted</span>() {
+    <span style="color:#66d9ef">let</span> <span style="color:#66d9ef">mut</span> x <span style="color:#f92672">=</span> <span style="color:#ae81ff">0</span>;
+    <span style="color:#66d9ef">let</span> y <span style="color:#f92672">=</span> <span style="color:#ae81ff">0</span>;
+
+    <span style="color:#75715e">// do stuff with `x` and `y`
+</span><span style="color:#75715e"></span>}
+
+start(<span style="color:#f92672">&amp;</span><span style="color:#66d9ef">mut</span> serial);
+corrupted();
+</code></pre></div><p>This produces stack corruption in safe Rust. <code>mem::forget</code>-ing <code>Transfer</code> prevents its destructor
+from running, which means the DMA transfer is never stopped. Furthermore, this also breaks Rust
+aliasing rules because it lets the processor mutate <code>buf</code> which is already being mutated by the
+DMA.</p>
+<p>&ldquo;But nobody writes code like that!&rdquo;. Not on purpose, no; but we are talking about Rust here:
+memory unsafety is banned in safe Rust and that property must hold regardless of how contorted
+the code is.</p>
+<h1 id="static-mut-to-the-rescue"><code>&amp;'static mut</code> to the rescue</h1>
+<p>The good news is that we can fix all the issues by simply tweaking the lifetime of <code>Transfer</code>:</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#e6db74">/// Ongoing DMA transfer
+</span><span style="color:#e6db74"></span><span style="color:#66d9ef">struct</span> <span style="color:#a6e22e">Transfer</span> {
+    buf: <span style="color:#66d9ef">&amp;</span>&#39;static <span style="color:#66d9ef">mut</span> [<span style="color:#66d9ef">u8</span>], <span style="color:#75715e">// &lt;- lifetime changed
+</span><span style="color:#75715e"></span>    <span style="color:#75715e">// ongoing: bool, // no longer required
+</span><span style="color:#75715e"></span>}
+
+<span style="color:#75715e">// impl Drop for Transfer { .. } // no longer required
+</span><span style="color:#75715e"></span>
+<span style="color:#66d9ef">impl</span> Transfer {
+    <span style="color:#66d9ef">pub</span> <span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">wait</span>(self) -&gt; <span style="color:#66d9ef">&amp;</span>&#39;static <span style="color:#66d9ef">mut</span> [<span style="color:#66d9ef">u8</span>] {
+        <span style="color:#75715e">// wait until the transfer is over
+</span><span style="color:#75715e"></span>        <span style="color:#66d9ef">while</span> dma1_channel5.transfer_is_in_progress() {}
+
+        <span style="color:#75715e">// self.ongoing = false; // no longer required
+</span><span style="color:#75715e"></span>
+        self.buf
+    }
+}
+
+<span style="color:#66d9ef">impl</span> Serial {
+    <span style="color:#e6db74">/// Starts a DMA transfer to fill `buf` with data from the serial interface
+</span><span style="color:#e6db74"></span>    <span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">read_exact</span>(<span style="color:#f92672">&amp;</span><span style="color:#66d9ef">mut</span> self, buf: <span style="color:#66d9ef">&amp;</span>&#39;static <span style="color:#66d9ef">mut</span> [<span style="color:#66d9ef">u8</span>]) -&gt; <span style="color:#a6e22e">Transfer</span> {
+        <span style="color:#75715e">// same implementation as before
+</span><span style="color:#75715e"></span>    }
+}
+</code></pre></div><p>Now you may be wondering &ldquo;But, where can I get a <code>&amp;'static mut</code> reference from? Stack allocated
+arrays don&rsquo;t have <code>'static</code> lifetime&rdquo;. I got you covered: my <a href="/rtfm-v3">last blog post</a> explains how
+to safely create <code>&amp;'static mut</code> references within and without RTFM. Let&rsquo;s use the <code>singleton!</code>
+approach to test out this API:</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#66d9ef">let</span> buf: <span style="color:#66d9ef">&amp;</span>&#39;static <span style="color:#66d9ef">mut</span> [<span style="color:#66d9ef">u8</span>] <span style="color:#f92672">=</span> singleton<span style="color:#f92672">!</span>(_: [<span style="color:#66d9ef">u8</span>; <span style="color:#ae81ff">16</span>] <span style="color:#f92672">=</span> [<span style="color:#ae81ff">0</span>; <span style="color:#ae81ff">16</span>]).unwrap();
+
+<span style="color:#66d9ef">let</span> transfer <span style="color:#f92672">=</span> serial.read_exact(buf);
+
+<span style="color:#75715e">// do stuff
+</span><span style="color:#75715e"></span>
+<span style="color:#66d9ef">let</span> buf: <span style="color:#66d9ef">&amp;</span>&#39;static <span style="color:#66d9ef">mut</span> [<span style="color:#66d9ef">u8</span>] <span style="color:#f92672">=</span> transfer.wait();
+
+<span style="color:#75715e">// do stuff with `buf`
+</span></code></pre></div><p>Seems to work. What about the issues that plagued the previous API?</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">start</span>(serial: <span style="color:#66d9ef">&amp;</span><span style="color:#a6e22e">mut</span> Serial) {
+    <span style="color:#66d9ef">let</span> buf: <span style="color:#66d9ef">&amp;</span>&#39;static <span style="color:#66d9ef">mut</span> [<span style="color:#66d9ef">u8</span>] <span style="color:#f92672">=</span> singleton<span style="color:#f92672">!</span>(_: [<span style="color:#66d9ef">u8</span>; <span style="color:#ae81ff">16</span>] <span style="color:#f92672">=</span> [<span style="color:#ae81ff">0</span>; <span style="color:#ae81ff">16</span>]).unwrap();
+
+    mem::forget(serial.read_exact(buf));
+}
+
+<span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">corrupted</span>() {
+    <span style="color:#66d9ef">let</span> <span style="color:#66d9ef">mut</span> x <span style="color:#f92672">=</span> <span style="color:#ae81ff">0</span>;
+    <span style="color:#66d9ef">let</span> y <span style="color:#f92672">=</span> <span style="color:#ae81ff">0</span>;
+
+    <span style="color:#75715e">// do stuff with `x` and `y`
+</span><span style="color:#75715e"></span>}
+
+start(<span style="color:#f92672">&amp;</span><span style="color:#66d9ef">mut</span> serial);
+corrupted();
+</code></pre></div><p><code>buf</code> will be statically allocated in the <code>.bss</code> region, not on the stack, so, in first place, it&rsquo;s
+impossible to deallocate <code>buf</code>&rsquo;s memory. Secondly, <code>Transfer</code> has no destructor this time so it
+doesn&rsquo;t matter if <code>mem::forget</code> is used on the value or not. In either case, the DMA transfer will
+continue its process but since it&rsquo;s operating on statically allocated memory and not on the stack
+there won&rsquo;t be stack corruption problem in this case. Nice!</p>
+<p>What about mutable aliasing? <code>&amp;'static mut T</code> has move semantics so calling <code>serial.read_exact</code>
+hands over ownership of <code>buf</code> to the <code>Transfer</code> value. Even if the <code>Transfer</code> value is
+<code>mem::forget</code>-ten the buffer memory can&rsquo;t be accessed through <code>buf</code> anymore:</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#66d9ef">let</span> buf: <span style="color:#66d9ef">&amp;</span>&#39;static <span style="color:#66d9ef">mut</span> [<span style="color:#66d9ef">u8</span>] <span style="color:#f92672">=</span> singleton<span style="color:#f92672">!</span>(_: [<span style="color:#66d9ef">u8</span>; <span style="color:#ae81ff">16</span>] <span style="color:#f92672">=</span> [<span style="color:#ae81ff">0</span>; <span style="color:#ae81ff">16</span>]).unwrap();
+
+mem::forget(serial.read_exact(buf));
+
+buf[<span style="color:#ae81ff">0</span>] <span style="color:#f92672">=</span> <span style="color:#ae81ff">1</span>;
+<span style="color:#75715e">//~^ error: cannot assign to `buf[..]` because it is borrowed
+</span></code></pre></div><p>There&rsquo;s one more consequence to using <code>&amp;'static mut</code> references in the DMA based API: now <code>Transfer</code>
+<em>owns</em> the buffer <em>and</em> has <code>'static</code> lifetime (more precisely: it satisfies the <code>Transfer: 'static</code>
+bound). This means that <code>Transfer</code> values can be stored in RTFM resources (<code>static</code> variables), which
+can be used to move data from one task to another.</p>
+<p>So, we can start a DMA transfer in task A, <em>send</em> the <code>Transfer</code> value to task B and complete (<code>wait</code>
+for) the transfer there. The send operation is also cheap because the <code>Transfer</code> value is only 2
+words in size (and it could be just 1 word in size if <code>&amp;'static mut [T; N]</code> was used internally).</p>
+<h2 id="an-alternative-api">An alternative API</h2>
+<p>While working on this blog post <a href="https://github.com/nagisa">@nagisa</a> pointed out to me another way to make a memory safe DMA
+based API:</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#66d9ef">impl</span> Serial {
+    <span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">read_exact</span><span style="color:#f92672">&lt;</span>R, F<span style="color:#f92672">&gt;</span>(<span style="color:#f92672">&amp;</span><span style="color:#66d9ef">mut</span> self, buf: <span style="color:#66d9ef">&amp;</span><span style="color:#a6e22e">mut</span> [<span style="color:#66d9ef">u8</span>], f: <span style="color:#a6e22e">F</span>) -&gt; <span style="color:#a6e22e">R</span>
+    <span style="color:#66d9ef">where</span>
+        F: FnOnce() -&gt; <span style="color:#a6e22e">R</span>,
+    {
+        <span style="color:#75715e">// start transfer
+</span><span style="color:#75715e"></span>        <span style="color:#66d9ef">unsafe</span> {
+            <span style="color:#75715e">// ..
+</span><span style="color:#75715e"></span>            dma1_channel5.set_src_address(USART1_DR);
+            dma1_channel5.set_dst_address(buf.as_mut_ptr());
+            dma1_channel5.set_transfer_size(buf.len());
+            dma1_channel5.start_transfer();
+        }
+
+        <span style="color:#75715e">// run closure
+</span><span style="color:#75715e"></span>        <span style="color:#66d9ef">let</span> r <span style="color:#f92672">=</span> f();
+
+        <span style="color:#75715e">// wait until the transfer is over
+</span><span style="color:#75715e"></span>        <span style="color:#66d9ef">while</span> dma1_channel5.transfer_is_in_progress() {}
+
+        r
+    }
+}
+</code></pre></div><p>This closure-based API encodes the &ldquo;start transfer, do stuff and wait for the transfer to finish&rdquo;
+pattern that we have seen before into a single method call. This method is safe even when used with
+stack allocated buffers as there&rsquo;s no way to deallocate the buffer while the transfer is in
+progress (*).</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#66d9ef">let</span> buf <span style="color:#f92672">=</span> [<span style="color:#ae81ff">0</span>; <span style="color:#ae81ff">16</span>];
+
+serial.read_exact(<span style="color:#f92672">&amp;</span><span style="color:#66d9ef">mut</span> buf, <span style="color:#f92672">||</span> {
+    <span style="color:#75715e">// do stuff
+</span><span style="color:#75715e"></span>});
+
+<span style="color:#75715e">// do stuff with `buf`
+</span></code></pre></div><p>The disadvantage of this API is that you can&rsquo;t send an ongoing DMA transfer to another task
+(execution context) because the transfer will always be completed during the execution of
+<code>read_exact</code>.</p>
+<blockquote>
+<p>(*) A digression</p>
+<p>This alternative API made stop and think about <em>exception safety</em>. For example, what
+happens if <code>f</code> panics and the panicking behavior is to unwind <sup id="fnref:1"><a href="#fn:1" class="footnote-ref" role="doc-noteref">1</a></sup>? That would deallocate the
+array <code>buf</code> but wouldn&rsquo;t stop the DMA transfer and that might cause problems.</p>
+<p>That&rsquo;s not hard to fix though: you create a <em>drop guard</em> that stops the DMA transfer in its
+destructor before calling <code>f</code> and then you <code>mem::forget</code> it after <code>f</code> returns. The fix will cost a
+bit of extra binary size but the increase should be negligible.</p>
+<p>Finally, I don&rsquo;t think the <code>&amp;'static mut</code>-based API has to concern itself with exception safety
+because <code>singleton!</code> and RTFM allocate the memory in <code>.bss</code> / <code>.data</code> and that memory will never
+be deallocated.</p>
+</blockquote>
+<h1 id="improving-the-guarantees">Improving the guarantees</h1>
+<p>Up to this point the <code>&amp;'static mut</code>-based API is memory safe but it&rsquo;s not foolproof. For instance,
+nothing stops you from starting <em>another</em> DMA transfer on the same serial interface but that&rsquo;s not
+allowed by the hardware. Let&rsquo;s see how we can improve the API to prevent that.</p>
+<p>First, let&rsquo;s demystify this <code>dma1_channel5</code> value. This value actually has type <code>dma1::Channel5</code> and,
+semantically, has ownership over one of the DMA <em>channels</em> (some vendors call them <em>streams</em>, not
+channels). The DMA subsystem usually can handle several concurrent, independent data transfers; a
+channel is the part of the subsystem that handles one of those concurrent data transfers. The number
+of DMA channels is device specific: for example, the STM32F103 has two DMA peripherals, DMA1 and
+DMA2, and DMA1 has seven channels, DMA2 five.</p>
+<p>We can start there and provide an API to split DMA peripherals into independent channels:</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#66d9ef">let</span> p <span style="color:#f92672">=</span> stm32f103xx::Peripherals::take().unwrap();
+
+<span style="color:#75715e">// consumes `p.DMA1`
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">let</span> channels: <span style="color:#a6e22e">dma1</span>::Channels <span style="color:#f92672">=</span> p.DMA1.split();
+
+<span style="color:#66d9ef">let</span> c4: <span style="color:#a6e22e">dma1</span>::Channel4 <span style="color:#f92672">=</span> channels.<span style="color:#ae81ff">4</span>;
+</code></pre></div><p>This is pretty similar to what we did with the GPIO peripheral, which controls the configuration of
+I/O pins, in the <a href="/brave-new-io">Brave new I/O</a> blog post.</p>
+<p>Next, usage constraints:</p>
+<p>Some channels can be used with some peripherals but not with others. Also, a single channel can&rsquo;t be
+used with more than one peripheral at the same time, and a single channel can&rsquo;t handle more than one
+memory transfer at the same time. We can encode all these properties in the API by having <code>Transfer</code>
+take ownership of the channel:</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#e6db74">/// Ongoing DMA transfer
+</span><span style="color:#e6db74"></span><span style="color:#66d9ef">struct</span> <span style="color:#a6e22e">Transfer</span><span style="color:#f92672">&lt;</span>CHANNEL<span style="color:#f92672">&gt;</span> {
+    buf: <span style="color:#66d9ef">&amp;</span>&#39;static <span style="color:#66d9ef">mut</span> [<span style="color:#66d9ef">u8</span>],
+    chan: <span style="color:#a6e22e">CHANNEL</span>, <span style="color:#75715e">// NEW!
+</span><span style="color:#75715e"></span>}
+
+<span style="color:#66d9ef">impl</span> Transfer<span style="color:#f92672">&lt;</span>dma1::Channel4<span style="color:#f92672">&gt;</span> {
+    <span style="color:#e6db74">/// Waits until the DMA transfer is done
+</span><span style="color:#e6db74"></span>    <span style="color:#66d9ef">pub</span> <span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">wait</span>(self) -&gt; (<span style="color:#f92672">&amp;</span>&#39;static <span style="color:#66d9ef">mut</span> [<span style="color:#66d9ef">u8</span>], dma1::Channel4) {
+        <span style="color:#75715e">// wait until the transfer is over
+</span><span style="color:#75715e"></span>        <span style="color:#66d9ef">while</span> self.chan.ifcr().tcif4().bit_is_clear() {}
+
+        (self.buf, self.chan)
+    }
+}
+
+<span style="color:#66d9ef">impl</span> Serial {
+    <span style="color:#e6db74">/// Starts a DMA transfer to fill `buf` with data from the serial interface
+</span><span style="color:#e6db74"></span>    <span style="color:#66d9ef">pub</span> <span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">read_exact</span>(
+        <span style="color:#f92672">&amp;</span><span style="color:#66d9ef">mut</span> self,
+        chan: <span style="color:#a6e22e">dma1</span>::Channel4, <span style="color:#75715e">// NEW!
+</span><span style="color:#75715e"></span>        buf: <span style="color:#66d9ef">&amp;</span>&#39;static <span style="color:#66d9ef">mut</span> [<span style="color:#66d9ef">u8</span>],
+    ) -&gt; <span style="color:#a6e22e">Transfer</span><span style="color:#f92672">&lt;</span>dma1::Channel4<span style="color:#f92672">&gt;</span> {
+        <span style="color:#75715e">// ..
+</span><span style="color:#75715e"></span>
+        <span style="color:#75715e">// `chan` grants access to the registers of DMA1_CHANNEL4
+</span><span style="color:#75715e"></span>
+        <span style="color:#75715e">// set destination address
+</span><span style="color:#75715e"></span>        chan.cmar().write(<span style="color:#f92672">|</span>w<span style="color:#f92672">|</span> w.ma().bits(buf.as_ptr() <span style="color:#66d9ef">as</span> <span style="color:#66d9ef">usize</span> <span style="color:#66d9ef">as</span> <span style="color:#66d9ef">u32</span>));
+        <span style="color:#75715e">//   ~~~~ CMAR4 register
+</span><span style="color:#75715e"></span>
+        <span style="color:#75715e">// set transfer size
+</span><span style="color:#75715e"></span>        chan.cndtr().write(<span style="color:#f92672">|</span>w<span style="color:#f92672">|</span> w.ndt().bits(buf.len()));
+        <span style="color:#75715e">//   ~~~~~ CNDTR4 register
+</span><span style="color:#75715e"></span>
+        <span style="color:#75715e">// ..
+</span><span style="color:#75715e"></span>    }
+}
+</code></pre></div><p>Example of hardware constraints being enforced at compile time:</p>
+<pre><code>let a = singleton!(_: [u8; 16] = [0; 16]).unwrap();
+let b = singleton!(_: [u8; 16] = [0; 16]).unwrap();
+
+// wrong channel
+// serial.read_exact(channels.1, a);
+//~^ error: expected `dma1::Channel4`, found `dma1::Channel1`
+
+// OK
+let t = serial.read_exact(channels.4, a);
+
+// can't start a new DMA transfer on the same peripheral
+// let t = serial.read_exact(channels.4, b);
+//~^ error: use of moved value `channels.4`
+
+// can't start a DMA transfer on another peripheral that also uses dma1::Channel4
+// let t = i2c2.write_all(channels.4, ADDRESS, b);
+//~^ error: use of moved value `channels.4`
+</code></pre><p>This would have also worked if <code>Transfer</code> stored a mutable (<code>&amp;mut-</code>) reference to <code>dma1::Channel4</code>
+instead of storing it by value, but with that approach <code>Transfer</code> would have lost its <code>: 'static</code>
+bound and you would no longer be able to store <code>Transfer</code> in a RTFM resource.</p>
+<p>There&rsquo;s one more change to do here. <code>Transfer</code> doesn&rsquo;t freeze the <code>Serial</code> instance; this means that
+after calling <code>serial.write_all(c5, &quot;Hello, world!&quot;)</code> you are still be able to call
+<code>serial.write(b'X')</code> to write a byte to the interface. That&rsquo;s not a good / useful thing to do
+because the processor will race against the DMA transfer. Let&rsquo;s forbid that by having <code>Transfer</code>
+take ownership of the serial interface as well:</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#e6db74">/// Ongoing DMA transfer
+</span><span style="color:#e6db74"></span><span style="color:#66d9ef">struct</span> <span style="color:#a6e22e">Transfer</span><span style="color:#f92672">&lt;</span>CHANNEL, P<span style="color:#f92672">&gt;</span> {
+    buf: <span style="color:#66d9ef">&amp;</span>&#39;static <span style="color:#66d9ef">mut</span> [<span style="color:#66d9ef">u8</span>],
+    chan: <span style="color:#a6e22e">CHANNEL</span>,
+    payload: <span style="color:#a6e22e">P</span>, <span style="color:#75715e">// NEW!
+</span><span style="color:#75715e"></span>}
+
+<span style="color:#66d9ef">impl</span><span style="color:#f92672">&lt;</span>P<span style="color:#f92672">&gt;</span> Transfer<span style="color:#f92672">&lt;</span>dma1::Channel4, P<span style="color:#f92672">&gt;</span> {
+    <span style="color:#e6db74">/// Waits until the DMA transfer is done
+</span><span style="color:#e6db74"></span>    <span style="color:#66d9ef">pub</span> <span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">wait</span>(self) -&gt; (<span style="color:#f92672">&amp;</span>&#39;static <span style="color:#66d9ef">mut</span> [<span style="color:#66d9ef">u8</span>], dma1::Channel4, P) {
+        <span style="color:#75715e">// wait until the transfer is over
+</span><span style="color:#75715e"></span>        <span style="color:#66d9ef">while</span> self.chan.ifcr().tcif4().bit_is_clear() {}
+
+        (self.buf, self.chan, self.payload)
+    }
+}
+
+<span style="color:#66d9ef">impl</span> Serial {
+    <span style="color:#e6db74">/// Starts a DMA transfer that fills the `buf`fer with serial data
+</span><span style="color:#e6db74"></span>    <span style="color:#66d9ef">pub</span> <span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">read_exact</span>(
+        self, <span style="color:#75715e">// &lt;- main change (was `&amp;mut self`)
+</span><span style="color:#75715e"></span>        chan: <span style="color:#a6e22e">dma1</span>::Channel4,
+        buf: <span style="color:#66d9ef">&amp;</span>&#39;static <span style="color:#66d9ef">mut</span> [<span style="color:#66d9ef">u8</span>],
+    ) -&gt; <span style="color:#a6e22e">Transfer</span><span style="color:#f92672">&lt;</span>dma1::Channel4, Serial<span style="color:#f92672">&gt;</span> {
+        <span style="color:#75715e">// ..
+</span><span style="color:#75715e"></span>
+        Transfer { buf, chan, payload: <span style="color:#a6e22e">self</span> }
+    }
+}
+</code></pre></div><h2 id="preventing-misoptimtization">Preventing misoptimtization</h2>
+<p>To us, programmers, using the DMA based API looks like:</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#66d9ef">let</span> buf <span style="color:#f92672">=</span> singleton<span style="color:#f92672">!</span>(_: [<span style="color:#66d9ef">u8</span>; <span style="color:#ae81ff">45</span>] <span style="color:#f92672">=</span> [<span style="color:#ae81ff">0</span>; <span style="color:#ae81ff">45</span>]).unwrap();
+
+buf.copy_from_slice(<span style="color:#e6db74">b&#34;The quick brown fox jumps over the lazy dog.</span><span style="color:#ae81ff">\n</span><span style="color:#e6db74">&#34;</span>)
+
+<span style="color:#66d9ef">let</span> transfer <span style="color:#f92672">=</span> serial.write_all(channels.<span style="color:#ae81ff">5</span>, buf);
+
+<span style="color:#75715e">// ..
+</span><span style="color:#75715e"></span>
+<span style="color:#66d9ef">let</span> (buf, c5, serial) <span style="color:#f92672">=</span> transfer.wait();
+</code></pre></div><p>To the compiler that code looks like this, after inlining some functions calls:</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#66d9ef">let</span> buf <span style="color:#f92672">=</span> singleton<span style="color:#f92672">!</span>(_: [<span style="color:#66d9ef">u8</span>; <span style="color:#ae81ff">45</span>] <span style="color:#f92672">=</span> [<span style="color:#ae81ff">0</span>; <span style="color:#ae81ff">45</span>]).unwrap();
+
+buf.copy_from_slice(<span style="color:#e6db74">b&#34;The quick brown fox jumps over the lazy dog.</span><span style="color:#ae81ff">\n</span><span style="color:#e6db74">&#34;</span>)
+
+<span style="color:#75715e">// ..
+</span><span style="color:#75715e"></span>
+<span style="color:#75715e">// set destination address
+</span><span style="color:#75715e"></span>channels.<span style="color:#ae81ff">5.</span>cmar().write(<span style="color:#f92672">|</span>w<span style="color:#f92672">|</span> w.ma().bits(buf.as_ptr() <span style="color:#66d9ef">as</span> <span style="color:#66d9ef">u32</span>));
+
+<span style="color:#75715e">// set transfer size
+</span><span style="color:#75715e"></span>channels.<span style="color:#ae81ff">5.</span>cndtr().write(<span style="color:#f92672">|</span>w<span style="color:#f92672">|</span> w.ndt().bits(buf.len()));
+
+<span style="color:#75715e">// ..
+</span><span style="color:#75715e"></span>
+<span style="color:#75715e">// start transfer
+</span><span style="color:#75715e"></span>channels.<span style="color:#ae81ff">5.</span>ccr().modify(<span style="color:#f92672">|</span>w<span style="color:#f92672">|</span> w.cen().set_bit());
+
+<span style="color:#66d9ef">let</span> transfer <span style="color:#f92672">=</span> Transfer { buf, chan: <span style="color:#a6e22e">channels</span>.<span style="color:#ae81ff">5</span>, payload: <span style="color:#a6e22e">serial</span> }
+
+<span style="color:#75715e">// ..
+</span><span style="color:#75715e"></span>
+<span style="color:#75715e">// wait until the transfer is over
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">while</span> transfer.chan.ifcr().tcif4().bit_is_clear() {}
+
+<span style="color:#66d9ef">let</span> (buf, c5, serial) <span style="color:#f92672">=</span> (transfer.buf, transfer.chan, transfer.payload);
+</code></pre></div><p>Now, the operations on registers (e.g. <code>write</code>s) are volatile so we are sure the compiler won&rsquo;t
+reorder those with respect to other volatile operations. <em>But</em>, the compiler is free to move non
+volatile operations like <code>buf.copy_from_slice</code> to, say, after <code>// start transfer</code> as that reordering
+doesn&rsquo;t change the outcome of the preceding <code>buf.as_ptr()</code> and <code>buf.len()</code> operations. Of course,
+such reordering would change the semantics of the program (it creates a data race between the DMA
+and the processor) because <code>buf</code> will be read by the DMA after <code>// start transfer</code> but the compiler
+doesn&rsquo;t know that.</p>
+<p>To prevent those problematic reorderings we can add <a href="https://doc.rust-lang.org/core/sync/atomic/fn.compiler_fence.html"><code>compiler_fence</code></a>s to both <code>Serial.write_all</code>
+and <code>Transfer.wait</code> such that the inlined code looks like this:</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#66d9ef">let</span> buf <span style="color:#f92672">=</span> singleton<span style="color:#f92672">!</span>(_: [<span style="color:#66d9ef">u8</span>; <span style="color:#ae81ff">45</span>]).unwrap();
+
+buf.copy_from_slice(<span style="color:#e6db74">b&#34;The quick brown fox jumps over the lazy dog.</span><span style="color:#ae81ff">\n</span><span style="color:#e6db74">&#34;</span>)
+
+<span style="color:#75715e">// ..
+</span><span style="color:#75715e"></span>
+<span style="color:#75715e">// set destination address
+</span><span style="color:#75715e"></span>channels.<span style="color:#ae81ff">5.</span>cmar().write(<span style="color:#f92672">|</span>w<span style="color:#f92672">|</span> w.ma().bits(buf.as_ptr() <span style="color:#66d9ef">as</span> <span style="color:#66d9ef">u32</span>));
+
+<span style="color:#75715e">// set transfer size
+</span><span style="color:#75715e"></span>channels.<span style="color:#ae81ff">5.</span>cndtr().write(<span style="color:#f92672">|</span>w<span style="color:#f92672">|</span> w.ndt().bits(buf.len()));
+
+<span style="color:#75715e">// ..
+</span><span style="color:#75715e"></span>
+atomic::compiler_fence(Ordering::SeqCst); <span style="color:#75715e">// &lt;- NEW!
+</span><span style="color:#75715e"></span>
+<span style="color:#75715e">// start transfer
+</span><span style="color:#75715e"></span>channels.<span style="color:#ae81ff">5.</span>ccr().modify(<span style="color:#f92672">|</span>w<span style="color:#f92672">|</span> w.cen().set_bit());
+
+<span style="color:#66d9ef">let</span> transfer <span style="color:#f92672">=</span> Transfer { buf, chan: <span style="color:#a6e22e">channels</span>.<span style="color:#ae81ff">5</span>, payload: <span style="color:#a6e22e">serial</span> }
+
+<span style="color:#75715e">// ..
+</span><span style="color:#75715e"></span>
+<span style="color:#75715e">// wait until the transfer is over
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">while</span> transfer.chan.ifcr().tcif4().bit_is_clear() {}
+
+atomic::compiler_fence(Ordering::SeqCst); <span style="color:#75715e">// &lt;- NEW!
+</span><span style="color:#75715e"></span>
+<span style="color:#66d9ef">let</span> (buf, c5, serial) <span style="color:#f92672">=</span> (transfer.buf, transfer.chan, transfer.payload);
+</code></pre></div><p><code>compiler_fence(Ordering::SeqCst)</code> prevents the compiler <sup id="fnref:2"><a href="#fn:2" class="footnote-ref" role="doc-noteref">2</a></sup> from reordering any memory operation
+across it. With this change <code>buf.copy_from_slice</code> can&rsquo;t be moved to after <code>// start transfer</code>.</p>
+<p><code>compiler_fence</code> is a bit of a hammer <sup id="fnref:3"><a href="#fn:3" class="footnote-ref" role="doc-noteref">3</a></sup> in this case because it prevents reordering <em>any</em> memory
+operation across it, which could hinder some optimizations, but here we only want to prevent memory
+operations on <code>buf</code> from being reordered across the fence. I don&rsquo;t know if it&rsquo;s possible to give a
+more precise hint to the compiler, though. If you know the answer, let me know!</p>
+<h1 id="making-it-generic">Making it generic</h1>
+<p>DMA based APIs would be a great addition to the <a href="https://github.com/japaric/embedded-hal"><code>embedded-hal</code></a> but they need to be free of device
+specific details like the channel types and the <code>Transfer</code> type. We can rework <code>Serial.read_exact</code>
+and <code>Transfer</code> into device agnostic traits like these:</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#e6db74">/// On going DMA transfer
+</span><span style="color:#e6db74"></span><span style="color:#66d9ef">pub</span> <span style="color:#66d9ef">trait</span> Transfer {
+    <span style="color:#66d9ef">type</span> <span style="color:#a6e22e">Payload</span>;
+
+    <span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">is_done</span>(<span style="color:#f92672">&amp;</span>self) -&gt; <span style="color:#66d9ef">bool</span>;
+    <span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">wait</span>(self) -&gt; <span style="color:#a6e22e">Self</span>::Payload;
+}
+
+<span style="color:#e6db74">/// Read bytes from a serial interface
+</span><span style="color:#e6db74"></span><span style="color:#66d9ef">pub</span> <span style="color:#66d9ef">trait</span> ReadExact {
+    <span style="color:#66d9ef">type</span> <span style="color:#a6e22e">T</span>: <span style="color:#a6e22e">Transfer</span><span style="color:#f92672">&lt;</span>Payload <span style="color:#f92672">=</span> (Self, <span style="color:#f92672">&amp;</span>&#39;static <span style="color:#66d9ef">mut</span> [<span style="color:#66d9ef">u8</span>])<span style="color:#f92672">&gt;</span>;
+
+    <span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">read_exact</span>(self, buf: <span style="color:#66d9ef">&amp;</span>&#39;static <span style="color:#66d9ef">mut</span> [<span style="color:#66d9ef">u8</span>]) -&gt; <span style="color:#a6e22e">Self</span>::T;
+}
+</code></pre></div><p>An implementation of those traits could look like this:</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#66d9ef">pub</span> <span style="color:#66d9ef">struct</span> <span style="color:#a6e22e">DmaSerialTransfer</span> {
+    <span style="color:#75715e">// `Transfer` is the implementation from before
+</span><span style="color:#75715e"></span>    transfer: <span style="color:#a6e22e">Transfer</span><span style="color:#f92672">&lt;</span>dma1::Channel4, Serial<span style="color:#f92672">&gt;</span>,
+}
+
+<span style="color:#66d9ef">impl</span> hal::Transfer <span style="color:#66d9ef">for</span> DmaSerialTransfer {
+    <span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">is_done</span>(<span style="color:#f92672">&amp;</span>self) -&gt; <span style="color:#66d9ef">bool</span> {
+        self.transfer.is_done()
+    }
+
+    <span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">wait</span>(self) -&gt; (DmaSerial, <span style="color:#f92672">&amp;</span>&#39;static <span style="color:#66d9ef">mut</span> [<span style="color:#66d9ef">u8</span>]) {
+        <span style="color:#66d9ef">let</span> (buf, chan, serial) <span style="color:#f92672">=</span> self.transfer.wait();
+
+        (DmaSerial { serial, chan }, buf)
+    }
+}
+
+<span style="color:#e6db74">/// DMA enabled serial interface
+</span><span style="color:#e6db74"></span><span style="color:#66d9ef">pub</span> <span style="color:#66d9ef">struct</span> <span style="color:#a6e22e">DmaSerial</span> { serial: <span style="color:#a6e22e">Serial</span>, chan: <span style="color:#a6e22e">dma1</span>::Channel4 }
+
+<span style="color:#66d9ef">impl</span> hal::ReadExact <span style="color:#66d9ef">for</span> DmaSerial {
+    <span style="color:#66d9ef">type</span> <span style="color:#a6e22e">T</span> <span style="color:#f92672">=</span> DmaSerialTransfer;
+
+    <span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">read_exact</span>(self, buf: <span style="color:#66d9ef">&amp;</span>&#39;static <span style="color:#66d9ef">mut</span> [<span style="color:#66d9ef">u8</span>]) -&gt; <span style="color:#a6e22e">DmaSerialTransfer</span> {
+        <span style="color:#75715e">// `_read_exact` is the implementation frome before
+</span><span style="color:#75715e"></span>        <span style="color:#66d9ef">let</span> transfer <span style="color:#f92672">=</span> self.serial._read_exact(self.chan, buf);
+        DmaSerialTransfer { transfer }
+    }
+}
+
+<span style="color:#66d9ef">impl</span> Serial {
+    <span style="color:#e6db74">/// Enable DMA functionality
+</span><span style="color:#e6db74"></span>    <span style="color:#66d9ef">pub</span> <span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">with_dma</span>(self, chan: <span style="color:#a6e22e">dma1</span>::Channel4) -&gt; <span style="color:#a6e22e">DmaSerial</span> {
+        DmaSerial { serial: <span style="color:#a6e22e">self</span>, chan }
+    }
+}
+</code></pre></div><h2 id="futures">Futures?</h2>
+<p>Some of you have probably noticed that the <code>Transfer</code> trait is similar to the <a href="https://docs.rs/futures/0.1.18/futures/future/trait.Future.html"><code>Future</code></a> trait. Why
+not use the <code>Future</code> trait instead? Well, I&rsquo;m not a fan of the panicky <code>poll</code> interface so I&rsquo;d
+rather not <em>force</em> the caller to use it since you can easily write an adapter to turn a <code>Transfer</code>
+implementer into a <code>Future</code>. See below:</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#66d9ef">struct</span> <span style="color:#a6e22e">FutureTransfer</span><span style="color:#f92672">&lt;</span>T<span style="color:#f92672">&gt;</span>
+<span style="color:#66d9ef">where</span>
+    T: <span style="color:#a6e22e">Transfer</span>,
+{
+    transfer: Option<span style="color:#f92672">&lt;</span>T<span style="color:#f92672">&gt;</span>,
+}
+
+<span style="color:#75715e">// omitted: constructor
+</span><span style="color:#75715e"></span>
+<span style="color:#66d9ef">impl</span><span style="color:#f92672">&lt;</span>T<span style="color:#f92672">&gt;</span> Future <span style="color:#66d9ef">for</span> FutureTransfer<span style="color:#f92672">&lt;</span>T<span style="color:#f92672">&gt;</span>
+<span style="color:#66d9ef">where</span>
+    T: <span style="color:#a6e22e">Transfer</span>,
+{
+    <span style="color:#66d9ef">type</span> <span style="color:#a6e22e">Item</span> <span style="color:#f92672">=</span> T::Payload;
+    <span style="color:#75715e">// (at this point you probably have noticed that, for simplicity, I&#39;ve
+</span><span style="color:#75715e"></span>    <span style="color:#75715e">//  omitted error handling in the `Transfer` API)
+</span><span style="color:#75715e"></span>    <span style="color:#66d9ef">type</span> <span style="color:#a6e22e">Error</span> <span style="color:#f92672">=</span> <span style="color:#f92672">!</span>;
+
+    <span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">poll</span>(<span style="color:#f92672">&amp;</span><span style="color:#66d9ef">mut</span> self) -&gt; <span style="color:#a6e22e">Poll</span><span style="color:#f92672">&lt;</span>T::Payload, <span style="color:#f92672">!&gt;</span> {
+        <span style="color:#66d9ef">if</span> self.transfer
+            .as_ref()
+            .expect(<span style="color:#e6db74">&#34;FutureTransfer polled beyond completion&#34;</span>) <span style="color:#75715e">// may `panic!`
+</span><span style="color:#75715e"></span>            .is_done()
+        {
+            <span style="color:#66d9ef">let</span> payload <span style="color:#f92672">=</span> self.transfer.take().unwrap().wait();
+            Ok(Async::Ready(payload))
+        } <span style="color:#66d9ef">else</span> {
+            Ok(Async::NotReady)
+        }
+    }
+}
+</code></pre></div><hr>
+<p>That&rsquo;s my take on memory safe DMA based APIs. If you have come up with a different solution let me
+know!</p>
+<p>I have <a href="https://github.com/japaric/embedded-hal/issues/37">proposed</a> exploring this approach to DMA based APIs in the <code>embedded-hal</code> repo. If you
+implement or run into problems trying to implement these APIs leave a comment over there! You can
+use my implementation of these APIs  in the <a href="https://github.com/japaric/stm32f103xx-hal"><code>stm32f103xx-hal</code></a> crate as a reference. Unfortunately,
+the APIs in that crate are pretty much undocumented but at least there are some (also undocumented)
+examples.</p>
+<p>I&rsquo;ve also sketched an API for circular DMA transfers, which I have not included in this blog post,
+but I&rsquo;m going to revisit the API to accommodate a <a href="https://github.com/japaric/stm32f103xx-hal/issues/48">use case</a> raised by a user. I might do a small
+blog post about that once that API is more fleshed out.</p>
+<p>Until next time.</p>
+<hr>
+<p><strong>Thank you patrons! ❤️</strong></p>
+<p>I want to wholeheartedly thank:</p>
+<!-- raw HTML omitted -->
+<!-- raw HTML omitted -->
+<!-- raw HTML omitted -->
+<p><a href="https://github.com/Razican">Iban Eguia</a>,
+<a href="https://github.com/aturon">Aaron Turon</a>,
+<a href="https://github.com/archaelus">Geoff Cant</a>,
+<a href="http://www.harrisonchin.com/">Harrison Chin</a>,
+<a href="https://github.com/brandonedens">Brandon Edens</a>,
+<a href="https://github.com/whitequark">whitequark</a>,
+<a href="https://jamesmunns.com/">James Munns</a>,
+<a href="https://github.com/flundstrom2">Fredrik Lundström</a>,
+<a href="https://github.com/kjetilkjeka">Kjetil Kjeka</a>,
+Kor Nielsen,
+<a href="https://myrrlyn.net/">Alexander Payne</a>,
+<a href="https://metafluff.com/">Dietrich Ayala</a>,
+<a href="http://kenkeiter.com/">Kenneth Keiter</a>,
+<a href="https://github.com/HadrienG2">Hadrien Grasland</a>,
+<a href="https://github.com/vitiral">vitiral</a>
+and 45 more people for supporting my work on Patreon.</p>
+<!-- raw HTML omitted -->
+<hr>
+<p>Let&rsquo;s discuss on <a href="https://www.reddit.com/r/rust/comments/7wco91/eir_memory_safe_dma_transfers/">reddit</a>.</p>
+<section class="footnotes" role="doc-endnotes">
+<hr>
+<ol>
+<li id="fn:1" role="doc-endnote">
+<p>Bare metal applications don&rsquo;t <em>usually</em> implement unwinding due to the cost / complexity but
+it&rsquo;s not impossible to find an application that does. <a href="#fnref:1" class="footnote-backref" role="doc-backlink">&#x21a9;&#xfe0e;</a></p>
+</li>
+<li id="fn:2" role="doc-endnote">
+<p>Some of you may be wondering if something stronger, like a memory synchronization
+<em>instruction</em>, is required here. This implementation is for a single core Cortex-M
+microcontroller. That architecture doesn&rsquo;t reorder memory transactions so a compiler barrier is
+enough; a compiler barrier might not be enough in multi-core Cortex-M systems, though. <a href="#fnref:2" class="footnote-backref" role="doc-backlink">&#x21a9;&#xfe0e;</a></p>
+</li>
+<li id="fn:3" role="doc-endnote">
+<p>I&rsquo;ve seen worse, though. I&rsquo;ve seen C programs mark whole statically allocated buffers that
+will be used with the DMA as <code>volatile</code>. That de-optimizes <em>all</em> operations on the buffer; that
+approach can even prevent the compiler from optimizing for loops over the buffer into <code>memcpy</code> /
+<code>memset</code>. <a href="#fnref:3" class="footnote-backref" role="doc-backlink">&#x21a9;&#xfe0e;</a></p>
+</li>
+</ol>
+</section>
+
+    </div>
+
+    
+    
+    <div class="article-toc" >
+        <h3>Contents</h3>
+        <nav id="TableOfContents">
+  <ul>
+    <li><a href="#leakpocalypse"><a href="http://cglab.ca/~abeinges/blah/everyone-poops/#leakpocalypse">Leakpocalypse</a></a></li>
+  </ul>
+
+  <ul>
+    <li><a href="#an-alternative-api">An alternative API</a></li>
+  </ul>
+
+  <ul>
+    <li><a href="#preventing-misoptimtization">Preventing misoptimtization</a></li>
+  </ul>
+
+  <ul>
+    <li><a href="#futures">Futures?</a></li>
+  </ul>
+</nav>
+    </div>
+    
+    
+
+    
+  </div>
+</section>
+
+
+<section class="section">
+  <div class="container has-text-centered">
+    <p><a rel="license" href="http://creativecommons.org/licenses/by/4.0/"><img alt="Creative Commons License" src="https://i.creativecommons.org/l/by/4.0/80x15.png" /></a><br/>Jorge Aparicio</p>
+  </div>
+</section>
+
+
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/styles/tomorrow-night.min.css" />
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/highlight.min.js" integrity="sha256-aYTdUrn6Ow1DDgh5JTc3aDGnnju48y/1c8s1dgkYPQ8=" crossorigin="anonymous"></script>
+
+<script type="text/javascript" src="//cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/languages/armasm.min.js"></script>
+
+<script type="text/javascript" src="//cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/languages/c.min.js"></script>
+
+<script type="text/javascript" src="//cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/languages/diff.min.js"></script>
+
+<script type="text/javascript" src="//cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/languages/llvm.min.js"></script>
+
+<script type="text/javascript" src="//cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/languages/rust.min.js"></script>
+
+<script type="text/javascript" src="//cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/languages/shell.min.js"></script>
+
+<script>hljs.initHighlightingOnLoad();</script>
+
+
+</body>

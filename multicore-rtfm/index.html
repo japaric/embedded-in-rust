@@ -1,0 +1,1098 @@
+<!DOCTYPE html>
+<html lang="en-us">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta content="Rust, embedded, development" name="keywords">
+<meta content="Jorge Aparicio" name="author">
+<meta property="og:title" content="Real Time For the Masses goes multi-core - Embedded in Rust">
+<meta property="og:url" content="https://blog.japaric.io/multicore-rtfm/">
+<meta property="og:description" content="A blog about Rust and embedded stuff">
+<meta property="og:type" content="website" />
+<title>Real Time For the Masses goes multi-core | Embedded in Rust</title>
+<link rel="stylesheet" href="https://blog.japaric.io//css/style.css">
+<link rel="shortcut icon" href="https://blog.japaric.io//wave.ico">
+<link rel="alternate" type="application/atom+xml" title="Embedded in Rust Posts" href="https://blog.japaric.io//index.xml">
+<link href="//maxcdn.bootstrapcdn.com/font-awesome/4.7.0/css/font-awesome.min.css" rel="stylesheet" integrity="sha384-wvfXpqpZZVQGK6TAh5PVlGOfQNHSoD2xbE+QkPxCAFlNEevoEH3Sl0sibVcOQVnN" crossorigin="anonymous">
+
+<link rel="stylesheet" href="//cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/styles/github.min.css">
+
+</head>
+
+<body>
+<section class="section">
+  <div class="container">
+    <nav class="nav">
+      <div class="nav-left">
+        <a class="nav-item" href="https://blog.japaric.io/"><h1 class="title is-4">Embedded in Rust</h1></a>
+      </div>
+      <div class="nav-right">
+        <nav class="nav-item level is-mobile">
+          
+          <a class="level-item" href="https://github.com/japaric" target="_blank">
+            <span class="icon">
+              <i class="fa fa-github"></i>
+            </span>
+          </a>
+          
+          <a class="level-item" href="/index.xml" target="_blank">
+            <span class="icon">
+              <i class="fa fa-rss"></i>
+            </span>
+          </a>
+          
+        </nav>
+      </div>
+    </nav>
+  </div>
+</section>
+
+<section class="section">
+  <div class="container">
+    <h1 class="title">Real Time For the Masses goes multi-core</h1>
+    <h2 class="subtitle is-5">June 23, 2019 by Jorge Aparicio</h2>
+    
+      <div class="tags">
+    
+        <a class="button is-link" href="/tags/amp">AMP</a>
+    
+        <a class="button is-link" href="/tags/concurrency">concurrency</a>
+    
+        <a class="button is-link" href="/tags/multi-core">multi-core</a>
+    
+        <a class="button is-link" href="/tags/rtfm">rtfm</a>
+    
+</div>
+
+    
+    <div class="content">
+      <p>v0.5.0 of Real Time For the Masses (RTFM), the embedded concurrency framework,
+is coming out soon-ish &ndash; some time after Rust 1.36 is released &ndash; and will
+include experimental support for homogeneous and heterogeneous multi-core
+Cortex-M  devices. This blog post covers the upcoming multi-core API and
+includes a refresher on the single-core API.</p>
+<h1 id="heterogeneous-support-in-μamp">Heterogeneous support in μAMP</h1>
+<p>But first, one update relevant to multi-core RTFM from the <a href="../microamp">μAMP</a>
+(<code>microamp</code>) front since the last post: <a href="https://crates.io/crates/microamp-tools"><code>cargo-microamp</code></a> has gained support
+for heterogeneous multi-core devices. The <code>--target</code> flag can now be used to
+specify the compilation target of <em>each</em> core and these targets can be different
+&ndash; that&rsquo;s how μAMP supports heterogeneous devices.</p>
+<p>I have written some μAMP examples for the <a href="https://www.nxp.com/products/processors-and-microcontrollers/arm-based-processors-and-mcus/lpc-cortex-m-mcus/lpc54000-cortex-m4-/low-power-microcontrollers-mcus-based-on-arm-cortex-m4-cores-with-optional-cortex-m0-plus-co-processor:LPC541XX">LPC54114</a>, a microcontroller which
+has one ARM Cortex-M4F core and one Cortex-M0+ core; you can find them
+<a href="https://github.com/japaric/lpcxpresso54114/tree/d10a0a52856b67f0e99284f0fb32abb3c2fd4f51/firmware/lpc541xx/examples">here</a>.</p>
+<p>For those not familiar with the <code>rustc</code> compilation targets for Cortex-M cores:
+one uses the <code>thumbv7em-none-eabihf</code> target for Cortex-M4F cores and
+<code>thumbv6m-none-eabi</code> for Cortex-M0+ cores. The difference between these two
+targets is that the former has FPU (Floating Point Unit) and CAS (Compare And
+Swap) instructions <sup id="fnref:1"><a href="#fn:1" class="footnote-ref" role="doc-noteref">1</a></sup> in its instruction set that the latter doesn&rsquo;t have.
+As the <code>thumbv6m-none-eabi</code> target doesn&rsquo;t have FPU instructions math involving
+single precision floats (<code>f32</code>) is emulated and super slow.</p>
+<p>Here&rsquo;s the mutex example I <a href="../microamp/#shared-memory">presented in the last post</a> but ported to this
+heterogeneous device:</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#75715e">#![no_main]</span>
+<span style="color:#75715e">#![no_std]</span>
+
+<span style="color:#66d9ef">use</span> core::sync::atomic::{self, Ordering};
+
+<span style="color:#66d9ef">use</span> cortex_m::asm;
+<span style="color:#75715e">#[cfg(core = </span><span style="color:#e6db74">&#34;0&#34;</span><span style="color:#75715e">)]</span>
+<span style="color:#66d9ef">use</span> cortex_m::iprintln;
+<span style="color:#66d9ef">use</span> lpc541xx <span style="color:#66d9ef">as</span> _;
+<span style="color:#66d9ef">use</span> microamp::shared;
+<span style="color:#66d9ef">use</span> panic_halt <span style="color:#66d9ef">as</span> _;
+
+<span style="color:#75715e">// non-atomic variable
+</span><span style="color:#75715e"></span><span style="color:#75715e">#[shared]</span> <span style="color:#75715e">// &lt;- means: same memory location on all the cores
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">static</span> <span style="color:#66d9ef">mut</span> SHARED: <span style="color:#66d9ef">u64</span> <span style="color:#f92672">=</span> <span style="color:#ae81ff">0</span>;
+
+<span style="color:#75715e">// used to synchronize access to `SHARED`; this is a memory mapped register
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">const</span> MAILBOX_MUTEX: <span style="color:#f92672">*</span><span style="color:#66d9ef">mut</span> <span style="color:#66d9ef">u32</span> <span style="color:#f92672">=</span> <span style="color:#ae81ff">0x4008_b0f8</span> <span style="color:#66d9ef">as</span> <span style="color:#f92672">*</span><span style="color:#66d9ef">mut</span> <span style="color:#66d9ef">u32</span>;
+
+<span style="color:#75715e">// entry point for both cores
+</span><span style="color:#75715e"></span><span style="color:#75715e">#[no_mangle]</span>
+<span style="color:#66d9ef">unsafe</span> <span style="color:#66d9ef">extern</span> <span style="color:#e6db74">&#34;C&#34;</span> <span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">main</span>() -&gt; <span style="color:#f92672">!</span> {
+    <span style="color:#75715e">// only core #0 has a functional ITM
+</span><span style="color:#75715e"></span>    <span style="color:#75715e">#[cfg(core = </span><span style="color:#e6db74">&#34;0&#34;</span><span style="color:#75715e">)]</span>
+    <span style="color:#66d9ef">let</span> <span style="color:#66d9ef">mut</span> itm <span style="color:#f92672">=</span> cortex_m::Peripherals::take().unwrap().ITM;
+
+    <span style="color:#66d9ef">let</span> <span style="color:#66d9ef">mut</span> done <span style="color:#f92672">=</span> <span style="color:#66d9ef">false</span>;
+    <span style="color:#66d9ef">while</span> <span style="color:#f92672">!</span>done {
+        <span style="color:#66d9ef">while</span> MAILBOX_MUTEX.read_volatile() <span style="color:#f92672">==</span> <span style="color:#ae81ff">0</span> {
+            <span style="color:#75715e">// busy wait while the lock is held by the other core
+</span><span style="color:#75715e"></span>        }
+        atomic::fence(Ordering::Acquire);
+
+        <span style="color:#75715e">// we acquired the lock; now we have exclusive access to `SHARED`
+</span><span style="color:#75715e"></span>        {
+            <span style="color:#66d9ef">let</span> shared <span style="color:#f92672">=</span> <span style="color:#f92672">&amp;</span><span style="color:#66d9ef">mut</span> SHARED;
+
+            <span style="color:#66d9ef">if</span> <span style="color:#f92672">*</span>shared <span style="color:#f92672">&gt;=</span> <span style="color:#ae81ff">10</span> {
+                <span style="color:#75715e">// stop at some arbitrary point
+</span><span style="color:#75715e"></span>                done <span style="color:#f92672">=</span> <span style="color:#66d9ef">true</span>;
+            } <span style="color:#66d9ef">else</span> {
+                <span style="color:#f92672">*</span>shared <span style="color:#f92672">+=</span> <span style="color:#ae81ff">1</span>;
+
+                <span style="color:#75715e">// log a message through the stimulus port #0
+</span><span style="color:#75715e"></span>                <span style="color:#75715e">#[cfg(core = </span><span style="color:#e6db74">&#34;0&#34;</span><span style="color:#75715e">)]</span>
+                iprintln<span style="color:#f92672">!</span>(<span style="color:#f92672">&amp;</span><span style="color:#66d9ef">mut</span> itm.stim[<span style="color:#ae81ff">0</span>], <span style="color:#e6db74">&#34;[0] SHARED = {}&#34;</span>, <span style="color:#f92672">*</span>shared);
+            }
+        }
+
+        <span style="color:#75715e">// release the lock to unblock the other core
+</span><span style="color:#75715e"></span>        atomic::fence(Ordering::Release);
+        MAILBOX_MUTEX.write_volatile(<span style="color:#ae81ff">1</span>);
+
+        <span style="color:#75715e">// artificial delay to let the *other* core take the lock
+</span><span style="color:#75715e"></span>        <span style="color:#66d9ef">for</span> _ <span style="color:#66d9ef">in</span> <span style="color:#ae81ff">0</span>..<span style="color:#ae81ff">1_000</span> {
+            asm::nop();
+        }
+    }
+
+    <span style="color:#75715e">#[cfg(core = </span><span style="color:#e6db74">&#34;0&#34;</span><span style="color:#75715e">)]</span>
+    iprintln<span style="color:#f92672">!</span>(<span style="color:#f92672">&amp;</span><span style="color:#66d9ef">mut</span> itm.stim[<span style="color:#ae81ff">0</span>], <span style="color:#e6db74">&#34;[0] DONE&#34;</span>);
+
+    <span style="color:#66d9ef">loop</span> {}
+}
+</code></pre></div><p>In this example both cores access and increase the value of a shared static
+variable; access to the variable is synchronized using a mutex. As I mentioned
+above, the Cortex-M0+ core has no CAS instructions so we can&rsquo;t use the
+<code>AtomicU8::compare_and_exchange</code> API this time. The vendor provides a memory
+mapped register that provides mutex functionality though so we use that instead.</p>
+<p>We use the latest <code>cargo-microamp</code> to build this program for two different
+compilation targets.</p>
+<pre><code class="language-console" data-lang="console">$ cargo microamp \
+    --example mutex \
+    --target thumbv7em-none-eabihf,thumbv6m-none-eabi \
+    --release
+</code></pre><p>This subcommand produces two ELF images; note the different compilation targets
+in their paths.</p>
+<pre><code class="language-console" data-lang="console">$ ( cd target &amp;&amp; size */release/examples/mutex-{0,1} )
+   text    data     bss     dec     hex filename
+   3796       8       4    3808     ee0 thumbv7em-none-eabihf/release/examples/mutex-0
+    376       8       0     384     180 thumbv6m-none-eabi/release/examples/mutex-1
+</code></pre><p>Looking at the ELF tags confirms that the images use different instruction sets
+and calling conventions (<code>hardfp</code> vs <code>softfp</code>).</p>
+<pre><code class="language-console" data-lang="console">$ readelf -A target/*/release/examples/mutex-{0,1}
+
+File: target/thumbv7em-none-eabihf/release/examples/mutex-0
+Attribute Section: aeabi
+File Attributes
+  Tag_CPU_arch: v7E-M
+  Tag_CPU_arch_profile: Microcontroller
+  Tag_THUMB_ISA_use: Thumb-2
+  Tag_FP_arch: VFPv4-D16
+  Tag_ABI_HardFP_use: SP only
+  Tag_ABI_VFP_args: VFP registers
+  Tag_CPU_unaligned_access: v6
+  Tag_FP_HP_extension: Allowed
+
+File: target/thumbv6m-none-eabi/release/examples/mutex-1
+Attribute Section: aeabi
+File Attributes
+  Tag_CPU_arch: v6S-M
+  Tag_CPU_arch_profile: Microcontroller
+  Tag_THUMB_ISA_use: Thumb-1
+  Tag_CPU_unaligned_access: None
+</code></pre><p>Loading the program &ndash; which is a bit <a href="https://github.com/japaric/lpcxpresso54114/tree/4439c4b5877df430e9240ce69fb55706ce0d6fd6#how-to-run-the-examples">more involved</a> than building it &ndash; and
+running it produces the following output.</p>
+<pre><code class="language-console" data-lang="console">$ # Output of the ITM stimulus port #0
+$ # (port-demux is part of the itm-tools crate -- https://github.com/japaric/itm-tools)
+$ port-demux -f -r0 /dev/ttyUSB0
+[0] SHARED = 2
+[0] SHARED = 4
+[0] SHARED = 6
+[0] SHARED = 8
+[0] SHARED = 10
+[0] DONE
+</code></pre><h1 id="the-single-core-api">The single-core API</h1>
+<p>Before we dive into multi-core RTFM I want to go over the core features of
+single-core RTFM with an example. This serves two purposes: (a) it will get
+you up to speed with RTFM if you are not familiar with it (or will serve as a
+refresher if you have seen it or used it before) and (b) I&rsquo;ll use the
+single-core API / syntax as a reference for the multi-core API / syntax. If you
+are familiar with RTFM feel free to skim over this section or directly jump to
+the <a href="#the-multi-core-extension">next one</a>.</p>
+<h2 id="an-example">An example</h2>
+<p>This is the context for the example application:</p>
+<p>You have a microcontroller connected to an external radio (e.g. a 802.15.4 one).
+The microcontroller receives command packets over this radio and performs
+actions (like turning lights on / off) in response to the packets. The external
+radio has limited memory and can only hold a single incoming packet in memory.
+Until this packet is read out the radio will refuse to receive new packets
+leading to packet loss.</p>
+<p>Now let&rsquo;s look at the code:</p>
+<blockquote>
+<p><strong>NB:</strong> At the time of writing the syntax of the RTFM DSL is still being
+<a href="https://github.com/japaric/cortex-m-rtfm/milestone/4">actively discussed</a> so all the examples in this post may not match the final
+syntax. When v0.5.0 is out I&rsquo;ll come back and update these examples.</p>
+</blockquote>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#75715e">#![deny(unsafe_code)]</span>
+<span style="color:#75715e">#![no_std]</span>
+<span style="color:#75715e">#![no_main]</span>
+
+<span style="color:#75715e">// heapless = &#34;0.5.0-alpha.2&#34;
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">use</span> heapless::{
+    pool,
+    pool::singleton::{Box, Pool},
+};
+
+<span style="color:#75715e">// https://github.com/japaric/owning-slice#f8c70ead919bb26d11eaf01408eca2cd48cb8c72
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">use</span> owning_slice::OwningSliceTo; <span style="color:#75715e">// like `x[..end]` but by value
+</span><span style="color:#75715e"></span>
+<span style="color:#75715e">// panic-halt = &#34;0.2.0&#34;
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">use</span> panic_halt <span style="color:#66d9ef">as</span> _; <span style="color:#75715e">// panic handler
+</span><span style="color:#75715e"></span>
+<span style="color:#75715e">// Declare a lock-free memory pool that manages memory blocks of 128 bytes each
+</span><span style="color:#75715e"></span>pool<span style="color:#f92672">!</span>(P: [<span style="color:#66d9ef">u8</span>; <span style="color:#ae81ff">128</span>]);
+
+<span style="color:#75715e">#[rtfm::app(device = stm32f103xx)]</span>
+<span style="color:#66d9ef">const</span> APP: () <span style="color:#f92672">=</span> {
+    <span style="color:#75715e">/* Resources used by the tasks */</span>
+    <span style="color:#75715e">// Abstraction for an external radio; it will be initialized in `init`
+</span><span style="color:#75715e"></span>    <span style="color:#66d9ef">static</span> <span style="color:#66d9ef">mut</span> RADIO: <span style="color:#a6e22e">Radio</span> <span style="color:#f92672">=</span> ();
+
+    <span style="color:#75715e">// Initialization phase; runs before any task can start
+</span><span style="color:#75715e"></span>    <span style="color:#75715e">#[init]</span>
+    <span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">init</span>(c: <span style="color:#a6e22e">init</span>::Context) -&gt; <span style="color:#a6e22e">init</span>::LateResources {
+        <span style="color:#66d9ef">static</span> <span style="color:#66d9ef">mut</span> M: [<span style="color:#66d9ef">u8</span>; <span style="color:#ae81ff">512</span>] <span style="color:#f92672">=</span> [<span style="color:#ae81ff">0</span>; <span style="color:#ae81ff">512</span>];
+
+        <span style="color:#75715e">// initialize the pool with enough memory for 4 blocks
+</span><span style="color:#75715e"></span>        <span style="color:#75715e">// (`M` actually has type `&amp;&#39;static mut [u8; 512]` due to macro expansion)
+</span><span style="color:#75715e"></span>        P::grow(M);
+
+        <span style="color:#75715e">// omitted: initialization of peripherals
+</span><span style="color:#75715e"></span>
+        init::LateResources {
+            <span style="color:#75715e">// initial value for  the `RADIO` resource
+</span><span style="color:#75715e"></span>            RADIO: <span style="color:#a6e22e">radio</span>,
+        }
+    }
+
+    <span style="color:#75715e">/* Tasks */</span>
+    <span style="color:#75715e">// hardware task bound to interrupt signal `EXTI0`
+</span><span style="color:#75715e"></span>    <span style="color:#75715e">// signal `EXTI0` fires when a new packet can be read from the external radio
+</span><span style="color:#75715e"></span>    <span style="color:#75715e">#[task(
+</span><span style="color:#75715e">        binds = EXTI0,
+</span><span style="color:#75715e">        priority = 2,
+</span><span style="color:#75715e">        resources = [RADIO]</span>, <span style="color:#75715e">// only this task has access to the `RADIO`
+</span><span style="color:#75715e"></span>        spawn <span style="color:#f92672">=</span> [process_packet], <span style="color:#75715e">// tasks this task can spawn
+</span><span style="color:#75715e"></span>    )]
+    <span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">on_new_packet</span>(c: <span style="color:#a6e22e">on_new_packet</span>::Context) {
+        <span style="color:#75715e">// proxy for the packet we just received
+</span><span style="color:#75715e"></span>        <span style="color:#75715e">// it has some info like the size of the packet but not the actual contents
+</span><span style="color:#75715e"></span>        <span style="color:#66d9ef">let</span> <span style="color:#66d9ef">mut</span> next_packet <span style="color:#f92672">=</span> c.resources.RADIO.next_packet();
+
+        <span style="color:#66d9ef">if</span> <span style="color:#66d9ef">let</span> Some(buffer) <span style="color:#f92672">=</span> P::alloc() {
+            <span style="color:#75715e">// read the packet contents
+</span><span style="color:#75715e"></span>            <span style="color:#66d9ef">let</span> packet <span style="color:#f92672">=</span> next_packet.read(buffer.freeze());
+
+            <span style="color:#75715e">// the radio can start receiving a new packet at this point
+</span><span style="color:#75715e"></span>
+            <span style="color:#75715e">// spawn a new instance of the software task and send the packet to it
+</span><span style="color:#75715e"></span>            <span style="color:#66d9ef">let</span> _ <span style="color:#f92672">=</span> c.spawn.process_packet(packet);
+            <span style="color:#75715e">//  ^ (ignore the `Result`;  this operation will never error)
+</span><span style="color:#75715e"></span>        } <span style="color:#66d9ef">else</span> {
+            <span style="color:#75715e">// not enough memory to read this packet ATM
+</span><span style="color:#75715e"></span>            <span style="color:#75715e">// discard it so the radio can start receiving a new packet
+</span><span style="color:#75715e"></span>            <span style="color:#75715e">// (losing a packet is OK-ish and not that uncommon in lossy links like
+</span><span style="color:#75715e"></span>            <span style="color:#75715e">//  802.15.4; the client will likely retry the transmission. Of course,
+</span><span style="color:#75715e"></span>            <span style="color:#75715e">//  it would be best to never drop packets but we have limited memory!)
+</span><span style="color:#75715e"></span>            next_packet.discard();
+        }
+    }
+
+    <span style="color:#75715e">// software task that runs at lower priority and processes packets
+</span><span style="color:#75715e"></span>    <span style="color:#75715e">#[task(
+</span><span style="color:#75715e">        priority = 1,
+</span><span style="color:#75715e">        resources = []</span>, <span style="color:#75715e">// this task doesn&#39;t have access to the RADIO
+</span><span style="color:#75715e"></span>        capacity <span style="color:#f92672">=</span> <span style="color:#ae81ff">4</span>, <span style="color:#75715e">// input buffer can hold up to 4 messages
+</span><span style="color:#75715e"></span>    )]
+    <span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">process_packet</span>(
+        c: <span style="color:#a6e22e">process_packet</span>::Context,
+        packet: <span style="color:#a6e22e">OwningSliceTo</span><span style="color:#f92672">&lt;</span>Box<span style="color:#f92672">&lt;</span>P<span style="color:#f92672">&gt;</span>, <span style="color:#66d9ef">u8</span><span style="color:#f92672">&gt;</span>, <span style="color:#75715e">// task input = message sent to it
+</span><span style="color:#75715e"></span>    ) {
+        <span style="color:#75715e">// ommited: parse packet and perform an action based on its contents
+</span><span style="color:#75715e"></span>
+        <span style="color:#75715e">// (this happens implicitly and returns the memory block back to the pool)
+</span><span style="color:#75715e"></span>        drop(packet)
+    }
+
+    <span style="color:#75715e">// ..
+</span><span style="color:#75715e"></span>};
+</code></pre></div><p>That&rsquo;s quite a bit to unpack so let&rsquo;s go over the code function by function.</p>
+<h3 id="initialization">Initialization</h3>
+<p>First, the <code>init</code> function. This function is called the <em>initialization
+phase</em> within the RTFM framework. The microcontroller will run this function
+right after it boots. The value returned by this function will be used by the
+framework to initialize the static <code>RADIO</code> variable.</p>
+<p>Static variables &ndash; called <em>resources</em> within the RTFM framework &ndash; are used by
+<em>tasks</em> to preserve state across their invocations. You can think of resources
+as <em>task state</em>. The <code>RADIO</code> resource can&rsquo;t be initialized at compile time (&ldquo;in
+const context&rdquo;) because it requires runtime operations like initializing
+peripherals and talking to an external device. Resources that are initialized at
+runtime are called <em>late resources</em> within the framework.</p>
+<p>In <code>init</code> we also initialize the memory pool named <code>P</code> by giving it some initial
+memory.</p>
+<h3 id="event-driven">Event driven</h3>
+<p>After <code>init</code> returns, the framework initializes the <code>RADIO</code> resource and then
+puts the microcontroller to sleep. That&rsquo;s the default state of RTFM
+applications: power saving sleep mode. The microcontroller will wake up and
+perform useful work only when it receives an <em>interrupt signal</em> that tells it to
+do so. In response to this, usually external, signal the microcontroller will
+run a <em>hardware task</em>.</p>
+<p>In our example, <code>on_new_packet</code> is a hardware task that runs when the signal
+named <code>EXTI0</code> (&ldquo;External Interrupt 0&rdquo;) arrives. This signal is raised when the
+external radio has finished receiving a new packet.</p>
+<p>In the <code>on_new_packet</code> task we request a memory block (<code>heapless::pool::Box&lt;P&gt;</code>)
+from the memory pool. If we get one we copy the contents of the newly
+received packet into it, otherwise we tell the radio to discard the newly
+received packet. In either case, the radio can start receiving a new packet by
+the time this task ends (returns).</p>
+<p>Now that we have a packet we have to parse it and perform some action based on
+its contents but we won&rsquo;t do that in <em>this</em> task. Instead we&rsquo;ll use a <em>software</em>
+task to do that work.</p>
+<h3 id="message-passing">Message passing</h3>
+<p><code>process_packet</code> is a <em>software</em> task. Unlike hardware tasks, which start in
+response to events, software tasks are <code>spawn</code>-ed by the software on demand.
+And when a task is <code>spawn</code>-ed a message can be passed along; this message
+becomes the input of the task.</p>
+<p>In the example, we use the message passing feature to <em>send</em> the <code>packet</code> we read
+from the <code>RADIO</code> from the hardware task to the software task. This operation has
+<em>move semantics</em> so ownership over <code>packet</code> is transferred from one task to the
+other.</p>
+<p>The software task will parse its input <code>packet</code> and perform most of the
+application logic. As this task <em>owns</em> the <code>packet</code> it will eventually <code>drop</code>
+it; this operation returns the memory block back to the pool <code>P</code>.</p>
+<h3 id="task-scheduling">Task scheduling</h3>
+<p>Tasks can be assigned <em>static</em> priorities; as the name implies these priorities
+are selected at compile time and can&rsquo;t change at runtime. The differences in
+priorities affect how tasks are scheduled. In our example, the software task has
+lower priority so after being <code>spawn</code>-ed nothing immediately happens. It&rsquo;s only
+after <code>on_new_packet</code> returns that <code>process_packet</code> gets a chance to run.</p>
+<p>We say that in RTFM tasks have <em>run to completion</em> semantics because they have
+no suspension points like generators have and also there&rsquo;s no periodic context
+switching between tasks as seen in threaded systems like Linux. Once a task
+starts it will run until it terminates (returns).</p>
+<p>However, <em>higher priority</em> tasks will preempt lower priority tasks if their
+interrupt signal arrives (asynchronous action) or they are <code>spawn</code>-ed
+(synchronous action) . In either scenario the lower priority task will be
+suspended and the higher priority will start and <em>run to completion</em>. After the
+higher priority task returns the lower priority task is resumed. Note that
+there&rsquo;s never a context switch from a high priority task to a lower priority one
+or to a task that has the same priority; there&rsquo;s only preemption <em>towards higher
+priorities</em>.</p>
+<p>For this reason, in this particular example if another <code>EXTI0</code> signal arrives
+while <code>on_new_packet</code> is being executed there&rsquo;s no <em>immediate</em> effect. Another
+instance of the <code>on_new_packet</code> task will run in response to the second signal
+but only after the first instance ends &ndash; this is because both instances of
+<code>on_new_packet</code> have the <em>same</em> priority.</p>
+<h3 id="priorities-matter">Priorities matter</h3>
+<p>So why bother using a second task? Why not just do a plain function call to a
+<code>process_packet</code> function? The reason is avoiding packet loss.</p>
+<p>If we had used a function call instead of <code>spawn</code> we would have ended with a
+system with no preemption. In this example that could result in packet loss.
+Imagine the scenario where three packets arrive in quick succession. If we do
+the packet processing in the hardware task (<code>on_new_packet</code>) we would not read
+out the next packet <em>until we are done processing the packet</em>. If processing a
+packet takes too long then the third packet would be ignored by the radio
+interface. The timeline of events would look like this:</p>
+<ul>
+<li>
+<p>Event: first packet arrives.</p>
+<ul>
+<li>Action: read it out and start processing it.</li>
+</ul>
+</li>
+<li>
+<p>Event: second packet arrives.</p>
+<ul>
+<li>Status: still processing the first packet.</li>
+</ul>
+</li>
+<li>
+<p>Event: third packet starts being transmitted.</p>
+<ul>
+<li>Status: the radio still has the second packet in its buffer so it ignores
+this packet (and subsequent ones).</li>
+<li>Result: third packet is not successfully delivered.</li>
+</ul>
+</li>
+</ul>
+<p>So what the software task is buying us here is buffering during these bursts of
+requests. The software task has a <code>capacity</code> of <code>4</code> so the hardware task can
+queue up to 4 packets for it to process (sequentially). Because the hardware
+task has higher priority it can drain packets from the radio while old packets
+are being processed by the software task; this avoids the packet loss scenario
+described above.</p>
+<p>Note that this is <em>not</em> real-time system, which is the kind of systems RTFM was
+originally designed for, yet timeliness and prioritization are necessary for the
+correct operation of the system.</p>
+<h2 id="locks">Locks</h2>
+<p>So far we have seen these RTFM features:</p>
+<ul>
+<li>
+<p>Hardware tasks (<code>#[task(binds = ..)]</code>)</p>
+</li>
+<li>
+<p>Software tasks (<code>#[task]</code>) and message passing (<code>spawn</code>)</p>
+</li>
+<li>
+<p>Task prioritization (e.g. <code>priority = 1</code>)</p>
+</li>
+<li>
+<p>Runtime initialization of resources (<code>static [mut]</code> variables), AKA <em>late
+resources</em>.</p>
+</li>
+</ul>
+<p>There&rsquo;s two more features not shown in the example: one of them is the <code>lock</code>
+API. This API is used when you want two, or more, tasks running at <em>different</em>
+priorities to share access to the same resource. Here&rsquo;s a contrived example:</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#75715e">#![deny(unsafe_code)]</span>
+<span style="color:#75715e">#![no_std]</span>
+<span style="color:#75715e">#![no_main]</span>
+
+<span style="color:#66d9ef">use</span> panic_halt <span style="color:#66d9ef">as</span> _; <span style="color:#75715e">// panic handler
+</span><span style="color:#75715e"></span>
+<span style="color:#75715e">#[rtfm::app(device = stm32f103xx)]</span>
+<span style="color:#66d9ef">const</span> APP: () <span style="color:#f92672">=</span> {
+    <span style="color:#75715e">// used to count the number of task invocations
+</span><span style="color:#75715e"></span>    <span style="color:#75715e">// NOTE: *not* an &#34;atomic integer&#34; because ARMv7-M word size is 32-bit
+</span><span style="color:#75715e"></span>    <span style="color:#66d9ef">static</span> <span style="color:#66d9ef">mut</span> COUNT: <span style="color:#66d9ef">u64</span> <span style="color:#f92672">=</span> <span style="color:#ae81ff">0</span>;
+
+    <span style="color:#75715e">#[task(
+</span><span style="color:#75715e">        priority = 1,
+</span><span style="color:#75715e">        resources = [COUNT]</span>, <span style="color:#75715e">// has access to the `COUNT` resource
+</span><span style="color:#75715e"></span>    )]
+    <span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">foo</span>(<span style="color:#66d9ef">mut</span> c: <span style="color:#a6e22e">foo</span>::Context) {
+        <span style="color:#75715e">// the lower priority task needs a critical section to access the data
+</span><span style="color:#75715e"></span>        c.resources.COUNT.lock(<span style="color:#f92672">|</span>count: <span style="color:#66d9ef">&amp;</span><span style="color:#a6e22e">mut</span> <span style="color:#66d9ef">u64</span><span style="color:#f92672">|</span> {
+            <span style="color:#75715e">// this closure runs at a priority of `2`
+</span><span style="color:#75715e"></span>            <span style="color:#75715e">// task `bar` can&#39;t preempt this critical section due to its new priority
+</span><span style="color:#75715e"></span>            <span style="color:#f92672">*</span>count <span style="color:#f92672">+=</span> <span style="color:#ae81ff">1</span>;
+        });
+
+        <span style="color:#75715e">// `bar` can preempt `foo` from this point onward
+</span><span style="color:#75715e"></span>    }
+
+    <span style="color:#75715e">#[task(
+</span><span style="color:#75715e">        priority = 2,
+</span><span style="color:#75715e">        resources = [COUNT]</span>, <span style="color:#75715e">// also has access to the `COUNT` resource
+</span><span style="color:#75715e"></span>    )]
+    <span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">bar</span>(c: <span style="color:#a6e22e">bar</span>::Context) {
+        <span style="color:#75715e">// the higher priority task gets direct access to the resource
+</span><span style="color:#75715e"></span>        <span style="color:#66d9ef">let</span> count: <span style="color:#66d9ef">&amp;</span><span style="color:#a6e22e">mut</span> <span style="color:#66d9ef">u64</span> <span style="color:#f92672">=</span> c.resources.COUNT;
+        <span style="color:#f92672">*</span>count <span style="color:#f92672">+=</span> <span style="color:#ae81ff">1</span>;
+    }
+
+    <span style="color:#75715e">#[task(
+</span><span style="color:#75715e">        priority = 3,
+</span><span style="color:#75715e">        resources = []</span>, <span style="color:#75715e">// can *not* access `COUNT`
+</span><span style="color:#75715e"></span>    )]
+    <span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">baz</span>(c: <span style="color:#a6e22e">baz</span>::Context) {
+        <span style="color:#75715e">// COUNT += 1;
+</span><span style="color:#75715e"></span>        <span style="color:#75715e">//~^ error: cannot find value `COUNT` in this scope
+</span><span style="color:#75715e"></span>
+        <span style="color:#75715e">// c.resources.COUNT += 1;
+</span><span style="color:#75715e"></span>        <span style="color:#75715e">//~^ error: no field `resources` on type `baz::Context`
+</span><span style="color:#75715e"></span>
+        <span style="color:#75715e">// ..
+</span><span style="color:#75715e"></span>    }
+
+    <span style="color:#75715e">// ..
+</span><span style="color:#75715e"></span>};
+</code></pre></div><p>In this example we have a shared resource named <code>COUNT</code> that&rsquo;s accessed by tasks
+<code>foo</code> and <code>bar</code>. The tasks run at different priorities and the resource is not
+an atomic variable so some form of synchronization is required to avoid a data
+race (torn reads and writes). The <code>lock</code> API gives you that synchronization in
+the form of a critical section.</p>
+<p><code>bar</code> runs at higher priority so it can preempt <code>foo</code>; thus <code>foo</code> needs a
+critical section to access <code>COUNT</code>. The <code>lock</code> API creates a critical section,
+which syntactically looks like a closure, by <em>temporarily</em> raising the priority
+of, in this case, <code>foo</code> to match the priority of <code>bar</code>. Raising the priority
+<em>disables</em> preemption: the task <code>bar</code> can <em>not</em> start while <code>foo</code> is in the
+critical section. Only within this critical section can <code>foo</code> safely access the
+contents of <code>COUNT</code>.</p>
+<p>On the other hand, <code>foo</code> can <em>not</em> preempt <code>bar</code> so <code>bar</code> can access <code>COUNT</code>
+directly. Other higher priority tasks that do <em>not</em> access the resource, like
+<code>baz</code>, are free to preempt <code>bar</code>, and <code>foo</code>, at any moment.</p>
+<p>The framework enforces access control: only tasks that declared a resource in
+their <code>#[task]</code> attribute can access the resource (static variable). This
+compile time access control lets the framework optimize / minimize critical
+sections.</p>
+<p>Internally, the <code>spawn</code> API makes use of the <code>lock</code> API so our example is also
+implicitly using the <code>lock</code> API. There are a few data structures that the
+framework synthesizes to make the <code>spawn</code> API work and all the <code>spawn</code> calls
+access them using the <code>lock</code> API &ndash; those data structures are also resources! If
+you are interested in learning how the <code>spawn</code> API is implemented you can read
+our <a href="https://japaric.github.io/rtfm5/book/en/">internal documentation</a>.</p>
+<p>The most important aspects of the <code>lock</code> API are that (a) it&rsquo;s a deadlock-free
+abstraction and (b) it has bounded execution time. In contrast, mutexes in
+threaded systems, like <code>std::sync::Mutex</code>, and spinlocks, like <code>spin::Mutex</code>,
+can deadlock if one is not careful and may block the thread / task trying to
+access the <code>Mutex</code> for an indeterminate amount of time. Entering and leaving the
+critical section created by <code>lock</code> takes only 4 instructions / clock cycles in
+the ARM Cortex-M implementation <sup id="fnref:2"><a href="#fn:2" class="footnote-ref" role="doc-noteref">2</a></sup>.</p>
+<p>The <code>spawn</code> API which is built on top of the <code>lock</code> API inherits these two
+properties. A <code>spawn</code> call, that is posting a message, has a bounded execution
+time (no CAS loops) and never deadlocks or blocks the sender.</p>
+<h2 id="schedule"><code>schedule</code></h2>
+<p>The other feature not covered in the example is the <code>schedule</code> API, which lets
+you schedule a task to run <em>at some time in the future</em>. The main use case for
+this API is creating periodic tasks. Here&rsquo;s a simple example:</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#75715e">#![deny(unsafe_code)]</span>
+<span style="color:#75715e">#![no_std]</span>
+<span style="color:#75715e">#![no_main]</span>
+
+<span style="color:#66d9ef">use</span> cortex_m::{iprintln, peripheral::ITM};
+<span style="color:#66d9ef">use</span> panic_halt <span style="color:#66d9ef">as</span> _;
+<span style="color:#75715e">// like `std::time::{Duration,Instant}` but work with clock cycles rather than seconds
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">use</span> rtfm::cyccnt::{Duration, Instant};
+
+<span style="color:#66d9ef">const</span> PERIOD: <span style="color:#66d9ef">u32</span> <span style="color:#f92672">=</span> <span style="color:#ae81ff">8_000_000</span>; <span style="color:#75715e">// CPU clock cycles or about one second
+</span><span style="color:#75715e"></span>
+<span style="color:#75715e">#[rtfm::app(device = stm32f103xx, monotonic = rtfm::cyccnt::CYCCNT)]</span>
+<span style="color:#66d9ef">const</span> APP: () <span style="color:#f92672">=</span> {
+    <span style="color:#66d9ef">static</span> <span style="color:#66d9ef">mut</span> ITM: <span style="color:#a6e22e">ITM</span> <span style="color:#f92672">=</span> ();
+
+    <span style="color:#75715e">#[init(spawn = [periodic]</span>)]
+    <span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">init</span>(c: <span style="color:#a6e22e">init</span>::Context) -&gt; <span style="color:#a6e22e">init</span>::LateResources {
+        <span style="color:#75715e">// `init` owns all the Cortex-M peripherals
+</span><span style="color:#75715e"></span>        <span style="color:#66d9ef">let</span> <span style="color:#66d9ef">mut</span> core <span style="color:#f92672">=</span> c.core;
+
+        <span style="color:#75715e">// initialize the monotonic timer
+</span><span style="color:#75715e"></span>        core.DWT.enable_cycle_counter();
+
+        <span style="color:#75715e">// bootstrap the periodic task
+</span><span style="color:#75715e"></span>        <span style="color:#66d9ef">let</span> _ <span style="color:#f92672">=</span> c.spawn.periodic(<span style="color:#ae81ff">0</span>);
+
+        init::LateResources { ITM: <span style="color:#a6e22e">core</span>.ITM }
+    }
+
+    <span style="color:#75715e">#[task(resources = [ITM]</span>, schedule <span style="color:#f92672">=</span> [periodic])]
+    <span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">periodic</span>(c: <span style="color:#a6e22e">periodic</span>::Context, count: <span style="color:#66d9ef">u32</span>) {
+        <span style="color:#75715e">// time at which this task started executing
+</span><span style="color:#75715e"></span>        <span style="color:#66d9ef">let</span> now <span style="color:#f92672">=</span> Instant::now();
+
+        <span style="color:#75715e">// time at which this task was scheduled to run
+</span><span style="color:#75715e"></span>        <span style="color:#66d9ef">let</span> scheduled: <span style="color:#a6e22e">Instant</span> <span style="color:#f92672">=</span> c.scheduled;
+
+        <span style="color:#75715e">// log this message through the ITM stimulus port #0
+</span><span style="color:#75715e"></span>        iprintln<span style="color:#f92672">!</span>(
+            <span style="color:#f92672">&amp;</span><span style="color:#66d9ef">mut</span> c.resources.ITM.stim[<span style="color:#ae81ff">0</span>],
+            <span style="color:#e6db74">&#34;periodic({}) scheduled @ {:?} ran @ {:?}&#34;</span>,
+            count,
+            scheduled,
+            now
+        );
+
+        <span style="color:#66d9ef">let</span> _ <span style="color:#f92672">=</span> c.schedule.periodic(
+            <span style="color:#75715e">// when: run again in one second
+</span><span style="color:#75715e"></span>            scheduled <span style="color:#f92672">+</span> Duration::from_cycles(PERIOD),
+
+            <span style="color:#75715e">// the message to pass to the new instance
+</span><span style="color:#75715e"></span>            count <span style="color:#f92672">+</span> <span style="color:#ae81ff">1</span>,
+        );
+    }
+
+    <span style="color:#75715e">// ..
+</span><span style="color:#75715e"></span>};
+</code></pre></div><p>Here&rsquo;s the output of the above program:</p>
+<pre><code class="language-console" data-lang="console">$ port-demux -f -r0 /dev/ttyUSB0
+periodic(0) scheduled @ Instant(0) ran @ Instant(59)
+periodic(1) scheduled @ Instant(8000000) ran @ Instant(8000141)
+periodic(2) scheduled @ Instant(16000000) ran @ Instant(16000141)
+periodic(3) scheduled @ Instant(24000000) ran @ Instant(24000141)
+</code></pre><p>The framework lets the user provide their own <code>monotonic</code> timer. In this example
+we used the DWT cycle counter (AKA <code>CYCCNT</code>) which is a Cortex-M peripheral
+found on all ARMv7-M devices and is clocked at the same frequency as the CPU.
+However, one could have used a Real Time Clock (RTC) peripheral clocked at
+32,768 Hz to schedule tasks with longer periods, in the order of seconds or
+minutes.</p>
+<h1 id="the-multi-core-extension">The multi-core extension</h1>
+<p>That covers all the single-core RTFM API. Now let&rsquo;s dig into the multi-core API.
+The multi-core API is very similar to the single-core API; that&rsquo;s why this
+section is called &ldquo;the multi-core <em>extension</em>&rdquo;.</p>
+<p>Deadlock freedom and bounded execution time are highly desirable properties in
+safety critical and real time systems. The single-core version has both and we
+wanted the multi-core version to inherit these properties. How can we scale out
+RTFM in a way that let us maintain these properties?</p>
+<h2 id="task-partitioning">Task partitioning</h2>
+<p>The answer is: <em>task partitioning</em>. The idea is the following: you split your
+application in <em>tasks</em> &ndash; this is what you do today when you use single-core
+RTFM &ndash; and then you split those tasks <em>across your cores</em>, meaning that <em>each
+task will run on a specific core</em>.</p>
+<p>Tasks can have (<code>static mut</code>) resources associated to them; these resources make
+tasks stateful. The multi-core version has the restriction that resources can
+only be shared between tasks that run <em>on the same core</em>. The reason for this
+restriction is that the <code>lock</code> API is <em>not</em> cross-core memory safe. (You can, of
+course, safely share <code>static</code> variables between the cores &ndash; <code>static</code> variables
+don&rsquo;t need to be managed by RTFM to be memory-safe to access).</p>
+<p>Here&rsquo;s a contrived example that illustrates the multi-core API:</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#75715e">#![deny(unsafe_code)]</span>
+<span style="color:#75715e">#![no_main]</span>
+<span style="color:#75715e">#![no_std]</span>
+
+<span style="color:#75715e">// dual-core application
+</span><span style="color:#75715e"></span><span style="color:#75715e">#[rtfm::app(cores = 2, device = lpc541xx)]</span>
+<span style="color:#66d9ef">const</span> APP: () <span style="color:#f92672">=</span> {
+    <span style="color:#75715e">// resource implicitly assigned to core #0
+</span><span style="color:#75715e"></span>    <span style="color:#66d9ef">static</span> <span style="color:#66d9ef">mut</span> X: <span style="color:#66d9ef">u64</span> <span style="color:#f92672">=</span> <span style="color:#ae81ff">0</span>;
+
+    <span style="color:#75715e">// core #0 initialization routine
+</span><span style="color:#75715e"></span>    <span style="color:#75715e">#[init(core = 0)]</span>
+    <span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">init</span>(_: <span style="color:#a6e22e">init</span>::Context) {
+        <span style="color:#75715e">// ..
+</span><span style="color:#75715e"></span>    }
+
+    <span style="color:#75715e">// software task that runs on core #0
+</span><span style="color:#75715e"></span>    <span style="color:#75715e">#[task(core = 0, priority = 1, resources = [X]</span>)]
+    <span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">process_mic_data</span>(c: <span style="color:#a6e22e">process_mic_data</span>::Context, data: <span style="color:#a6e22e">MicData</span>) {
+        <span style="color:#75715e">// ..
+</span><span style="color:#75715e"></span>
+        <span style="color:#75715e">// `lock` API
+</span><span style="color:#75715e"></span>        c.resources.X.lock(<span style="color:#f92672">|</span>x<span style="color:#f92672">|</span> {
+            <span style="color:#75715e">// ..
+</span><span style="color:#75715e"></span>        });
+
+        <span style="color:#75715e">// ..
+</span><span style="color:#75715e"></span>    }
+
+    <span style="color:#75715e">// hardware task that runs on core #0
+</span><span style="color:#75715e"></span>    <span style="color:#75715e">#[task(core = 0, binds = DMA, priority = 2, resources = [X]</span>)]
+    <span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">on_new_microphone_data</span>(c: <span style="color:#a6e22e">on_new_microphone_data</span>::Context) {
+        <span style="color:#66d9ef">let</span> x: <span style="color:#66d9ef">&amp;</span><span style="color:#a6e22e">mut</span> <span style="color:#66d9ef">u64</span> <span style="color:#f92672">=</span> c.resources.X;
+
+        <span style="color:#75715e">// ..
+</span><span style="color:#75715e"></span>
+        c.spawn.process_mic_data(data);
+    }
+
+    <span style="color:#75715e">// resource implicitly assigned to core #1
+</span><span style="color:#75715e"></span>    <span style="color:#66d9ef">static</span> <span style="color:#66d9ef">mut</span> Y: <span style="color:#66d9ef">u64</span> <span style="color:#f92672">=</span> <span style="color:#ae81ff">0</span>;
+
+    <span style="color:#75715e">// core #1 initialization routine
+</span><span style="color:#75715e"></span>    <span style="color:#75715e">#[init(core = 1)]</span>
+    <span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">init</span>(_: <span style="color:#a6e22e">init</span>::Context) {
+        <span style="color:#75715e">// ..
+</span><span style="color:#75715e"></span>    }
+
+    <span style="color:#75715e">// hardware task that runs on core #1
+</span><span style="color:#75715e"></span>    <span style="color:#75715e">#[task(core = 1, binds = USB, resources = [Y]</span>)]
+    <span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">on_new_usb_packet</span>(c: <span style="color:#a6e22e">on_new_usb_packet</span>::Context) {
+        <span style="color:#75715e">// ..
+</span><span style="color:#75715e"></span>    }
+};
+</code></pre></div><p>There are very few differences between the multi-core and the single-core
+syntax:</p>
+<ul>
+<li>First, <code>rtfm::app</code> now takes a <code>cores</code> argument that indicates the number of
+cores the system has. In this example I chose 2 cores. Omitting the <code>cores</code>
+argument indicates that the application is a single core application.</li>
+</ul>
+<ul>
+<li>
+<p>All tasks now need a <code>core</code> argument that indicates on which core the task
+will run. In this example we have two hardware tasks, each one tied to a
+different interrupt. Core #0 will service DMA transfer complete interrupts
+whereas core #1 will service USB interrupts.</p>
+</li>
+<li>
+<p><code>init</code> also needs a <code>core</code> argument. Each core runs a different
+initialization function.</p>
+</li>
+</ul>
+<p>The <code>lock</code> API is present in the multi-core version and works exactly as it does
+in the single-core version, plus it&rsquo;s still free of deadlocks and has bounded
+execution time.</p>
+<h2 id="message-passing-1">Message passing</h2>
+<p>One can&rsquo;t share resources between cores but message passing works within a core
+<em>and</em> across cores. The <code>spawn</code> API remains unchanged; if the caller specifies a
+task that runs on a different core then the message will be sent to the other
+core.</p>
+<p>Here&rsquo;s the multi-core RTFM version of the classic ping-pong message passing
+example:</p>
+<p>(Full source code can be found in the <a href="https://github.com/japaric/lpcxpresso54114/tree/d10a0a52856b67f0e99284f0fb32abb3c2fd4f51/firmware/lpc541xx/examples">lpcxpresso54114</a> repository)</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#75715e">#![deny(unsafe_code)]</span>
+<span style="color:#75715e">#![no_main]</span>
+<span style="color:#75715e">#![no_std]</span>
+
+<span style="color:#75715e">#[cfg(core = </span><span style="color:#e6db74">&#34;0&#34;</span><span style="color:#75715e">)]</span>
+<span style="color:#66d9ef">use</span> cortex_m::{iprintln, peripheral::ITM};
+<span style="color:#66d9ef">use</span> panic_halt <span style="color:#66d9ef">as</span> _;
+
+<span style="color:#75715e">// stop at some arbitrary point
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">const</span> LIMIT: <span style="color:#66d9ef">u32</span> <span style="color:#f92672">=</span> <span style="color:#ae81ff">5</span>;
+
+<span style="color:#75715e">#[rtfm::app(cores = 2, device = lpc541xx)]</span>
+<span style="color:#66d9ef">const</span> APP: () <span style="color:#f92672">=</span> {
+    <span style="color:#66d9ef">static</span> <span style="color:#66d9ef">mut</span> ITM: <span style="color:#a6e22e">ITM</span> <span style="color:#f92672">=</span> ();
+
+    <span style="color:#75715e">#[init(core = 0, spawn = [ping]</span>)]
+    <span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">init</span>(<span style="color:#66d9ef">mut</span> c: <span style="color:#a6e22e">init</span>::Context) -&gt; <span style="color:#a6e22e">init</span>::LateResources {
+        iprintln<span style="color:#f92672">!</span>(<span style="color:#f92672">&amp;</span><span style="color:#66d9ef">mut</span> c.core.ITM.stim[<span style="color:#ae81ff">0</span>], <span style="color:#e6db74">&#34;[0] init&#34;</span>);
+
+        <span style="color:#75715e">// cross core message passing
+</span><span style="color:#75715e"></span>        <span style="color:#66d9ef">let</span> _ <span style="color:#f92672">=</span> c.spawn.ping(<span style="color:#ae81ff">0</span>);
+
+        init::LateResources { ITM: <span style="color:#a6e22e">c</span>.core.ITM }
+    }
+
+    <span style="color:#75715e">#[task(core = 0, resources = [ITM]</span>, spawn <span style="color:#f92672">=</span> [ping])]
+    <span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">pong</span>(c: <span style="color:#a6e22e">pong</span>::Context, x: <span style="color:#66d9ef">u32</span>) {
+        iprintln<span style="color:#f92672">!</span>(<span style="color:#f92672">&amp;</span><span style="color:#66d9ef">mut</span> c.resources.ITM.stim[<span style="color:#ae81ff">0</span>], <span style="color:#e6db74">&#34;[0] pong({})&#34;</span>, x);
+
+        <span style="color:#75715e">// cross core message passing
+</span><span style="color:#75715e"></span>        <span style="color:#66d9ef">let</span> _ <span style="color:#f92672">=</span> c.spawn.ping(x <span style="color:#f92672">+</span> <span style="color:#ae81ff">1</span>);
+    }
+
+    <span style="color:#75715e">#[task(core = 1, spawn = [pong]</span>)]
+    <span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">ping</span>(c: <span style="color:#a6e22e">ping</span>::Context, x: <span style="color:#66d9ef">u32</span>) {
+        <span style="color:#75715e">// (the Cortex-M0+ core has no functional ITM to log messages)
+</span><span style="color:#75715e"></span>
+        <span style="color:#66d9ef">if</span> x <span style="color:#f92672">&lt;</span> LIMIT {
+            <span style="color:#75715e">// cross core message passing
+</span><span style="color:#75715e"></span>            <span style="color:#66d9ef">let</span> _ <span style="color:#f92672">=</span> c.spawn.pong(x <span style="color:#f92672">+</span> <span style="color:#ae81ff">1</span>);
+        }
+    }
+
+    <span style="color:#75715e">// ..
+</span><span style="color:#75715e"></span>};
+</code></pre></div><p>The target is the LPC54114, a heterogeneous multi-core device. When targeting
+heterogeneous devices RTFM uses μAMP under the hood so we need to compile
+this RTFM application using <code>cargo-microamp</code>.</p>
+<pre><code class="language-console" data-lang="console">$ cargo microamp \
+    --example xspawn \
+    --target thumbv7em-none-eabihf,thumbv6m-none-eabi \
+    --release
+
+$ ( cd target &amp;&amp; size target/*/release/examples/xspawn-{0,1} )
+   text    data     bss     dec     hex filename
+   2796      26       0    2822     b06 thumbv7em-none-eabihf/release/examples/xspawn-0
+    574      26       0     600     258 thumbv6m-none-eabi/release/examples/xspawn-1
+</code></pre><p>Here&rsquo;s the output of running the program:</p>
+<pre><code class="language-console" data-lang="console">$ port-demux -f -r0 /dev/ttyUSB0
+[0] init
+[0] pong(1)
+[0] pong(3)
+[0] pong(5)
+</code></pre><p>It must be noted that cross-core <code>spawn</code> calls also have bounded execution
+time and are non-blocking.</p>
+<h2 id="schedule-1"><code>schedule</code></h2>
+<p>The <code>schedule</code> API also works across cores but one needs to pick a <code>monotonic</code>
+timer that behaves <em>the same</em> when accessed from any of the cores.</p>
+<p>Here&rsquo;s the previous ping pong example but we now use <code>schedule</code> instead of
+<code>spawn</code> to delay each message by half a second.</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#75715e">#![deny(unsafe_code)]</span>
+<span style="color:#75715e">#![no_main]</span>
+<span style="color:#75715e">#![no_std]</span>
+
+<span style="color:#75715e">#[cfg(core = </span><span style="color:#e6db74">&#34;0&#34;</span><span style="color:#75715e">)]</span>
+<span style="color:#66d9ef">use</span> cortex_m::{iprintln, peripheral::ITM};
+<span style="color:#66d9ef">use</span> lpc541xx::Duration;
+<span style="color:#75715e">#[cfg(core = </span><span style="color:#e6db74">&#34;0&#34;</span><span style="color:#75715e">)]</span>
+<span style="color:#66d9ef">use</span> lpc541xx::Instant;
+<span style="color:#66d9ef">use</span> panic_halt <span style="color:#66d9ef">as</span> _;
+
+<span style="color:#75715e">// stop at some arbitrary point
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">const</span> LIMIT: <span style="color:#66d9ef">u32</span> <span style="color:#f92672">=</span> <span style="color:#ae81ff">5</span>;
+
+<span style="color:#66d9ef">const</span> DELAY: <span style="color:#66d9ef">u32</span> <span style="color:#f92672">=</span> <span style="color:#ae81ff">6_000_000</span>; <span style="color:#75715e">// CTIMER0 clock cycles or about half a second
+</span><span style="color:#75715e"></span>
+<span style="color:#75715e">#[rtfm::app(cores = 2, device = lpc541xx, monotonic = lpc541xx::CTIMER0)]</span>
+<span style="color:#66d9ef">const</span> APP: () <span style="color:#f92672">=</span> {
+    <span style="color:#66d9ef">static</span> <span style="color:#66d9ef">mut</span> ITM: <span style="color:#a6e22e">ITM</span> <span style="color:#f92672">=</span> ();
+
+    <span style="color:#75715e">#[init(core = 0, schedule = [ping]</span>)]
+    <span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">init</span>(<span style="color:#66d9ef">mut</span> c: <span style="color:#a6e22e">init</span>::Context) -&gt; <span style="color:#a6e22e">init</span>::LateResources {
+        iprintln<span style="color:#f92672">!</span>(<span style="color:#f92672">&amp;</span><span style="color:#66d9ef">mut</span> c.core.ITM.stim[<span style="color:#ae81ff">0</span>], <span style="color:#e6db74">&#34;[0] init&#34;</span>);
+
+        <span style="color:#75715e">// run this task in half a second from now
+</span><span style="color:#75715e"></span>        <span style="color:#66d9ef">let</span> _ <span style="color:#f92672">=</span> c.schedule.ping(c.start <span style="color:#f92672">+</span> Duration::from_cycles(DELAY), <span style="color:#ae81ff">0</span>);
+
+        init::LateResources { ITM: <span style="color:#a6e22e">c</span>.core.ITM }
+    }
+
+    <span style="color:#75715e">#[task(core = 0, resources = [ITM]</span>, schedule <span style="color:#f92672">=</span> [ping])]
+    <span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">pong</span>(c: <span style="color:#a6e22e">pong</span>::Context, x: <span style="color:#66d9ef">u32</span>) {
+        <span style="color:#66d9ef">let</span> now <span style="color:#f92672">=</span> Instant::now();
+        <span style="color:#66d9ef">let</span> scheduled <span style="color:#f92672">=</span> c.scheduled;
+
+        iprintln<span style="color:#f92672">!</span>(
+            <span style="color:#f92672">&amp;</span><span style="color:#66d9ef">mut</span> c.resources.ITM.stim[<span style="color:#ae81ff">0</span>],
+            <span style="color:#e6db74">&#34;[0] pong({}) scheduled @ {:?} ran @ {:?}&#34;</span>,
+            x,
+            scheduled,
+            now
+        );
+
+        <span style="color:#66d9ef">let</span> _ <span style="color:#f92672">=</span> c
+            .schedule
+            .ping(scheduled <span style="color:#f92672">+</span> Duration::from_cycles(DELAY), x <span style="color:#f92672">+</span> <span style="color:#ae81ff">1</span>);
+    }
+
+    <span style="color:#75715e">#[task(core = 1, schedule = [pong]</span>)]
+    <span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">ping</span>(c: <span style="color:#a6e22e">ping</span>::Context, x: <span style="color:#66d9ef">u32</span>) {
+        <span style="color:#66d9ef">if</span> x <span style="color:#f92672">&lt;</span> LIMIT {
+            <span style="color:#66d9ef">let</span> _ <span style="color:#f92672">=</span> c
+                .schedule
+                .pong(c.scheduled <span style="color:#f92672">+</span> Duration::from_cycles(DELAY), x <span style="color:#f92672">+</span> <span style="color:#ae81ff">1</span>);
+        }
+    }
+
+    <span style="color:#75715e">// ..
+</span><span style="color:#75715e"></span>};
+</code></pre></div><p>Here&rsquo;s the output:</p>
+<pre><code class="language-console" data-lang="console">$ port-demux -f -r0 /dev/ttyUSB0
+[0] init
+[0] pong(1) scheduled @ Instant(12000000) ran @ Instant(12000563)
+[0] pong(3) scheduled @ Instant(24000000) ran @ Instant(24000563)
+[0] pong(5) scheduled @ Instant(36000000) ran @ Instant(36000563)
+</code></pre><p>In this example we use a peripheral provided by the device, <code>CTIMER0</code>, as the
+<code>monotonic</code> timer instead of the <code>CYCCNT</code> (cycle counter), which we used in the
+single-core example. The reason for not using the <code>CYCCNT</code> this time is that
+(a) the <code>CYCCNT</code> is &ndash; to use ARM&rsquo;s terminology &ndash; a <em>private resource</em>: each
+core has its own cycle counter and it&rsquo;s not possible to synchronize them, plus
+each cycle counter could be running at a different frequency; and (b) ARMv6-M
+cores, like the Cortex-M0+ core in the LPC54114, don&rsquo;t implement a cycle
+counter.</p>
+<h2 id="cross-core-resource-initialization">Cross-core resource initialization</h2>
+<p>A feature that I thought might be useful is having one core initialize resources
+owned by other cores.</p>
+<p>One use case would be to have one core initialize <em>all</em> the peripherals and then
+have it send some of the initialized peripherals, wrapped in higher level
+abstractions, to the other cores. You can do that operation with  the <code>spawn</code>
+API but it&rsquo;s a bit awkward because it requires a one-shot task and an <code>Option</code>
+and <code>unwrap</code> calls on the receiver.</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#75715e">#[rtfm::app(
+</span><span style="color:#75715e">    cores = 2,
+</span><span style="color:#75715e">    device = lpc541xx,
+</span><span style="color:#75715e">    peripherals = 0,  // core #0 takes all the device peripherals
+</span><span style="color:#75715e">)]</span>
+<span style="color:#66d9ef">const</span> APP: () <span style="color:#f92672">=</span> {
+    <span style="color:#75715e">#[init(core = 0)]</span>
+    <span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">init</span>(c: <span style="color:#a6e22e">init</span>::Context) {
+        <span style="color:#75715e">// all the device peripherals by value
+</span><span style="color:#75715e"></span>        <span style="color:#66d9ef">let</span> device: <span style="color:#a6e22e">lpc541xx</span>::Peripherals <span style="color:#f92672">=</span> c.device;
+
+        <span style="color:#75715e">// .. initialize all peripherals ..
+</span><span style="color:#75715e"></span>
+        <span style="color:#75715e">// send the initialized USB stack to core #1
+</span><span style="color:#75715e"></span>        <span style="color:#66d9ef">let</span> _ <span style="color:#f92672">=</span> c.spawn.take_usb_stack(usb);
+    }
+
+    <span style="color:#75715e">// resource implicitly assigned to core #1
+</span><span style="color:#75715e"></span>    <span style="color:#66d9ef">static</span> <span style="color:#66d9ef">mut</span> USB: Option<span style="color:#f92672">&lt;</span>UsbStack<span style="color:#f92672">&gt;</span> <span style="color:#f92672">=</span> None;
+
+    <span style="color:#75715e">#[task(core = 1, resources = [USB]</span>)]
+    <span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">take_usb_stack</span>(c: <span style="color:#a6e22e">take_usb_stack</span>::Context, usb: <span style="color:#a6e22e">UsbStack</span>) {
+        c.resources.USB <span style="color:#f92672">=</span> Some(usb);
+    }
+
+    <span style="color:#75715e">// some task that uses the USB stack
+</span><span style="color:#75715e"></span>    <span style="color:#75715e">#[task(core = 1, resources = [USB]</span>)]
+    <span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">use_usb</span>(c: <span style="color:#a6e22e">use_usb</span>::Context) {
+        <span style="color:#75715e">// whoops, this might panic
+</span><span style="color:#75715e"></span>        <span style="color:#66d9ef">let</span> usb: <span style="color:#66d9ef">&amp;</span><span style="color:#a6e22e">mut</span> UsbStack <span style="color:#f92672">=</span> c.resources.USB.as_mut().unwrap();
+
+        <span style="color:#75715e">// ..
+</span><span style="color:#75715e"></span>    }
+};
+</code></pre></div><p>With cross-core resource initialization core #0 can initialize the <code>USB</code>
+resource at the end of <code>init</code>:</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#75715e">#[rtfm::app(cores = 2, device = lpc541xx, peripheral = 0)]</span>
+<span style="color:#66d9ef">const</span> APP: () <span style="color:#f92672">=</span> {
+    <span style="color:#75715e">#[init(core = 0)]</span>
+    <span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">init</span>(c: <span style="color:#a6e22e">init</span>::Context) -&gt; <span style="color:#a6e22e">init</span>::LateResources {
+        <span style="color:#75715e">// .. initialize all peripherals ..
+</span><span style="color:#75715e"></span>
+        init::LateResources { USB: <span style="color:#a6e22e">usb</span> }
+    }
+
+    <span style="color:#75715e">// resource implicitly assigned to core #1
+</span><span style="color:#75715e"></span>    <span style="color:#66d9ef">static</span> <span style="color:#66d9ef">mut</span> USB: <span style="color:#a6e22e">UsbStack</span> <span style="color:#f92672">=</span> ();
+
+    <span style="color:#75715e">// some task that uses the USB stack
+</span><span style="color:#75715e"></span>    <span style="color:#75715e">#[task(core = 1)]</span>
+    <span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">use_usb</span>(c: <span style="color:#a6e22e">use_usb</span>::Context) {
+        <span style="color:#75715e">// always observes an initialized resource
+</span><span style="color:#75715e"></span>        <span style="color:#66d9ef">let</span> usb: <span style="color:#66d9ef">&amp;</span><span style="color:#a6e22e">mut</span> UsbStack <span style="color:#f92672">=</span> c.resources.USB;
+
+        <span style="color:#75715e">// ..
+</span><span style="color:#75715e"></span>    }
+
+    <span style="color:#75715e">// ..
+</span><span style="color:#75715e"></span>};
+</code></pre></div><p>With this approach the one-off task and the <code>Option</code> are not required.</p>
+<p>(And, yes, the framework inserts a synchronization barrier somewhere in there
+so that the <code>use_usb</code> task only ever starts after core #0&rsquo;s <code>init</code> returns and
+<code>USB</code> is initialized.)</p>
+<h2 id="homogeneous-devices">Homogeneous devices</h2>
+<p>In all the previous multi-core examples I have targeted the LPC54114, a
+heterogeneous dual-core device, but there are also homogeneous devices out there
+like the <a href="https://www.nxp.com/products/processors-and-microcontrollers/arm-based-processors-and-mcus/general-purpose-mcus/lpc5500-cortex-m33/high-efficiency-arm-cortex-m33-based-microcontroller-family:LPC55S6x">LPC55S69</a>, a device with 2 Cortex-M33 (ARMv8-M) cores. One could
+certainly use <code>cargo-microamp</code> to build an RTFM application for such device but
+<code>cargo-build</code> suffices in that case because both cores use the exact same
+instruction set.</p>
+<p>RTFM has two codegen modes for multi-core applications: <code>homogeneous</code> and
+<code>heterogeneous</code>; you can select either using Cargo features. The <code>heterogeneous</code>
+mode is the one I have been demoing so far. The <code>homogeneous</code> mode lets you
+build multi-core applications using <code>cargo-build</code> but has the restriction that a
+<em>single</em> compilation target must be used. Of course, this is fine for
+homogeneous devices.</p>
+<p>The RTFM API is the same in either multi-core mode but one can use
+<code>#[cfg(core = &quot;0&quot;)]</code> only in the <code>heterogeneous</code> mode as that&rsquo;s the one that
+uses <code>cargo-microamp</code>.</p>
+<p><a href="https://github.com/japaric/lpcxpresso55S69/blob/1922c6a3067f349876c750a2d57bfcb87e70e0ed/lpc55s6x/examples/xspawn.rs">Here&rsquo;s</a> an <code>homogeneous</code> ping pong example. I&rsquo;m not going to copy paste the
+code here because there&rsquo;s very little difference between it and the
+<code>heterogeneous</code> version I showed before.</p>
+<p>This <code>homogeneous</code> example is built using <code>cargo-build</code></p>
+<pre><code class="language-console" data-lang="console">$ cargo build --target thumbv8m.main-none-eabi --example xspawn --release
+</code></pre><p>And produces a <em>single</em> ELF file.</p>
+<pre><code class="language-console" data-lang="console">$ ( cd target/thumbv8m.main-none-eabi/release/examples &amp;&amp; size xspawn )
+   text    data     bss     dec     hex filename
+   1470       0      16    1486     5ce xspawn
+</code></pre><p>I think it&rsquo;s worth noting that one <em>could</em> use the <code>homogeneous</code> mode to target
+the heterogeneous LPC54114 (Cortex-M4F + Cortex-M0+) by selecting
+<code>thumbv6m-none-eabi</code> as the compilation target. This works because the ARMv6-M
+instruction set is a subset of the ARMv7E-M instruction set. The disadvantage of
+this approach is that one would not be able to use CAS or FPU instructions on
+the Cortex-M4F (ARMv7E-M) core as these are not available when one uses the
+<code>thumbv6m-none-eabi</code> compilation target. The advantage is that the <code>homegeneous</code>
+mode will work on stable Rust 1.36 whereas <code>heterogeneous</code> mode depends on
+nightly because its dependency, μAMP, uses the unstable <code>auto trait</code> feature for
+<a href="../microamp/#data-not-code">memory safety</a>.</p>
+<h1 id="outro">Outro</h1>
+<p>That covers the multi-core API. To my knowledge RTFM is the first Rust
+concurrency framework that targets (heterogeneous) multi-core microcontrollers.</p>
+<p>The PR for v0.5.0 is <a href="https://github.com/japaric/cortex-m-rtfm/pull/205">up</a> so in theory you can go and try it out right now on a
+multi-core device. In practice, though, I have not fully documented what RTFM
+expects of the <code>device</code> crate in multi-core mode so it may be hard to try it out
+on devices other than the ones I covered above.</p>
+<p>We are using the next minor release (v0.5.0) to tweak various aspects of the
+syntax, of which the most contentious bit is probably <a href="https://github.com/japaric/cortex-m-rtfm/issues/202">the late resource
+syntax</a>. There are <a href="https://github.com/japaric/cortex-m-rtfm/milestone/4">several RFCs</a> open right now so if you have thoughts
+on the syntax now would be a good time to comment.</p>
+<h2 id="supporting-other-architectures">Supporting other architectures</h2>
+<p>As part of the work towards the RTFM v0.5.0 release I have refactored out the
+main parts of the <code>#[app]</code> procedural macro in <a href="https://github.com/japaric/rtfm-core">reusable</a> <a href="https://github.com/japaric/rtfm-syntax">crates</a> with
+the goal of making it easier to port RTFM to other architectures.</p>
+<p>To test these crates I have written two (prototype) RTFM ports: one for the
+<a href="https://github.com/japaric/hifive1/tree/master/rtfm">HiFive1</a>, a single-core RISC-V microcontroller, and one for <a href="https://github.com/japaric/linux-rtfm">x86_64 Linux</a>
+&ndash; not a microcontroller! I know. The Linux port has multi-core (<code>cores</code>)
+and timer-queue (<code>schedule</code>) support like the main Cortex-M port so if you want
+to try out the multi-core API today that would be easiest thing to try.</p>
+<p>I have <a href="https://github.com/japaric/cortex-m-rtfm/issues/203">proposed</a> creating a GitHub organization for developing and maintaining
+all these ports. The idea is to grow a team of people with expertise on
+architectures other than ARM Cortex-M to work on these ports and keep them in
+sync.</p>
+<h2 id="rtfm">RTFM?</h2>
+<p>I have also started a GitHub <a href="https://github.com/japaric/cortex-m-rtfm/issues/208">thread</a> to discuss the possibility of renaming the
+project or least changing its acronym. Not everyone is pleased with the RTFM
+moniker for several reasons and I think that if we want to change the name doing
+so before creating a GitHub org would be the best time.</p>
+<p>That&rsquo;s all I have for now.</p>
+<hr>
+<p><strong>Thank you patrons! ❤️</strong></p>
+<p>I want to wholeheartedly thank:</p>
+<!-- raw HTML omitted -->
+<!-- raw HTML omitted -->
+<p><a href="https://github.com/Razican">Iban Eguia</a>,
+<a href="https://github.com/archaelus">Geoff Cant</a>,
+<a href="http://www.harrisonchin.com/">Harrison Chin</a>,
+<a href="https://github.com/brandonedens">Brandon Edens</a>,
+<a href="https://github.com/whitequark">whitequark</a>,
+<a href="https://jamesmunns.com/">James Munns</a>,
+<a href="https://github.com/flundstrom2">Fredrik Lundström</a>,
+<a href="https://github.com/kjetilkjeka">Kjetil Kjeka</a>,
+<a href="https://github.com/korran">Kor Nielsen</a>,
+<a href="https://metafluff.com/">Dietrich Ayala</a>,
+<a href="https://github.com/HadrienG2">Hadrien Grasland</a>,
+<a href="https://github.com/FlorianUekermann">Florian Uekermann</a>,
+<a href="https://github.com/idubrov">Ivan Dubrov</a>
+and 65 more people for supporting my work on Patreon.</p>
+<hr>
+<p>Let&rsquo;s discuss on <a href="https://www.reddit.com/r/rust/comments/c477n3/real_time_for_the_masses_goes_multicore_embedded/">reddit</a>.</p>
+<section class="footnotes" role="doc-endnotes">
+<hr>
+<ol>
+<li id="fn:1" role="doc-endnote">
+<p>to be more precise it has LL-SC (Load-link / Store-conditional)
+instructions which can be used to implement CAS loops. <a href="#fnref:1" class="footnote-backref" role="doc-backlink">&#x21a9;&#xfe0e;</a></p>
+</li>
+<li id="fn:2" role="doc-endnote">
+<p>when the <code>inline-asm</code> feature, which requires a nightly compiler,
+is enabled. Without the feature the cost is 14 clock cycles. <a href="#fnref:2" class="footnote-backref" role="doc-backlink">&#x21a9;&#xfe0e;</a></p>
+</li>
+</ol>
+</section>
+
+    </div>
+
+    
+    
+    <div class="article-toc" >
+        <h3>Contents</h3>
+        <nav id="TableOfContents">
+  <ul>
+    <li><a href="#an-example">An example</a>
+      <ul>
+        <li><a href="#initialization">Initialization</a></li>
+        <li><a href="#event-driven">Event driven</a></li>
+        <li><a href="#message-passing">Message passing</a></li>
+        <li><a href="#task-scheduling">Task scheduling</a></li>
+        <li><a href="#priorities-matter">Priorities matter</a></li>
+      </ul>
+    </li>
+    <li><a href="#locks">Locks</a></li>
+    <li><a href="#schedule"><code>schedule</code></a></li>
+  </ul>
+
+  <ul>
+    <li><a href="#task-partitioning">Task partitioning</a></li>
+    <li><a href="#message-passing-1">Message passing</a></li>
+    <li><a href="#schedule-1"><code>schedule</code></a></li>
+    <li><a href="#cross-core-resource-initialization">Cross-core resource initialization</a></li>
+    <li><a href="#homogeneous-devices">Homogeneous devices</a></li>
+  </ul>
+
+  <ul>
+    <li><a href="#supporting-other-architectures">Supporting other architectures</a></li>
+    <li><a href="#rtfm">RTFM?</a></li>
+  </ul>
+</nav>
+    </div>
+    
+    
+
+    
+  </div>
+</section>
+
+
+<section class="section">
+  <div class="container has-text-centered">
+    <p><a rel="license" href="http://creativecommons.org/licenses/by/4.0/"><img alt="Creative Commons License" src="https://i.creativecommons.org/l/by/4.0/80x15.png" /></a><br/>Jorge Aparicio</p>
+  </div>
+</section>
+
+
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/styles/tomorrow-night.min.css" />
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/highlight.min.js" integrity="sha256-aYTdUrn6Ow1DDgh5JTc3aDGnnju48y/1c8s1dgkYPQ8=" crossorigin="anonymous"></script>
+
+<script type="text/javascript" src="//cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/languages/armasm.min.js"></script>
+
+<script type="text/javascript" src="//cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/languages/c.min.js"></script>
+
+<script type="text/javascript" src="//cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/languages/diff.min.js"></script>
+
+<script type="text/javascript" src="//cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/languages/llvm.min.js"></script>
+
+<script type="text/javascript" src="//cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/languages/rust.min.js"></script>
+
+<script type="text/javascript" src="//cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/languages/shell.min.js"></script>
+
+<script>hljs.initHighlightingOnLoad();</script>
+
+
+</body>

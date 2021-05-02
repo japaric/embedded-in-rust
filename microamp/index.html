@@ -1,0 +1,1234 @@
+<!DOCTYPE html>
+<html lang="en-us">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta content="Rust, embedded, development" name="keywords">
+<meta content="Jorge Aparicio" name="author">
+<meta property="og:title" content="μAMP: Asymmetric Multi-Processing on microcontrollers - Embedded in Rust">
+<meta property="og:url" content="https://blog.japaric.io/microamp/">
+<meta property="og:description" content="A blog about Rust and embedded stuff">
+<meta property="og:type" content="website" />
+<title>μAMP: Asymmetric Multi-Processing on microcontrollers | Embedded in Rust</title>
+<link rel="stylesheet" href="https://blog.japaric.io//css/style.css">
+<link rel="shortcut icon" href="https://blog.japaric.io//wave.ico">
+<link rel="alternate" type="application/atom+xml" title="Embedded in Rust Posts" href="https://blog.japaric.io//index.xml">
+<link href="//maxcdn.bootstrapcdn.com/font-awesome/4.7.0/css/font-awesome.min.css" rel="stylesheet" integrity="sha384-wvfXpqpZZVQGK6TAh5PVlGOfQNHSoD2xbE+QkPxCAFlNEevoEH3Sl0sibVcOQVnN" crossorigin="anonymous">
+
+<link rel="stylesheet" href="//cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/styles/github.min.css">
+
+</head>
+
+<body>
+<section class="section">
+  <div class="container">
+    <nav class="nav">
+      <div class="nav-left">
+        <a class="nav-item" href="https://blog.japaric.io/"><h1 class="title is-4">Embedded in Rust</h1></a>
+      </div>
+      <div class="nav-right">
+        <nav class="nav-item level is-mobile">
+          
+          <a class="level-item" href="https://github.com/japaric" target="_blank">
+            <span class="icon">
+              <i class="fa fa-github"></i>
+            </span>
+          </a>
+          
+          <a class="level-item" href="/index.xml" target="_blank">
+            <span class="icon">
+              <i class="fa fa-rss"></i>
+            </span>
+          </a>
+          
+        </nav>
+      </div>
+    </nav>
+  </div>
+</section>
+
+<section class="section">
+  <div class="container">
+    <h1 class="title">μAMP: Asymmetric Multi-Processing on microcontrollers</h1>
+    <h2 class="subtitle is-5">May 10, 2019 by Jorge Aparicio</h2>
+    
+      <div class="tags">
+    
+        <a class="button is-link" href="/tags/amp">AMP</a>
+    
+        <a class="button is-link" href="/tags/concurrency">concurrency</a>
+    
+        <a class="button is-link" href="/tags/multi-core">multi-core</a>
+    
+</div>
+
+    
+    <div class="content">
+      <blockquote>
+<p>An asymmetric multiprocessing (AMP) system is a multiprocessor computer system
+where not all of the multiple interconnected central processing units (CPUs)
+are treated equally. &ndash; <a href="https://en.wikipedia.org/wiki/Asymmetric_multiprocessing">Wikipedia</a></p>
+</blockquote>
+<h1 id="what-is-μamp">What is μAMP?</h1>
+<p><a href="https://crates.io/crates/microamp/0.1.0-alpha.1"><code>microamp</code></a> (styled as μAMP) is a framework (library plus cargo
+subcommand) for building bare-metal applications that target AMP systems.</p>
+<p>This blog post is a deep dive into this framework which serves as the core
+foundation of the <em>multi-core</em> version of <a href="https://japaric.github.io/cortex-m-rtfm/book/en/">Real Time For the Masses
+(RTFM)</a>, which I&rsquo;ll cover in the next blog post.</p>
+<h1 id="why">Why?</h1>
+<p>Historically, microcontrollers have been designed as single-core Systems On a
+Chip (SoCs) but newer designs are increasingly opting for an <em>heterogeneous</em>
+multi-core architecture. For example, the NXP&rsquo;s LPC43xx series pairs a Cortex-M4
+processor with one (or more) Cortex-M0 co-processor(s) in a single package. The
+goal of these designs is usually optimizing power consumption: for example, the
+lower power M0 can handle all the I/O and the M4 core is only activated to
+perform expensive floating-point / DSP computations.</p>
+<p>The μAMP model lets us target these kind of systems but can also be applied to
+<em>homogeneous</em> multi-core systems like the dual-core real-time processor (2 ARM
+Cortex-R5 cores) on the <a href="https://www.xilinx.com/products/silicon-devices/soc/zynq-ultrascale-mpsoc.html">Zynq UltraScale+ EG</a> or the LPC55S69 (2 ARM
+Cortex-M33 cores) microcontroller.</p>
+<h1 id="what-it-looks-like">What it looks like?</h1>
+<p>μAMP takes after CUDA&rsquo;s &ldquo;single source&rdquo; / hybrid model in the sense that one can
+write a single program (crate) that will run on multiple cores of potentially
+different architectures. To statically partition the application across the
+cores one uses the conditional compilation support that&rsquo;s built into the
+language, that is <code>#[cfg]</code> and <code>cfg!</code>.</p>
+<p>Here&rsquo;s a contrived μAMP program that targets the dual-core real-time processor
+(2x ARM Cortex-R5 cores) on the <a href="https://www.xilinx.com/products/silicon-devices/soc/zynq-ultrascale-mpsoc.html">Zynq UltraScale+ EG</a>.</p>
+<p>(<a href="https://github.com/japaric/ultrascale-plus/tree/4c15efe749a59f807d21bbe4f9fe21dec96eb90a/firmware/zup-rtfm/examples">Here</a> you can find the complete source code of this and other examples shown
+in this post)</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#75715e">// examples/amp-hello.rs
+</span><span style="color:#75715e"></span>
+<span style="color:#75715e">#![no_main]</span>
+<span style="color:#75715e">#![no_std]</span>
+
+<span style="color:#66d9ef">use</span> arm_dcc::dprintln;
+<span style="color:#66d9ef">use</span> panic_dcc <span style="color:#66d9ef">as</span> _; <span style="color:#75715e">// panic handler
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">use</span> zup_rt::entry;
+
+<span style="color:#75715e">// program entry point for both cores
+</span><span style="color:#75715e"></span><span style="color:#75715e">#[entry]</span>
+<span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">main</span>() -&gt; <span style="color:#f92672">!</span> {
+    <span style="color:#66d9ef">static</span> <span style="color:#66d9ef">mut</span> X: <span style="color:#66d9ef">u32</span> <span style="color:#f92672">=</span> <span style="color:#ae81ff">0</span>;
+
+    <span style="color:#75715e">// `#[entry]` transforms `X` into a `&amp;&#39;static mut` reference
+</span><span style="color:#75715e"></span>    <span style="color:#66d9ef">let</span> x: <span style="color:#66d9ef">&amp;</span>&#39;static <span style="color:#66d9ef">mut</span> <span style="color:#66d9ef">u32</span> <span style="color:#f92672">=</span> X;
+
+    <span style="color:#66d9ef">let</span> who_am_i <span style="color:#f92672">=</span> <span style="color:#66d9ef">if</span> cfg<span style="color:#f92672">!</span>(core <span style="color:#f92672">=</span> <span style="color:#e6db74">&#34;0&#34;</span>) { <span style="color:#ae81ff">0</span> } <span style="color:#66d9ef">else</span> { <span style="color:#ae81ff">1</span> };
+    dprintln<span style="color:#f92672">!</span>(<span style="color:#e6db74">&#34;Hello from core {}&#34;</span>, who_am_i);
+
+    dprintln<span style="color:#f92672">!</span>(<span style="color:#e6db74">&#34;X has address {:?}&#34;</span>, x <span style="color:#66d9ef">as</span> <span style="color:#f92672">*</span><span style="color:#66d9ef">mut</span> <span style="color:#66d9ef">u32</span>);
+
+    <span style="color:#66d9ef">loop</span> {}
+}
+</code></pre></div><p>The <a href="https://crates.io/crates/microamp-tools/0.1.0-alpha.1"><code>cargo-microamp</code></a> subcommand is used to compile this program for each core.</p>
+<pre><code class="language-console" data-lang="console">$ # by default cargo-microamp assumses 2 cores but
+$ # this can be overridden with the `-c` flag
+$ cargo microamp --example amp-hello -v
+(..)
+&quot;cargo&quot; &quot;rustc&quot; &quot;--example&quot; &quot;amp-hello&quot; &quot;--release&quot; &quot;--&quot; \
+  &quot;--cfg&quot; &quot;core=\&quot;0\&quot;&quot; \
+  &quot;-C&quot; &quot;link-arg=-Tcore0.x&quot; \
+  &quot;-C&quot; &quot;link-arg=/tmp/cargo-microamp.GSj3FpvLfYTR/microamp-data.o&quot;
+    Finished dev [unoptimized + debuginfo] target(s) in 0.10s
+
+&quot;cargo&quot; &quot;rustc&quot; &quot;--example&quot; &quot;amp-hello&quot; &quot;--release&quot; &quot;--&quot; \
+  &quot;--cfg&quot; &quot;core=\&quot;1\&quot;&quot; \
+  &quot;-C&quot; &quot;link-arg=-Tcore1.x&quot; \
+  &quot;-C&quot; &quot;link-arg=/tmp/cargo-microamp.GSj3FpvLfYTR/microamp-data.o&quot;
+    Finished dev [unoptimized + debuginfo] target(s) in 0.11s
+</code></pre><p>This subcommand produces two images, one for each core.</p>
+<pre><code class="language-console" data-lang="console">$ # image for core #0
+$ size -Ax target/armv7r-none-eabi/release/examples/amp-hello-0
+target/armv7r-none-eabi/debug/examples/amp-hello-0  :
+section             size         addr
+.text              0x4fc          0x0
+.local               0x0      0x20000
+.bss                 0x4   0xfffc0000
+.data                0x0   0xfffc0004
+.rodata             0x40   0xfffc0004
+.shared              0x0   0xfffe0000
+
+$ # image for core #1
+$ size -Ax target/armv7r-none-eabi/release/examples/amp-hello-1
+target/armv7r-none-eabi/debug/examples/amp-hello-1  :
+section              size         addr
+.text              0x4fc          0x0
+.local               0x0      0x20000
+.bss                 0x4   0xfffd0000
+.data                0x0   0xfffd0004
+.rodata             0x40   0xfffd0004
+.shared              0x0   0xfffe0000
+</code></pre><p>As you can see the linker sections (<code>.bss</code>, <code>.data</code>, etc) of each image are
+placed at different addresses. The memory layout of these images is specified by
+the linker scripts <code>core0.x</code> and <code>core1.x</code>. These must be provided by the user
+or by some crate (the <code>zup-rt</code> crate in this case). Later I&rsquo;ll talk about those
+linker scripts in detail.</p>
+<p>These images can be executed independently; this is their output:</p>
+<pre><code class="language-console" data-lang="console">$ # on another terminal: load and run the program
+$ CORE=0 xsdb -interactive debug.tcl amp-hello-0
+
+$ # output of core #0
+$ tail -f dcc0.log
+Hello from core 0
+X has address 0xfffc0000
+</code></pre><pre><code class="language-console" data-lang="console">$ # on another terminal: load and run the program
+$ CORE=1 xsdb -interactive debug.tcl amp-hello-1
+
+$ # the output of core #1
+$ tail -f dcc1.log
+Hello from core 1
+X has address 0xfffd0000
+</code></pre><p>Note here that each core reports a different address for variable <code>X</code>. I&rsquo;ll get
+back to this later.</p>
+<p>So far <code>cargo-microamp</code> doesn&rsquo;t seem to offer much advantage. One could build
+each of these images separately by calling <code>cargo build</code> twice.</p>
+<p>The magic of the framework comes in when you use the <code>#[shared]</code> attribute.</p>
+<h1 id="shared-memory"><code>#[shared]</code> memory</h1>
+<p>The static variable <code>X</code> we used in the previous program does <em>not</em> refer to the
+same memory location: each image has <em>a copy</em> of the variable <code>X</code>. This can be
+seen in the output of the program where each core reports a different address of
+the variable <code>X</code>.</p>
+<p>To place a variable in shared memory one has to opt-in using the <code>#[shared]</code>
+attribute provided by the <code>microamp</code> crate. <code>#[shared]</code> variables can be used to
+synchronize program execution and / or share / exchange data. Here&rsquo;s an example:</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#75715e">// examples/amp-shared.rs
+</span><span style="color:#75715e"></span>
+<span style="color:#75715e">#![no_main]</span>
+<span style="color:#75715e">#![no_std]</span>
+
+<span style="color:#66d9ef">use</span> core::sync::atomic::{AtomicU8, Ordering};
+
+<span style="color:#66d9ef">use</span> arm_dcc::dprintln;
+<span style="color:#66d9ef">use</span> microamp::shared;
+<span style="color:#66d9ef">use</span> panic_dcc <span style="color:#66d9ef">as</span> _; <span style="color:#75715e">// panic handler
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">use</span> zup_rt::entry;
+
+<span style="color:#75715e">// non-atomic variable
+</span><span style="color:#75715e"></span><span style="color:#75715e">#[shared]</span> <span style="color:#75715e">// &lt;- means: same memory location on all the cores
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">static</span> <span style="color:#66d9ef">mut</span> SHARED: <span style="color:#66d9ef">u64</span> <span style="color:#f92672">=</span> <span style="color:#ae81ff">0</span>;
+
+<span style="color:#75715e">// used to synchronize access to `SHARED`
+</span><span style="color:#75715e"></span><span style="color:#75715e">#[shared]</span>
+<span style="color:#66d9ef">static</span> SEMAPHORE: <span style="color:#a6e22e">AtomicU8</span> <span style="color:#f92672">=</span> AtomicU8::new(CORE0);
+
+<span style="color:#75715e">// possible values for SEMAPHORE
+</span><span style="color:#75715e"></span>
+<span style="color:#66d9ef">const</span> CORE0: <span style="color:#66d9ef">u8</span> <span style="color:#f92672">=</span> <span style="color:#ae81ff">0</span>;
+<span style="color:#66d9ef">const</span> CORE1: <span style="color:#66d9ef">u8</span> <span style="color:#f92672">=</span> <span style="color:#ae81ff">1</span>;
+<span style="color:#66d9ef">const</span> LOCKED: <span style="color:#66d9ef">u8</span> <span style="color:#f92672">=</span> <span style="color:#ae81ff">2</span>;
+
+<span style="color:#75715e">#[entry]</span>
+<span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">main</span>() -&gt; <span style="color:#f92672">!</span> {
+    <span style="color:#66d9ef">let</span> (our_turn, next_core) <span style="color:#f92672">=</span> <span style="color:#66d9ef">if</span> cfg<span style="color:#f92672">!</span>(core <span style="color:#f92672">=</span> <span style="color:#e6db74">&#34;0&#34;</span>) {
+        (CORE0, CORE1)
+    } <span style="color:#66d9ef">else</span> {
+        (CORE1, CORE0)
+    };
+
+    dprintln<span style="color:#f92672">!</span>(<span style="color:#e6db74">&#34;START&#34;</span>);
+
+    <span style="color:#66d9ef">let</span> <span style="color:#66d9ef">mut</span> done <span style="color:#f92672">=</span> <span style="color:#66d9ef">false</span>;
+    <span style="color:#66d9ef">while</span> <span style="color:#f92672">!</span>done {
+        <span style="color:#75715e">// try to acquire the lock
+</span><span style="color:#75715e"></span>        <span style="color:#66d9ef">while</span> SEMAPHORE
+            .compare_exchange(our_turn, LOCKED, Ordering::AcqRel, Ordering::Relaxed)
+            .is_err()
+        {
+            <span style="color:#75715e">// busy wait if the lock is held by the other core
+</span><span style="color:#75715e"></span>        }
+
+        <span style="color:#75715e">// we acquired the lock; now we have exclusive access to `SHARED`
+</span><span style="color:#75715e"></span>        <span style="color:#66d9ef">unsafe</span> {
+            <span style="color:#66d9ef">if</span> SHARED <span style="color:#f92672">&gt;=</span> <span style="color:#ae81ff">10</span> {
+                <span style="color:#75715e">// stop at some arbitrary point
+</span><span style="color:#75715e"></span>                done <span style="color:#f92672">=</span> <span style="color:#66d9ef">true</span>;
+            } <span style="color:#66d9ef">else</span> {
+                dprintln<span style="color:#f92672">!</span>(<span style="color:#e6db74">&#34;{}&#34;</span>, SHARED);
+
+                SHARED <span style="color:#f92672">+=</span> <span style="color:#ae81ff">1</span>;
+            }
+        }
+
+        <span style="color:#75715e">// release the lock &amp; unblock the other core
+</span><span style="color:#75715e"></span>        SEMAPHORE.store(next_core, Ordering::Release);
+    }
+
+    dprintln<span style="color:#f92672">!</span>(<span style="color:#e6db74">&#34;DONE&#34;</span>);
+
+    <span style="color:#66d9ef">loop</span> {}
+}
+</code></pre></div><p>In this program the two cores increase the non-atomic <code>SHARED</code> variable <em>in
+turns</em>. The atomic <code>SEMAPHORE</code> variable is used to synchronized access to the
+<code>SHARED</code> variable.</p>
+<p>Both variables are placed in shared memory so they bind to the same memory
+location. We can confirm this by looking at the symbols of each image.</p>
+<pre><code class="language-console" data-lang="console">$ # image for core #0
+
+$ # output format: $address $size $symbol_type $symbol_name
+$ arm-none-eabi-nm -CSn amp-shared-0
+(..)
+fffc0000 00000008 D SHARED
+fffc0008 00000001 D SEMAPHORE
+</code></pre><pre><code class="language-console" data-lang="console">$ # image for core #1
+
+$ # output format: $address $size $symbol_type $symbol_name
+$ arm-none-eabi-nm -CSn amp-shared-1
+(..)
+fffc0000 00000008 D SHARED
+fffc0008 00000001 D SEMAPHORE
+</code></pre><p>If we run core #0 we&rsquo;ll see ..</p>
+<pre><code class="language-console" data-lang="console">$ # on another terminal:
+$ CORE=0 xsdb -interactive debug.tcl amp-shared-0
+
+$ # output of core #0
+$ tail -f dcc0.log
+START
+0
+</code></pre><p>.. that the program halts because it&rsquo;s waiting for the other core. Now, we run
+core #1 ..</p>
+<pre><code class="language-console" data-lang="console">$ # on another terminal:
+$ CORE=1 xsdb -interactive debug.tcl amp-shared-1
+
+$ # output of core #1
+$ tail -f dcc1.log
+START
+1
+3
+5
+7
+9
+DONE
+</code></pre><p>.. and we&rsquo;ll get new output from core #0.</p>
+<pre><code class="language-console" data-lang="console">$ # output of core #0
+$ tail -f dcc0.log
+START
+0
+2
+4
+6
+8
+DONE
+</code></pre><p>That&rsquo;s all the μAMP framework gives you: sound and memory safe inter-processor
+communication over shared memory. Sounds simple, right? The API <em>is</em> simple but
+the implementation was rather tricky. This is Rust so if something does <em>not</em>
+need <code>unsafe</code> then it <em>must</em> be memory safe and sound under <em>all</em> possible
+scenarios; that&rsquo;s what makes it tricky.</p>
+<p>Let&rsquo;s now analyze the soundness of the <code>#[shared]</code> abstraction.</p>
+<h1 id="to-send-or-send">To <code>Send</code> or <code>!Send</code></h1>
+<p>As soon as you get shared memory you can <em>send</em> (move) values from one core to
+the other: for example, a <code>Mutex&lt;Option&lt;T&gt;&gt;</code> can be used as a poor man&rsquo;s
+channel. Consider this program:</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#75715e">#![no_main]</span>
+<span style="color:#75715e">#![no_std]</span>
+
+<span style="color:#66d9ef">use</span> core::sync::atomic::{AtomicBool, Ordering};
+
+<span style="color:#66d9ef">use</span> arm_dcc::dprintln;
+<span style="color:#66d9ef">use</span> microamp::shared;
+<span style="color:#66d9ef">use</span> panic_dcc <span style="color:#66d9ef">as</span> _; <span style="color:#75715e">// panic handler
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">use</span> spin::Mutex; <span style="color:#75715e">// spin = &#34;0.5.0&#34;
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">use</span> zup_rt::entry;
+
+<span style="color:#75715e">#[shared]</span>
+<span style="color:#66d9ef">static</span> CHANNEL: <span style="color:#a6e22e">Mutex</span><span style="color:#f92672">&lt;</span>Option<span style="color:#f92672">&lt;&amp;</span>&#39;static <span style="color:#66d9ef">mut</span> [<span style="color:#66d9ef">u8</span>; <span style="color:#ae81ff">1024</span>]<span style="color:#f92672">&gt;&gt;</span> <span style="color:#f92672">=</span> Mutex::new(None);
+
+<span style="color:#75715e">#[shared]</span>
+<span style="color:#66d9ef">static</span> READY: <span style="color:#a6e22e">AtomicBool</span> <span style="color:#f92672">=</span> AtomicBool::new(<span style="color:#66d9ef">false</span>);
+
+<span style="color:#75715e">// runs on first core
+</span><span style="color:#75715e"></span><span style="color:#75715e">#[cfg(core = </span><span style="color:#e6db74">&#34;0&#34;</span><span style="color:#75715e">)]</span>
+<span style="color:#75715e">#[entry]</span>
+<span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">main</span>() -&gt; <span style="color:#f92672">!</span> {
+    <span style="color:#66d9ef">static</span> <span style="color:#66d9ef">mut</span> BUFFER: [<span style="color:#66d9ef">u8</span>; <span style="color:#ae81ff">1024</span>] <span style="color:#f92672">=</span> [<span style="color:#ae81ff">0</span>; <span style="color:#ae81ff">1024</span>];
+
+    dprintln<span style="color:#f92672">!</span>(<span style="color:#e6db74">&#34;BUFFER is located at address {:?}&#34;</span>, BUFFER.as_ptr());
+
+    <span style="color:#75715e">// send message
+</span><span style="color:#75715e"></span>    <span style="color:#f92672">*</span>CHANNEL.lock() <span style="color:#f92672">=</span> Some(BUFFER);
+
+    <span style="color:#75715e">// unblock core #1
+</span><span style="color:#75715e"></span>    READY.store(<span style="color:#66d9ef">true</span>, Ordering::Release);
+
+    <span style="color:#66d9ef">loop</span> {}
+}
+
+<span style="color:#75715e">// runs on second core
+</span><span style="color:#75715e"></span><span style="color:#75715e">#[cfg(core = </span><span style="color:#e6db74">&#34;1&#34;</span><span style="color:#75715e">)]</span>
+<span style="color:#75715e">#[entry]</span>
+<span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">main</span>() -&gt; <span style="color:#f92672">!</span> {
+    <span style="color:#75715e">// wait until we receive a message
+</span><span style="color:#75715e"></span>    <span style="color:#66d9ef">while</span> <span style="color:#f92672">!</span>READY.load(Ordering::Acquire) {
+        <span style="color:#75715e">// spin wait
+</span><span style="color:#75715e"></span>    }
+
+    <span style="color:#66d9ef">let</span> buffer: <span style="color:#66d9ef">&amp;</span>&#39;static <span style="color:#66d9ef">mut</span> [<span style="color:#66d9ef">u8</span>; <span style="color:#ae81ff">1024</span>] <span style="color:#f92672">=</span> CHANNEL.lock().take().unwrap();
+
+    dprintln<span style="color:#f92672">!</span>(<span style="color:#e6db74">&#34;Received a buffer located at address {:?}&#34;</span>, buffer.as_ptr());
+
+    <span style="color:#75715e">// is this sound?
+</span><span style="color:#75715e"></span>    <span style="color:#75715e">// let first = buffer[0];
+</span><span style="color:#75715e"></span>
+    <span style="color:#66d9ef">loop</span> {}
+}
+</code></pre></div><p>This program could print something like this:</p>
+<pre><code class="language-console" data-lang="console">$ # output of core #0
+$ tail -f dcc0.log
+BUFFER is located at address 0xfffc0000
+</code></pre><pre><code class="language-console" data-lang="console">$ # output of core #1
+$ tail -f dcc1.log
+Received a buffer located at address 0xfffc0000
+</code></pre><p>If core #1 reads or writes to the buffer it received from core #0, would the
+program still be sound? The answer is <em>it depends</em>. It depends on the target
+device and the memory layout of each image.</p>
+<h2 id="memory-location-matters">Memory location matters</h2>
+<p>Let&rsquo;s take the UltraScale+ as an example. This device has many memory blocks
+with different performance characteristics. Each R5 core has 3 blocks of Tightly
+Coupled Memory (TCM) named ATCM (64 KB), BTCM0 (32 KB) and BTCM1 (32 KB). The
+idea behind the TCM is that it should be exclusively accessed by a single core;
+this makes memory access low latency and predictable.</p>
+<p>Apart from the TCM there&rsquo;s 256 KB of On-Chip Memory (OCM) divided in 4 blocks of
+64 KB. This memory region is meant to be used to share data / exchange messages
+between the R5 cores.</p>
+<p>Each TCM and OCM block has a different <em>global</em> address. The TCM blocks of each
+R5 core are a bit special because they are additionally mapped (aliased) at
+address 0. See the table below:</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>R5#0 view</th>
+<th>R5#1 view</th>
+<th>Global address</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>R5#0 ATCM</td>
+<td><code>0x0000_0000</code></td>
+<td>~</td>
+<td><code>0xFFE0_0000</code></td>
+</tr>
+<tr>
+<td>R5#0 BTCM0</td>
+<td><code>0x0002_0000</code></td>
+<td>~</td>
+<td><code>0xFFE2_0000</code></td>
+</tr>
+<tr>
+<td>R5#0 BTCM1</td>
+<td><code>0x0002_8000</code></td>
+<td>~</td>
+<td><code>0xFFE2_8000</code></td>
+</tr>
+<tr>
+<td>R5#1 ATCM</td>
+<td>~</td>
+<td><code>0x0000_0000</code></td>
+<td><code>0xFFE9_0000</code></td>
+</tr>
+<tr>
+<td>R5#1 BTCM0</td>
+<td>~</td>
+<td><code>0x0002_0000</code></td>
+<td><code>0xFFEB_0000</code></td>
+</tr>
+<tr>
+<td>R5#1 BTCM1</td>
+<td>~</td>
+<td><code>0x0002_8000</code></td>
+<td><code>0xFFEB_8000</code></td>
+</tr>
+<tr>
+<td>OCM0</td>
+<td>~</td>
+<td>~</td>
+<td><code>0xFFFC_0000</code></td>
+</tr>
+<tr>
+<td>OCM1</td>
+<td>~</td>
+<td>~</td>
+<td><code>0xFFFD_0000</code></td>
+</tr>
+<tr>
+<td>OCM2</td>
+<td>~</td>
+<td>~</td>
+<td><code>0xFFFE_0000</code></td>
+</tr>
+<tr>
+<td>OCM3</td>
+<td>~</td>
+<td>~</td>
+<td><code>0xFFFF_0000</code></td>
+</tr>
+</tbody>
+</table>
+<p>This means that if both cores execute the operation <code>(0x2_0000 as *const u32).read()</code> they will actually read different memory locations and likely get
+different results.</p>
+<p>An important question here is: Can core #0 access core #1&rsquo;s TCM? The answer is
+<em>yes</em>, core #0 can read and write to core #1&rsquo;s TCM through its global address
+(e.g. <code>0xFFE9_0000</code>). However, this operation is <em>very slow</em> and will likely
+degrade the performance of core #1&rsquo;s accesses to its own TCM.</p>
+<p>There are many ways to arrange the memory layout of each image; some of them
+can make our previous program unsound. For example, if we place the <code>.data</code> and
+<code>.bss</code> sections of both images (core #0&rsquo;s <code>.bss</code> contains the <code>BUFFER</code> variable)
+at address <code>0x2_0000</code> (that is in BTCM0) it would become possible to break Rust
+aliasing rule with <em>no</em> <code>unsafe</code> code. This can be more easily observed if we
+tweak our previous program like this:</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#75715e">// keep the rest of the program the same
+</span><span style="color:#75715e"></span>
+<span style="color:#75715e">#[cfg(core = </span><span style="color:#e6db74">&#34;1&#34;</span><span style="color:#75715e">)]</span>
+<span style="color:#75715e">#[entry]</span>
+<span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">main</span>() -&gt; <span style="color:#f92672">!</span> {
+    <span style="color:#66d9ef">static</span> <span style="color:#66d9ef">mut</span> X: [<span style="color:#66d9ef">u8</span>; <span style="color:#ae81ff">1024</span>] <span style="color:#f92672">=</span> [<span style="color:#ae81ff">0</span>; <span style="color:#ae81ff">1024</span>]; <span style="color:#75715e">// NEW!
+</span><span style="color:#75715e"></span>
+    <span style="color:#75715e">// wait until we receive a &#34;message&#34;
+</span><span style="color:#75715e"></span>    <span style="color:#66d9ef">while</span> <span style="color:#f92672">!</span>READY.load(Ordering::Acquire) {
+        <span style="color:#75715e">// spin wait
+</span><span style="color:#75715e"></span>    }
+
+    <span style="color:#66d9ef">let</span> buffer: <span style="color:#66d9ef">&amp;</span>&#39;static <span style="color:#66d9ef">mut</span> [<span style="color:#66d9ef">u8</span>; <span style="color:#ae81ff">1024</span>] <span style="color:#f92672">=</span> CHANNEL.lock().take().unwrap();
+    <span style="color:#66d9ef">let</span> x: <span style="color:#66d9ef">&amp;</span>&#39;static <span style="color:#66d9ef">mut</span> [<span style="color:#66d9ef">u8</span>; <span style="color:#ae81ff">1024</span>] <span style="color:#f92672">=</span> X; <span style="color:#75715e">// NEW!
+</span><span style="color:#75715e"></span>
+    dprintln<span style="color:#f92672">!</span>(<span style="color:#e6db74">&#34;Received a buffer located at address {:?}&#34;</span>, buffer.as_ptr());
+    dprintln<span style="color:#f92672">!</span>(<span style="color:#e6db74">&#34;X has address {:?}&#34;</span>, x.as_ptr()); <span style="color:#75715e">// NEW!
+</span><span style="color:#75715e"></span>
+    <span style="color:#75715e">// would this be sound?
+</span><span style="color:#75715e"></span>    <span style="color:#75715e">// let head = buffer[0];
+</span><span style="color:#75715e"></span>
+    <span style="color:#66d9ef">loop</span> {}
+}
+</code></pre></div><p>Running this program produces this output:</p>
+<pre><code class="language-console" data-lang="console">$ # output of core #1
+$ tail -f dcc1.log
+Received a buffer located at address 0x20000
+X has address 0x20000
+</code></pre><p>💥 Mutable aliasing! 💥</p>
+<p>Yikes, using the aliased address of the TCM (<code>0x000?_????</code>) leads to Undefined
+Behavior in safe Rust. What went wrong? On core #0 <code>BUFFER</code> is an owning pointer
+to a 1KB buffer with value <code>0x2_000</code> which is an alias for the global address
+<code>0xFFE2_000</code>. On core #1 <code>X</code> is an owning pointer to a 1KB buffer with value
+<code>0x2_000</code> which is an alias for the global address <code>0xFFEB_0000</code>. So far so
+good, there&rsquo;s no overlap between these two pointers because they point to
+different memory locations (see global addresses). The problem is that sending
+the <code>BUFFER</code> pointer to the other core effectively changes where it actually
+points to (from global address <code>0xFFE2_000</code> to global address <code>0xFFEB_0000</code>),
+even though its value is unchanged.</p>
+<p>One way to fix this issue is to use the TCM <em>global</em> addresses (i.e.
+<code>0xFFE?_????</code>) instead of the aliased addresses. Using global addresses
+everywhere changes the output of the program to:</p>
+<pre><code class="language-console" data-lang="console">$ tail -f dcc1.log
+Received a buffer located at address 0xffe20000
+X has address 0xffeb0000
+</code></pre><p>No mutable aliasing in this case.</p>
+<p>But, is there any difference between using the aliased address (e.g. <code>0x2_0000</code>)
+and using the global address (e.g. <code>0xFFE2_0000</code>) to access the TCM? Yes,
+there&rsquo;s a huge difference. Both addresses refer to the same physical memory but
+the aliased address goes through the fast TCM bus, whereas the global address
+goes through the slower AXI interface.</p>
+<p>But how much is a &ldquo;huge&rdquo; difference? We can measure it. Consider the following
+program:</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#75715e">#[cfg(core = </span><span style="color:#e6db74">&#34;0&#34;</span><span style="color:#75715e">)]</span>
+<span style="color:#75715e">#[entry]</span>
+<span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">main</span>() -&gt; <span style="color:#f92672">!</span> {
+    <span style="color:#66d9ef">static</span> <span style="color:#66d9ef">mut</span> X: [<span style="color:#66d9ef">u8</span>; <span style="color:#ae81ff">1024</span>] <span style="color:#f92672">=</span> [<span style="color:#ae81ff">0</span>; <span style="color:#ae81ff">1024</span>];
+
+    <span style="color:#66d9ef">let</span> start <span style="color:#f92672">=</span> Instant::now();
+    <span style="color:#66d9ef">for</span> x <span style="color:#66d9ef">in</span> X.iter_mut() {
+        <span style="color:#66d9ef">unsafe</span> {
+            ptr::write_volatile(x, ptr::read_volatile(x) <span style="color:#f92672">+</span> <span style="color:#ae81ff">1</span>);
+        }
+    }
+    <span style="color:#66d9ef">let</span> end <span style="color:#f92672">=</span> Instant::now();
+
+    <span style="color:#75715e">// `checked` version to avoid panicking branches
+</span><span style="color:#75715e"></span>    <span style="color:#66d9ef">if</span> <span style="color:#66d9ef">let</span> Some(dur) <span style="color:#f92672">=</span> end.checked_duration_since(start) {
+        print(dur);
+    }
+
+    <span style="color:#66d9ef">loop</span> {}
+}
+
+<span style="color:#75715e">// never inline to minimize impact on `main` (e.g. register spilling)
+</span><span style="color:#75715e"></span><span style="color:#75715e">#[inline(never)]</span>
+<span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">print</span>(dur: <span style="color:#a6e22e">Duration</span>) {
+    dprintln<span style="color:#f92672">!</span>(<span style="color:#e6db74">&#34;{}&#34;</span>, dur.as_cycles());
+}
+</code></pre></div><p>This program performs a RMW operation on each byte of a 1 KB array and the whole
+operation is timed. Let&rsquo;s see how long this takes depending on <em>where</em> the array
+<code>X</code> is located.</p>
+<table>
+<thead>
+<tr>
+<th>Location</th>
+<th><code>X.as_ptr()</code></th>
+<th>Clock cycles</th>
+<th>Ratio</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>BTCM0 (aliased address)</td>
+<td><code>0x0002_0000</code></td>
+<td>1,462</td>
+<td>1.00</td>
+</tr>
+<tr>
+<td>BTCM0 (global address)</td>
+<td><code>0xFFE2_0000</code></td>
+<td>23,171</td>
+<td>15.8</td>
+</tr>
+<tr>
+<td>OCM0</td>
+<td><code>0xFFFC_0000</code></td>
+<td>13,340</td>
+<td>9.1</td>
+</tr>
+</tbody>
+</table>
+<p>Ouch, accessing the TCM through its global address is 15-16x slower. Even
+accessing the OCM is faster (~2x) than accessing the TCM through its global
+address.</p>
+<h2 id="memory-safe-program-layout">Memory safe program layout</h2>
+<p>Regardless of the performance, we must default to a memory safe program layout
+so we&rsquo;ll pick the following layout:</p>
+<ul>
+<li>The stack will be placed at the end of aliased BTCM1 (<code>0x3_0000</code>). Note that
+the stack grows downwards, towards smaller addresses.</li>
+</ul>
+<p><em>Rationale</em>: References to stack variables can <em>not</em> be sent to a different core
+because they have non-static lifetimes and to place a value in a static variable
+it must only contain static lifetimes ( there&rsquo;s an implicit <code>T: 'static</code> bound
+on all static variables).</p>
+<ul>
+<li>Code (<code>.text</code>) is placed in the aliased ATCM0 (<code>0x0</code>).</li>
+</ul>
+<p><em>Rationale</em>: We actually have no choice on this one. We&rsquo;ll return to this later.</p>
+<ul>
+<li>Constants (<code>.rodata</code>) and static variables (<code>.bss</code> and <code>.data</code>) are placed in
+OCM0 (core #0) or OCM1 (core #1).</li>
+</ul>
+<p><em>Rationale</em>: References to static variables (<code>&amp;'static mut</code> / <code>&amp;'static</code>) can
+safely be sent across cores so they must <em>not</em> be placed in the aliased TCM or
+we&rsquo;ll run into the problem described above. We choose the OCM instead of the
+&ldquo;global&rdquo; TCM (<code>0xFFE?_????</code>) because the former has better performance.</p>
+<ul>
+<li><code>#[shared]</code> variables (<code>.shared</code>) are placed in OCM2 (both cores).</li>
+</ul>
+<p><em>Rationale</em>: We&rsquo;ll return to this later</p>
+<p>The bottom line here is that it&rsquo;s safe (as in it doesn&rsquo;t require <code>unsafe</code>) to
+send static references across the core boundary so one must think about whether
+that&rsquo;s actually sound (doesn&rsquo;t result in Undefined Behavior). In particular, one
+must think about these scenarios:</p>
+<ul>
+<li>
+<p>Sending a string literal (<code>&amp;'static str</code>) or a static reference into something
+immutable (e.g. <code>&amp;'static i32</code>). These point into the <code>.rodata</code> section.</p>
+</li>
+<li>
+<p>Sending a static reference into something mutable (e.g. <code>&amp;'static mut u32</code> or
+<code>&amp;'static AtomicU32</code>). These point into the <code>.bss</code> and <code>.data</code> sections.</p>
+</li>
+</ul>
+<p>The UltraScale+ is particularly tricky because it aliases memory in hardware.
+To prevent footguns one must not place static variables in aliased memory even
+if this significantly degrades performance.</p>
+<p>It is possible to recover the performance using <code>#[link_section]</code> to place a
+static variable in the aliased memory (see below). However, one must be careful
+and never send a reference to this static variable to a different core.</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#75715e">#[entry]</span>
+<span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">main</span>() -&gt; <span style="color:#f92672">!</span> {
+    <span style="color:#75715e">// place this in the BTCM0
+</span><span style="color:#75715e"></span>    <span style="color:#75715e">#[link_section = </span><span style="color:#e6db74">&#34;.btcm0.BUFFER&#34;</span><span style="color:#75715e">]</span>
+    <span style="color:#66d9ef">static</span> <span style="color:#66d9ef">mut</span> BUFFER: [<span style="color:#66d9ef">u8</span>; <span style="color:#ae81ff">128</span>] <span style="color:#f92672">=</span> [<span style="color:#ae81ff">0</span>; <span style="color:#ae81ff">128</span>];
+
+    <span style="color:#75715e">// prints `0x2_0000`
+</span><span style="color:#75715e"></span>    dprintln<span style="color:#f92672">!</span>(<span style="color:#e6db74">&#34;{:?}&#34;</span>, BUFFER.as_ptr());
+}
+</code></pre></div><p>Using <code>#[link_section]</code> is actually a unsafe operation even though the above
+program doesn&rsquo;t contain any <code>unsafe</code> block &ndash; a lot of stuff can go horribly
+wrong if you misuse <code>#[link_section]</code>. This is something we didn&rsquo;t think about
+carefully enough in preparation for Rust 1.0 and I hope we&rsquo;ll fix by the next
+edition: that is <code>#[link_section]</code> should require the <code>unsafe</code> keyword somewhere
+and be rejected by <code>#[deny(unsafe_code)]</code>.</p>
+<h2 id="data-not-code">Data not code</h2>
+<p>Are we completely safe with just using a certain memory layout? The answer is:
+in the general case, <em>no</em>; and in the particular case of UltraScale+, <em>also no</em>.</p>
+<p>The issue is that one can not only safely send pointers to <em>data</em> across the
+core boundary; one can also safely send pointers to <em>code</em>. Function pointers
+(e.g. <code>fn()</code>) obviously qualify as pointers to code; less obviously, trait
+objects also qualify as pointers to code (they contain a vtable pointer). One
+should not send either across the core boundary.</p>
+<p>But what&rsquo;s the problem with pointers to code? Consider this <code>unsafe</code>-less,
+seemingly OK program that&rsquo;s <em>rejected</em> by the μAMP framework:</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#75715e">// slight variation of the `amp-channel` example
+</span><span style="color:#75715e"></span>
+<span style="color:#75715e">#[shared]</span>
+<span style="color:#66d9ef">static</span> CHANNEL: <span style="color:#a6e22e">Mutex</span><span style="color:#f92672">&lt;</span>Option<span style="color:#f92672">&lt;</span><span style="color:#66d9ef">fn</span>()<span style="color:#f92672">&gt;&gt;</span> <span style="color:#f92672">=</span> Mutex::new(None);
+<span style="color:#75715e">//~ error: the trait bound `fn(): DataNotCode` is not satisfied in Mutex&lt;Option&lt;fn()&gt;&gt;
+</span><span style="color:#75715e"></span>
+<span style="color:#75715e">#[shared]</span>
+<span style="color:#66d9ef">static</span> READY: <span style="color:#a6e22e">AtomicBool</span> <span style="color:#f92672">=</span> AtomicBool::new(<span style="color:#66d9ef">false</span>);
+
+<span style="color:#75715e">// runs on first core
+</span><span style="color:#75715e"></span><span style="color:#75715e">#[cfg(core = </span><span style="color:#e6db74">&#34;0&#34;</span><span style="color:#75715e">)]</span>
+<span style="color:#75715e">#[entry]</span>
+<span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">main</span>() -&gt; <span style="color:#f92672">!</span> {
+    <span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">foo</span>() {
+        dprintln<span style="color:#f92672">!</span>(<span style="color:#e6db74">&#34;foo&#34;</span>);
+    }
+
+    <span style="color:#66d9ef">let</span> f: <span style="color:#a6e22e">fn</span>() <span style="color:#f92672">=</span> foo;
+
+    <span style="color:#f92672">*</span>CHANNEL.lock() <span style="color:#f92672">=</span> Some(f);
+
+    <span style="color:#75715e">// unblock core #1
+</span><span style="color:#75715e"></span>    READY.store(<span style="color:#66d9ef">true</span>, Ordering::Release);
+
+    <span style="color:#66d9ef">loop</span> {}
+}
+
+<span style="color:#75715e">// runs on second core
+</span><span style="color:#75715e"></span><span style="color:#75715e">#[cfg(core = </span><span style="color:#e6db74">&#34;1&#34;</span><span style="color:#75715e">)]</span>
+<span style="color:#75715e">#[entry]</span>
+<span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">main</span>() -&gt; <span style="color:#f92672">!</span> {
+    <span style="color:#75715e">// wait until we receive a &#34;message&#34;
+</span><span style="color:#75715e"></span>    <span style="color:#66d9ef">while</span> <span style="color:#f92672">!</span>READY.load(Ordering::Acquire) {
+        <span style="color:#75715e">// spin wait
+</span><span style="color:#75715e"></span>    }
+
+    <span style="color:#66d9ef">let</span> f: <span style="color:#a6e22e">fn</span>() <span style="color:#f92672">=</span> CHANNEL.lock().take().unwrap();
+
+    <span style="color:#75715e">// is this sound?
+</span><span style="color:#75715e"></span>    f();
+
+    <span style="color:#66d9ef">loop</span> {}
+}
+</code></pre></div><p>This is a variation of <code>amp-channel</code> where we send a function pointer from one
+core to the other. Why is this program rejected?</p>
+<p>In the general case we could have a heterogeneous device where one core uses
+instruction set <code>X</code> (e.g. Cortex-M4F Thumb2 encoded instructions) and the
+other core uses instruction set <code>Y</code> (e.g. Cortex-R5 ARM encoded instructions);
+executing a function encoded using instruction set <code>X</code> on the core that uses
+instruction set <code>Y</code> is Undefined Behavior &ndash; <em>if</em> you are lucky this operation
+will make the core jump into some exception handler but anything could happen.</p>
+<p>That&rsquo;s why we reject this operation in the <code>#[shared]</code> attribute using a trait
+bound. Both function pointers (<code>fn(..) -&gt; _</code>) and trait objects (<code>dyn Trait</code>)
+are rejected.</p>
+<p>&ldquo;But the UltraScale+ is an <em>homogeneous</em> multi-core device! Both cores use the
+same instruction set so the above program ought to be OK, right?&rdquo; Unfortunately,
+the UltraScale+ is a complex device so the above program is still not OK.</p>
+<p>The R5 cores in the UltraScale+ can only execute code that&rsquo;s located in the TCM
+<em>and</em> fetched from the aliased address range (<code>0x000?_????</code>). Trying to execute
+code located in the OCM results in a <em>prefetch abort</em> at runtime. Same thing if
+the core tries to fetch code from the global address of the TCM (<code>0xFFE?_????</code>).</p>
+<p>Thus we have no choice but to place the <code>.text</code> section (all functions) in the
+<em>aliased</em> TCM, that is at address <code>0x000?_????</code>. Once we have done that we can
+no longer safely send function pointers between the cores due to the aliasing
+problem we saw before &ndash; each core would interpret the same address
+<code>0x000?_????</code> as different memory locations.</p>
+<h1 id="how-is-shared-implemented">How is <code>#[shared]</code> implemented?</h1>
+<p>Getting <code>#[shared]</code> to work required a bit of linker (script) magic. Let&rsquo;s see
+how it works.</p>
+<p><code>#[shared]</code> is a procedural macro attribute (<code>proc_macro_attribute</code>) that
+performs a small source level transformation. Let&rsquo;s see the expanded code:</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#75715e">// user input
+</span><span style="color:#75715e"></span><span style="color:#75715e">#[shared]</span>
+<span style="color:#66d9ef">static</span> <span style="color:#66d9ef">mut</span> SHARED: <span style="color:#66d9ef">u64</span> <span style="color:#f92672">=</span> <span style="color:#ae81ff">0</span>;
+</code></pre></div><div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#75715e">// attribute expansion
+</span><span style="color:#75715e"></span><span style="color:#75715e">#[cfg(microamp)]</span>
+<span style="color:#75715e">#[link_section = </span><span style="color:#e6db74">&#34;.shared&#34;</span><span style="color:#75715e">]</span>
+<span style="color:#75715e">#[no_mangle]</span>
+<span style="color:#66d9ef">static</span> <span style="color:#66d9ef">mut</span> SHARED: <span style="color:#66d9ef">u64</span> <span style="color:#f92672">=</span> {
+    <span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">assert</span>() {
+        <span style="color:#75715e">// used to check that `u64` is not a function pointer or trait object
+</span><span style="color:#75715e"></span>        microamp::export::is_data::<span style="color:#f92672">&lt;</span><span style="color:#66d9ef">u64</span><span style="color:#f92672">&gt;</span>();
+    }
+
+    <span style="color:#ae81ff">0</span>
+};
+
+<span style="color:#75715e">#[cfg(not(microamp))]</span>
+<span style="color:#66d9ef">extern</span> {
+    <span style="color:#66d9ef">static</span> <span style="color:#66d9ef">mut</span> SHARED: <span style="color:#66d9ef">u64</span>;
+}
+</code></pre></div><p>The application code will be compiled <em>without</em> <code>--cfg microamp</code> so it will use
+the <em>external</em> (<code>extern</code>) <code>SHARED</code> variable. The &ldquo;definition&rdquo; of this external
+variable (its size and initial value) must be provided at link time or linking
+will fail. That&rsquo;s where the <code>#[cfg(microamp)]</code> item comes in. When one invokes
+the <code>cargo-microamp</code> subcommand it first compiles the application with <code>--cfg microamp</code> and produces a single object file.</p>
+<pre><code class="language-console" data-lang="console">$ cargo microamp --example amp-shared -v
+&quot;cargo&quot; &quot;rustc&quot; &quot;--example&quot; &quot;amp-shared&quot; &quot;--&quot; \
+  &quot;-C&quot; &quot;lto&quot; \
+  &quot;--cfg&quot; &quot;microamp&quot; \
+  &quot;--emit=obj&quot; \
+  &quot;-A&quot; &quot;warnings&quot; \
+  &quot;-C&quot; &quot;linker=microamp-true&quot;
+(..)
+</code></pre><p>This object file contains all the <code>#[shared]</code> variables packed in a <em>single</em>
+linker section named <code>.shared</code>.</p>
+<pre><code class="language-console" data-lang="console">$ size -Ax $(find target -name '*.o')
+target/armv7r-none-eabi/debug/examples/amp_shared-6ca3c73e139e6dd1.o  :
+(..)
+.shared                                          0x9    0x0
+(..)
+</code></pre><p><code>cargo-microamp</code> then strips this object file from all linker sections but the
+one named <code>.shared</code>, renames it to <code>microamp-data.o</code> and places it in a
+temporary directory.</p>
+<pre><code class="language-console" data-lang="console">$ cargo microamp --example amp-shared -v
+(..)
+&quot;arm-none-eabi-strip&quot; \
+  &quot;-R&quot; &quot;*&quot; \
+  &quot;-R&quot; &quot;!.shared&quot; \
+  &quot;--strip-unneeded&quot; \
+  &quot;/tmp/cargo-microamp.GSj3FpvLfYTR/microamp-data.o&quot;
+</code></pre><p>These are the contents of the object file after running <code>arm-none-eabi-strip</code>.</p>
+<pre><code class="language-console" data-lang="console">$ size -Ax microamp-data.o
+microamp-data.o  :
+section   size   addr
+.shared    0x9    0x0
+Total      0x9
+
+$ # output format: $address $size $symbol_type $symbol_name
+$ arm-none-eabi-nm -CSn microamp-data.o
+00000000 00000008 D SHARED
+00000008 00000001 D SEMAPHORE
+</code></pre><p>Note that the input object files (<code>.o</code>) are relocatable so the addresses
+reported by <code>nm</code> are not final; only the reported size is final.</p>
+<p>When <code>cargo-microamp</code> links the image for each core it passes the path to this
+stripped object file to the linker.</p>
+<pre><code class="language-console" data-lang="console">$ cargo microamp --example amp-shared -v
+(..)
+&quot;cargo&quot; &quot;rustc&quot; &quot;--example&quot; &quot;amp-shared&quot; &quot;--release&quot; &quot;--&quot; \
+  &quot;--cfg&quot; &quot;core=\&quot;0\&quot;&quot; \
+  &quot;-C&quot; &quot;link-arg=-Tcore0.x&quot; \
+  &quot;-C&quot; &quot;link-arg=/tmp/cargo-microamp.GSj3FpvLfYTR/microamp-data.o&quot;
+(..)
+&quot;cargo&quot; &quot;rustc&quot; &quot;--example&quot; &quot;amp-shared&quot; &quot;--release&quot; &quot;--&quot; \
+  &quot;--cfg&quot; &quot;core=\&quot;1\&quot;&quot; \
+  &quot;-C&quot; &quot;link-arg=-Tcore1.x&quot; \
+  &quot;-C&quot; &quot;link-arg=/tmp/cargo-microamp.GSj3FpvLfYTR/microamp-data.o&quot;
+(..)
+</code></pre><p>Let&rsquo;s take a quick look at the object file produced by <code>rustc</code> before it&rsquo;s
+linked with <code>microamp-data.o</code></p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#75715e">$</span> <span style="color:#960050;background-color:#1e0010">#</span> core <span style="color:#960050;background-color:#1e0010">#</span><span style="color:#ae81ff">0</span>
+
+<span style="color:#75715e">$</span> <span style="color:#960050;background-color:#1e0010">#</span> output format: <span style="color:#75715e">$address</span> <span style="color:#75715e">$size</span> <span style="color:#75715e">$symbol_type</span> <span style="color:#75715e">$symbol_name</span>
+<span style="color:#75715e">$</span> arm<span style="color:#f92672">-</span>none<span style="color:#f92672">-</span>eabi<span style="color:#f92672">-</span>nm <span style="color:#f92672">-</span>CSn amp_shared<span style="color:#f92672">-</span><span style="color:#ae81ff">75511011384774</span>a7.amp_shared.du4sqj84<span style="color:#f92672">-</span>cgu.<span style="color:#ae81ff">0.</span>rcgu.o
+(..)
+                  U SEMAPHORE
+                  U SHARED
+<span style="color:#ae81ff">00000000</span> <span style="color:#ae81ff">00000004</span> T DefaultHandler
+<span style="color:#ae81ff">00000000</span> <span style="color:#ae81ff">00000070</span> T IRQ
+<span style="color:#ae81ff">00000000</span> <span style="color:#ae81ff">000001</span>f0 T main
+(..)
+</code></pre></div><p>The <code>#[shared]</code> variables which are actually <code>extern</code> variables in the expanded
+code show up as &ldquo;undefined&rdquo; (<code>U</code>) symbols and have no address or size.
+<code>microamp-data.o</code> will provide the size and initial value of these symbols but
+the symbols are still missing a meaningful address.</p>
+<h2 id="linker-script">Linker script</h2>
+<p>The final piece to glue all this together is the linker script &ndash; one script per
+core actually &ndash; which must be provided by the user or some crate. These linker
+scripts must be named <code>core0.x</code>, <code>core1.x</code>, etc. and they must place the <em>input</em>
+<code>.shared</code> section contained in the <code>microamp-data.o</code> file into an <em>output</em>
+section named <code>.shared</code>. The output <code>.shared</code> section must be placed at the
+<em>same</em> memory location on all images.</p>
+<p><code>core*.x</code> linker scripts will look like this:</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-text" data-lang="text">/* showing just the part common to both core0.x and core1.x */
+
+MEMORY
+{
+  /* .. */
+
+  OCM0 : ORIGIN = 0xFFFC0000, LENGTH = 64K
+  OCM1 : ORIGIN = 0xFFFD0000, LENGTH = 64K
+  OCM2 : ORIGIN = 0xFFFE0000, LENGTH = 64K
+  OCM3 : ORIGIN = 0xFFFF0000, LENGTH = 64K
+}
+
+SECTIONS
+{
+  /* .. */
+
+  /* output section placed in OCM2 */
+  .shared : ALIGN(4)
+  {
+    KEEP(microamp-data.o(.shared));
+    . = ALIGN(4);
+  } &gt; OCM2
+
+  /* .. */
+}
+</code></pre></div><p>The <code>&gt; OCM2</code> bit tells the linker where to place the <code>#[shared]</code> variables. The
+variables need to have the same address on all the images so we have to pick the
+same memory region in all the <code>core*.x</code> linker scripts. We pick OCM2 here and
+not OCM0 / OCM1 to avoid other sections like <code>.data</code>, which could have a
+different size on each image, from displacing the <code>.shared</code> section.</p>
+<p>How <code>#[shared]</code> variables are laid out in memory is critical. The <code>.shared</code>
+section in both images must have the exact same layout or the application will
+run into Undefined Behavior. To understand why this linker script / attribute
+does what we want one needs to understand how compiler and linker optimizations
+can affect the memory layout of a program.</p>
+<p>The compiler is free to optimize away unused <em>static variables</em>; variables
+optimized away by the compiler never make it to the linker. On the other hand, a
+linker is free to discard entire unused <em>linker sections</em>. This difference in
+granularity is important because a linker section may contain more than one
+variable.</p>
+<p><code>rustc</code> by default places each static variable in its <em>own</em> linker section, for
+example <code>static mut FOO: u32</code> goes into a section named <code>.data.FOO</code> (the actual
+name is longer due to mangling); this lets the linker <em>individually</em> discard
+unused static variables.</p>
+<p>Let&rsquo;s look again at the part of the expansion of <code>#[shared]</code> that goes into
+<code>microamp-data.o</code>.</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#75715e">#[cfg(microamp)]</span>
+<span style="color:#75715e">#[link_section = </span><span style="color:#e6db74">&#34;.shared&#34;</span><span style="color:#75715e">]</span>
+<span style="color:#75715e">#[no_mangle]</span>
+<span style="color:#66d9ef">static</span> <span style="color:#66d9ef">mut</span> SHARED: <span style="color:#66d9ef">u64</span> <span style="color:#f92672">=</span> {
+    <span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">assert</span>() {
+        <span style="color:#75715e">// used to check that `u64` is not a function pointer / trait object
+</span><span style="color:#75715e"></span>        microamp::export::is_data::<span style="color:#f92672">&lt;</span><span style="color:#66d9ef">u64</span><span style="color:#f92672">&gt;</span>();
+    }
+
+    <span style="color:#ae81ff">0</span>
+};
+</code></pre></div><p>To prevent the <em>compiler</em> from optimizing away this variable we use
+<code>#[no_mangle]</code>, which implies <code>#[used]</code>. Note that, in any case, <code>#[no_mangle]</code>
+is required to make <code>extern &quot;C&quot; { static mut SHARED: u64 }</code> work.</p>
+<p>All these <code>#[shared]</code> variables are placed in the <em>same</em> output section:
+<code>.shared</code>. In the linker script we use <code>KEEP</code> to prevent the <em>linker</em> from
+discarding the input <code>.shared</code> section. The linker can&rsquo;t discard any particular
+variable in the input <code>.shared</code> section because it operates on linker sections
+not individual variables. For the same reason the linker can&rsquo;t reorder the
+variables within the input <code>.shared</code> section so the variables will have the same
+order in all the images &ndash; the order of the variables in each image will match
+their order in the <code>microamp-data.o</code> object file, which is up to the compiler to
+decide.</p>
+<h2 id="validation">Validation</h2>
+<p>Obviously, I got the linker scripts wrong the first time and also the second
+time and maybe even the third time &hellip; after all not many people fully
+understand what linkers are allowed to do with one&rsquo;s code &ndash; IMO, it&rsquo;s a great
+thing that most people don&rsquo;t have to think about linking.</p>
+<p>I knew I got things wrong because I added a validation pass, a sanity check if
+you will, to <code>cargo-microamp</code>. This sanity check told me if the images were
+broken at compile time &ndash; figuring out that the images were invalid at runtime
+would probably have been Really Fun to debug but I passed on that.</p>
+<p>The sanity check works like this: after <code>cargo-microamp</code> links the images it
+proceeds to read the <code>.shared</code> section of each image and checks that they
+contain the same set of symbols (static variables) and that each of these
+symbols has the same address on all images.</p>
+<p>To see this in action I&rsquo;ll intentionally add an error to the linker script of
+the second core:</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-text" data-lang="text">/* core1.x */
+SECTIONS
+{
+  /* .. */
+
+  .shared : ALIGN(4)
+  {
+    /* NEW let&#39;s add a 32-bit zero here for no particular reason */
+    LONG(0);
+
+    KEEP(microamp-data.o(.shared));
+    . = ALIGN(4);
+  } &gt; OCM2
+
+  /* .. */
+}
+</code></pre></div><p>This is the error reported by the tool:</p>
+<pre><code class="language-console" data-lang="console">$ cargo microamp --example amp-shared
+(..)
+Error: the layout of the `.shared` section doesn't match
+amp-shared-0:
+{
+    0xfffe0000: Symbol {
+        size: 8,
+        name: &quot;SHARED&quot;,
+    },
+    0xfffe0008: Symbol {
+        size: 1,
+        name: &quot;SEMAPHORE&quot;,
+    },
+}
+amp-shared-1
+{
+    0xfffe0008: Symbol {
+        size: 8,
+        name: &quot;SHARED&quot;,
+    },
+    0xfffe0010: Symbol {
+        size: 1,
+        name: &quot;SEMAPHORE&quot;,
+    },
+}
+</code></pre><p>This check was good for catching bugs in the implementation of <code>microamp</code> but it
+can also catch some user errors. For example a <code>#[shared]</code> variable that
+contains a <code>usize</code> field is an error if one core has <code>target_pointer_width = &quot;32&quot;</code> and the other core has <code>target_pointer_width = &quot;64&quot;</code> because the shared
+variable will not have the same size on both images. The fix in that case would
+be to use something like <code>u32</code> instead of <code>usize</code>.</p>
+<h2 id="reprc"><code>#[repr(C)]</code></h2>
+<p><code>cargo-microamp</code>&rsquo;s sanity check can catch <em>some</em> problems with <code>#[shared]</code>
+variables but not all of them. In particular, the validation pass can&rsquo;t inspect
+the memory layout of <em>each</em> <code>#[shared]</code> variable. Consider this program:</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#66d9ef">struct</span> <span style="color:#a6e22e">Triplet</span> {
+    x: <span style="color:#66d9ef">u32</span>,
+    y: <span style="color:#66d9ef">u32</span>,
+    z: <span style="color:#66d9ef">u32</span>,
+}
+
+<span style="color:#75715e">#[shared]</span>
+<span style="color:#66d9ef">static</span> <span style="color:#66d9ef">mut</span> SHARED: <span style="color:#a6e22e">Triplet</span> <span style="color:#f92672">=</span> Triplet { x: <span style="color:#ae81ff">0</span>, y: <span style="color:#ae81ff">0</span>, z: <span style="color:#ae81ff">0</span> };
+
+<span style="color:#75715e">#[shared]</span>
+<span style="color:#66d9ef">static</span> READY: <span style="color:#a6e22e">AtomicBool</span> <span style="color:#f92672">=</span> AtomicBool::new(<span style="color:#66d9ef">false</span>);
+
+<span style="color:#75715e">#[cfg(core = </span><span style="color:#e6db74">&#34;0&#34;</span><span style="color:#75715e">)]</span>
+<span style="color:#75715e">#[entry]</span>
+<span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">main</span>() -&gt; <span style="color:#f92672">!</span> {
+    <span style="color:#66d9ef">unsafe</span> {
+        SHARED.x <span style="color:#f92672">=</span> <span style="color:#ae81ff">1</span>;
+        SHARED.y <span style="color:#f92672">=</span> <span style="color:#ae81ff">2</span>;
+    }
+
+    <span style="color:#75715e">// unblock core #1
+</span><span style="color:#75715e"></span>    READY.store(<span style="color:#66d9ef">true</span>, Ordering::Release);
+
+    <span style="color:#66d9ef">loop</span> {}
+}
+
+<span style="color:#75715e">#[cfg(core = </span><span style="color:#e6db74">&#34;1&#34;</span><span style="color:#75715e">)]</span>
+<span style="color:#75715e">#[entry]</span>
+<span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">main</span>() -&gt; <span style="color:#f92672">!</span> {
+    <span style="color:#75715e">// wait until core #0 initializes the fields of `SHARED`
+</span><span style="color:#75715e"></span>    <span style="color:#66d9ef">while</span> <span style="color:#f92672">!</span>READY.load(Ordering::Acquire) {}
+
+    <span style="color:#66d9ef">unsafe</span> {
+        assert_eq<span style="color:#f92672">!</span>(SHARED.y, <span style="color:#ae81ff">2</span>);
+        assert_eq<span style="color:#f92672">!</span>(SHARED.z, <span style="color:#ae81ff">0</span>);
+    }
+
+    <span style="color:#66d9ef">loop</span> {}
+}
+</code></pre></div><p>Can these assertions fail? Maybe.</p>
+<p>The issue here is that the layout of Rust structs is <em>unspecified</em>. As of <a href="https://github.com/rust-lang/rust/pull/37429">two
+years ago</a> the compiler is able to reorder the fields of a struct to
+optimize its size (reduce padding). And even before that PR landed the compiler
+has been able to optimize away the unused fields of a struct.</p>
+<p>What could go wrong in this case? In theory, the compiler can optimize the
+program differently for each core, for example it could optimize away the field
+<code>z</code> in the first image and <code>x</code> in the second image:</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#75715e">/* core #0 */</span>
+<span style="color:#66d9ef">struct</span> <span style="color:#a6e22e">Triplet</span> {
+    x: <span style="color:#66d9ef">u32</span>,
+    y: <span style="color:#66d9ef">u32</span>,
+    <span style="color:#75715e">// z: u32, // never accessed so the compiler optimizes this field away
+</span><span style="color:#75715e"></span>}
+
+<span style="color:#66d9ef">extern</span> {
+    <span style="color:#75715e">// addr_of(SHARED) == 0xFFFE_0000; size_of(SHARED) == 8
+</span><span style="color:#75715e"></span>    <span style="color:#66d9ef">static</span> <span style="color:#66d9ef">mut</span> SHARED: <span style="color:#a6e22e">Triplet</span>;
+
+    <span style="color:#75715e">// addr_of(READY) == 0xFFFE_0008; size_of(READY) == 1
+</span><span style="color:#75715e"></span>    <span style="color:#66d9ef">static</span> READY: <span style="color:#a6e22e">AtomicBool</span>;
+}
+
+<span style="color:#75715e">#[entry]</span>
+<span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">main</span>() -&gt; <span style="color:#f92672">!</span> {
+    <span style="color:#66d9ef">unsafe</span> {
+        <span style="color:#75715e">// *0xFFFE_0000 &lt;- 1
+</span><span style="color:#75715e"></span>        SHARED.x <span style="color:#f92672">=</span> <span style="color:#ae81ff">1</span>;
+
+        <span style="color:#75715e">// *0xFFFE_0004 &lt;- 2
+</span><span style="color:#75715e"></span>        SHARED.y <span style="color:#f92672">=</span> <span style="color:#ae81ff">2</span>;
+    }
+
+    <span style="color:#75715e">// *0xFFFE_0008 &lt;- 1
+</span><span style="color:#75715e"></span>    READY.store(<span style="color:#66d9ef">true</span>, Ordering::Release);
+
+    <span style="color:#66d9ef">loop</span> {}
+}
+</code></pre></div><div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#75715e">/* core #1 */</span>
+<span style="color:#66d9ef">struct</span> <span style="color:#a6e22e">Triplet</span> {
+    <span style="color:#75715e">// x: u32, // never accessed so the compiler optimizes this field away
+</span><span style="color:#75715e"></span>    y: <span style="color:#66d9ef">u32</span>,
+    z: <span style="color:#66d9ef">u32</span>,
+}
+
+<span style="color:#75715e">// cargo-microamp&#39;s sanity check ensures that these have
+</span><span style="color:#75715e">// the same address and size on both images
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">extern</span> {
+    <span style="color:#75715e">// addr_of(SHARED) == 0xFFFE_0000; size_of(SHARED) == 8
+</span><span style="color:#75715e"></span>    <span style="color:#66d9ef">static</span> <span style="color:#66d9ef">mut</span> SHARED: <span style="color:#a6e22e">Triplet</span>;
+
+    <span style="color:#75715e">// addr_of(READY) == 0xFFFE_0008; size_of(READY) == 1
+</span><span style="color:#75715e"></span>    <span style="color:#66d9ef">static</span> READY: <span style="color:#a6e22e">AtomicBool</span>;
+}
+
+<span style="color:#75715e">#[entry]</span>
+<span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">main</span>() -&gt; <span style="color:#f92672">!</span> {
+    <span style="color:#75715e">// *0xFFFE_0008 == 0?
+</span><span style="color:#75715e"></span>    <span style="color:#66d9ef">while</span> <span style="color:#f92672">!</span>READY.load(Ordering::Acquire) {}
+
+    <span style="color:#66d9ef">unsafe</span> {
+        <span style="color:#75715e">// *0xFFFE_0000 == 2?
+</span><span style="color:#75715e"></span>        assert_eq<span style="color:#f92672">!</span>(SHARED.y, <span style="color:#ae81ff">2</span>);
+        <span style="color:#75715e">// *0xFFFE_0004 == 0?
+</span><span style="color:#75715e"></span>        assert_eq<span style="color:#f92672">!</span>(SHARED.z, <span style="color:#ae81ff">0</span>);
+    }
+
+    <span style="color:#66d9ef">loop</span> {}
+}
+</code></pre></div><p>This kind of optimization would make the application hit the assertions.</p>
+<p>The only way to avoid this problem, that I know of, is to only use <code>#[repr(C)]</code>
+types in <code>#[shared]</code> variables. The framework is already using <code>extern &quot;C&quot; { .. }</code> blocks in the expanded code so compiling the above program actually produces
+a warning:</p>
+<pre><code class="language-console" data-lang="console">$ cargo microamp --example amp-triplet
+warning: `extern` block uses type `Triplet` which is not FFI-safe: this struct has unspecified layout
+  --&gt; zup-rtfm/examples/amp-triplet.rs:42:20
+   |
+42 | static mut SHARED: Triplet = Triplet { x: 0, y: 0, z: 0 };
+   |                    ^^^^
+   |
+   = note: #[warn(improper_ctypes)] on by default
+   = help: consider adding a #[repr(C)] or #[repr(transparent)] attribute to this struct
+</code></pre><p>As the warning says we should add <code>#[repr(C)]</code> to <code>struct Triplet</code>! That would
+prevent the compiler from removing and reordering the fields of the <code>struct</code>.</p>
+<h2 id="safe-static-variables">Safe <code>static</code> variables</h2>
+<p>One last bullet point: we want to keep access to static variables safe but
+accessing an <code>extern static</code> variable is <code>unsafe</code> so we do a slightly different
+expansion in that case.</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#75715e">// user input
+</span><span style="color:#75715e"></span><span style="color:#75715e">#[shared]</span>
+<span style="color:#66d9ef">static</span> SEMAPHORE: <span style="color:#a6e22e">AtomicU8</span> <span style="color:#f92672">=</span> AtomicU8::new(CORE0);
+</code></pre></div><div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#75715e">// attribute expansion
+</span><span style="color:#75715e"></span><span style="color:#75715e">#[cfg(microamp)]</span>
+<span style="color:#75715e">#[link_section = </span><span style="color:#e6db74">&#34;.shared&#34;</span><span style="color:#75715e">]</span>
+<span style="color:#75715e">#[no_mangle]</span>
+<span style="color:#66d9ef">static</span> SEMAPHORE: <span style="color:#a6e22e">AtomicU8</span> <span style="color:#f92672">=</span> {
+    <span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">assert</span>() {
+        microamp::export::is_data::<span style="color:#f92672">&lt;</span>AtomicU8<span style="color:#f92672">&gt;</span>();
+    }
+
+    AtomicU8::new(CORE0)
+};
+
+<span style="color:#75715e">// the second part of the expansion is different!
+</span><span style="color:#75715e"></span><span style="color:#75715e">#[cfg(not(microamp))]</span>
+<span style="color:#66d9ef">struct</span> <span style="color:#a6e22e">SEMAPHORE</span>;
+
+<span style="color:#75715e">#[cfg(not(microamp))]</span>
+<span style="color:#66d9ef">impl</span> core::ops::Deref <span style="color:#66d9ef">for</span> SEMAPHORE {
+    <span style="color:#66d9ef">type</span> <span style="color:#a6e22e">Target</span> <span style="color:#f92672">=</span> AtomicU8;
+
+    <span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">deref</span>(<span style="color:#f92672">&amp;</span>self) -&gt; <span style="color:#66d9ef">&amp;</span><span style="color:#a6e22e">AtomicU8</span> {
+        <span style="color:#66d9ef">extern</span> <span style="color:#e6db74">&#34;C&#34;</span> {
+            <span style="color:#66d9ef">static</span> SEMAPHORE: <span style="color:#a6e22e">AtomicBool</span>;
+        }
+
+        <span style="color:#66d9ef">unsafe</span> {
+            <span style="color:#f92672">&amp;</span>SEMAPHORE
+        }
+    }
+}
+</code></pre></div><p>When the application calls <code>SEMAPHORE.load(Ordering::Acquire)</code> it&rsquo;s actually
+using the proxy struct named <code>SEMAPHORE</code> that derefs to an external variable
+(also) named <code>SEMAPHORE</code>. Referring to the proxy struct and <code>deref</code>-ing it are
+both safe operations so this accurately mimics a normal <code>static</code> variable.</p>
+<h1 id="outro">Outro</h1>
+<p>For now I have pre-released both <code>microamp</code> and <code>cargo-microamp</code> with version
+v0.1.0-alpha.1. Before I do a proper release I want to test the whole thing on a
+heterogenous multi-core device. I have an LPC43xx microcontroller, which has one
+Cortex-M0 core and one Cortex-M4F core, lying around but haven&rsquo;t had time to
+play with it and probably won&rsquo;t have time until next month. To get that working
+I&rsquo;ll need to add a command line flag that lets you specify a different
+compilation target per core, maybe something like this:</p>
+<pre><code class="language-console" data-lang="console">$ # core #0 is ARMv6-M
+$ # core #1 is ARMv7-EM
+$ cargo microamp \
+    --example heterogenous \
+    -t0 thumbv6m-none-eabi \
+    -t1 thumbv7em-none-eabihf
+</code></pre><p>In any case, that&rsquo;s μAMP! It&rsquo;s a very small (no pun intended) API that serves as
+the foundation of multi-core RTFM, which I&rsquo;ll cover in the next blog post. Until
+next time!</p>
+<hr>
+<p><strong>Thank you patrons! ❤️</strong></p>
+<p>I want to wholeheartedly thank:</p>
+<!-- raw HTML omitted -->
+<!-- raw HTML omitted -->
+<p><a href="https://github.com/Razican">Iban Eguia</a>,
+<a href="https://github.com/archaelus">Geoff Cant</a>,
+<a href="http://www.harrisonchin.com/">Harrison Chin</a>,
+<a href="https://github.com/brandonedens">Brandon Edens</a>,
+<a href="https://github.com/whitequark">whitequark</a>,
+<a href="https://jamesmunns.com/">James Munns</a>,
+<a href="https://github.com/flundstrom2">Fredrik Lundström</a>,
+<a href="https://github.com/korran">Kor Nielsen</a>,
+<a href="https://metafluff.com/">Dietrich Ayala</a>,
+<a href="https://github.com/HadrienG2">Hadrien Grasland</a>,
+<a href="https://github.com/vitiral">vitiral</a>,
+<a href="https://github.com/leenozara">Lee Smith</a>,
+<a href="https://github.com/FlorianUekermann">Florian Uekermann</a>,
+<a href="https://github.com/idubrov">Ivan Dubrov</a>
+and 64 more people for supporting my work on Patreon.</p>
+<hr>
+<p>Let&rsquo;s discuss on <a href="https://www.reddit.com/r/rust/comments/bmyeah/%CE%BCamp_asymmetric_multiprocessing_on/">reddit</a>.</p>
+
+    </div>
+
+    
+    
+    <div class="article-toc" >
+        <h3>Contents</h3>
+        <nav id="TableOfContents">
+  <ul>
+    <li><a href="#memory-location-matters">Memory location matters</a></li>
+    <li><a href="#memory-safe-program-layout">Memory safe program layout</a></li>
+    <li><a href="#data-not-code">Data not code</a></li>
+  </ul>
+
+  <ul>
+    <li><a href="#linker-script">Linker script</a></li>
+    <li><a href="#validation">Validation</a></li>
+    <li><a href="#reprc"><code>#[repr(C)]</code></a></li>
+    <li><a href="#safe-static-variables">Safe <code>static</code> variables</a></li>
+  </ul>
+</nav>
+    </div>
+    
+    
+
+    
+  </div>
+</section>
+
+
+<section class="section">
+  <div class="container has-text-centered">
+    <p><a rel="license" href="http://creativecommons.org/licenses/by/4.0/"><img alt="Creative Commons License" src="https://i.creativecommons.org/l/by/4.0/80x15.png" /></a><br/>Jorge Aparicio</p>
+  </div>
+</section>
+
+
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/styles/tomorrow-night.min.css" />
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/highlight.min.js" integrity="sha256-aYTdUrn6Ow1DDgh5JTc3aDGnnju48y/1c8s1dgkYPQ8=" crossorigin="anonymous"></script>
+
+<script type="text/javascript" src="//cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/languages/armasm.min.js"></script>
+
+<script type="text/javascript" src="//cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/languages/c.min.js"></script>
+
+<script type="text/javascript" src="//cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/languages/diff.min.js"></script>
+
+<script type="text/javascript" src="//cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/languages/llvm.min.js"></script>
+
+<script type="text/javascript" src="//cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/languages/rust.min.js"></script>
+
+<script type="text/javascript" src="//cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/languages/shell.min.js"></script>
+
+<script>hljs.initHighlightingOnLoad();</script>
+
+
+</body>

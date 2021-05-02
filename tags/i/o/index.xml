@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="utf-8" standalone="yes"?>
+<rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom">
+  <channel>
+    <title>I/O on Embedded in Rust</title>
+    <link>https://blog.japaric.io/tags/i/o/</link>
+    <description>Recent content in I/O on Embedded in Rust</description>
+    <generator>Hugo -- gohugo.io</generator>
+    <language>en-us</language>
+    <copyright>&lt;a rel=&#34;license&#34; href=&#34;http://creativecommons.org/licenses/by/4.0/&#34;&gt;&lt;img alt=&#34;Creative Commons License&#34; src=&#34;https://i.creativecommons.org/l/by/4.0/80x15.png&#34; /&gt;&lt;/a&gt;&lt;br/&gt;Jorge Aparicio</copyright><atom:link href="https://blog.japaric.io/tags/i/o/index.xml" rel="self" type="application/rss+xml" />
+    <item>
+      <title>Memory safe DMA transfers</title>
+      <link>https://blog.japaric.io/safe-dma/</link>
+      <pubDate>Fri, 09 Feb 2018 11:47:30 +0100</pubDate>
+      
+      <guid>https://blog.japaric.io/safe-dma/</guid>
+      <description>UPDATE Given the comments I&amp;rsquo;ve received so far I think I should more explicitly mention that the context here are systems that lack a MMU and where a memory allocator may or may not be available or desirable, e.g. Cortex-M microcontrollers.
+ In this post I&amp;rsquo;ll describe an approach to building memory safe DMA based APIs.
+DMA? DMA stands for Direct Memory Access and it&amp;rsquo;s a peripheral used for transferring data between two memory locations in parallel to the operation of the core processor.</description>
+    </item>
+    
+    <item>
+      <title>Brave new I/O</title>
+      <link>https://blog.japaric.io/brave-new-io/</link>
+      <pubDate>Thu, 18 Jan 2018 00:44:18 +0100</pubDate>
+      
+      <guid>https://blog.japaric.io/brave-new-io/</guid>
+      <description>Hey there! It&amp;rsquo;s been a while. I&amp;rsquo;ve been working on some cool stuff for you. Now that&amp;rsquo;s in more or less good shape I can blog about it!
+This blog post introduces our new approach to I/O in embedded contexts.
+Overview: The register model First some background information
+In microcontrollers all external I/O requires interacting with peripherals. Peripherals are additional pieces of electronics that sit in the same chip / package as the core processor.</description>
+    </item>
+    
+  </channel>
+</rss>

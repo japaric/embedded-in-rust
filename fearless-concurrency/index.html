@@ -1,0 +1,1479 @@
+<!DOCTYPE html>
+<html lang="en-us">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta content="Rust, embedded, development" name="keywords">
+<meta content="Jorge Aparicio" name="author">
+<meta property="og:title" content="Fearless concurrency in your microcontroller - Embedded in Rust">
+<meta property="og:url" content="https://blog.japaric.io/fearless-concurrency/">
+<meta property="og:description" content="A blog about Rust and embedded stuff">
+<meta property="og:type" content="website" />
+<title>Fearless concurrency in your microcontroller | Embedded in Rust</title>
+<link rel="stylesheet" href="https://blog.japaric.io//css/style.css">
+<link rel="shortcut icon" href="https://blog.japaric.io//wave.ico">
+<link rel="alternate" type="application/atom+xml" title="Embedded in Rust Posts" href="https://blog.japaric.io//index.xml">
+<link href="//maxcdn.bootstrapcdn.com/font-awesome/4.7.0/css/font-awesome.min.css" rel="stylesheet" integrity="sha384-wvfXpqpZZVQGK6TAh5PVlGOfQNHSoD2xbE+QkPxCAFlNEevoEH3Sl0sibVcOQVnN" crossorigin="anonymous">
+
+<link rel="stylesheet" href="//cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/styles/github.min.css">
+
+</head>
+
+<body>
+<section class="section">
+  <div class="container">
+    <nav class="nav">
+      <div class="nav-left">
+        <a class="nav-item" href="https://blog.japaric.io/"><h1 class="title is-4">Embedded in Rust</h1></a>
+      </div>
+      <div class="nav-right">
+        <nav class="nav-item level is-mobile">
+          
+          <a class="level-item" href="https://github.com/japaric" target="_blank">
+            <span class="icon">
+              <i class="fa fa-github"></i>
+            </span>
+          </a>
+          
+          <a class="level-item" href="/index.xml" target="_blank">
+            <span class="icon">
+              <i class="fa fa-rss"></i>
+            </span>
+          </a>
+          
+        </nav>
+      </div>
+    </nav>
+  </div>
+</section>
+
+<section class="section">
+  <div class="container">
+    <h1 class="title">Fearless concurrency in your microcontroller</h1>
+    <h2 class="subtitle is-5">May 9, 2017 by Jorge Aparicio</h2>
+    
+      <div class="tags">
+    
+        <a class="button is-link" href="/tags/arm-cortex-m">ARM Cortex-M</a>
+    
+        <a class="button is-link" href="/tags/concurrency">concurrency</a>
+    
+        <a class="button is-link" href="/tags/rtfm">rtfm</a>
+    
+</div>
+
+    
+    <div class="content">
+      <p>I want to start by thanking all the people that has <a href="https://github.com/japaric/svd2rust/pulls?q=is:pr%20created:%3E=2017-04-28%20">sent</a> <a href="https://github.com/japaric/cortex-m-quickstart/pulls?q=is:pr%20created:%3E=2017-04-28%20">improvements</a>
+and <a href="https://github.com/japaric/svd2rust/issues?utf8=%E2%9C%93&amp;q=is:issue%20created:%3E=2017-04-28">comments</a> to <a href="https://github.com/rust-lang/rust/pull/41637">all</a> the <a href="https://github.com/japaric/cortex-m-rt/pulls?utf8=%E2%9C%93&amp;q=is:pr%20created:%3E=2017-04-28">crates</a> and tools I presented in the last
+blog post. The Rust community rocks!</p>
+<hr>
+<p><a href="/quickstart">Last time</a> I showed you how to easily develop Rust programs for pretty much
+any ARM Cortex-M microcontroller. In this post I&rsquo;ll show you one way of doing
+memory safe concurrency. It&rsquo;s important to note that the Rust language doesn&rsquo;t
+impose a <em>single</em> concurrency model. Instead it gives you building blocks in
+the form of the <code>Send</code> and <code>Sync</code> traits, and the borrow checker. Concurrency
+models can then be implemented as crates (libraries) that leverage those core
+features.</p>
+<p>In the last post I left you with this figure:</p>
+<p><img src="/quickstart/multitask.svg" alt="Multitask application"></p>
+<p>Today I reveal the missing piece: the <a href="https://docs.rs/cortex-m-rtfm/0.1.0/cortex_m_rtfm/"><code>cortex-m-rtfm</code></a> crate, a realization of
+the Real Time For the Masses (RTFM) framework <sup id="fnref:1"><a href="#fn:1" class="footnote-ref" role="doc-noteref">1</a></sup> for the Cortex-M
+architecture. This framework&rsquo;s main goal is facilitating development of embedded
+real time software, but it can be used for general concurrent programming as
+well. These are its main features:</p>
+<ul>
+<li><strong>Event triggered tasks</strong> as the unit of concurrency.</li>
+<li>Support for prioritization of tasks and, thus, <strong>preemptive multitasking</strong>.</li>
+<li><strong>Efficient and data race free memory sharing</strong> through fine grained <em>non
+global</em> critical sections.</li>
+<li><strong>Deadlock free execution</strong> guaranteed at compile time.</li>
+<li><strong>Minimal scheduling overhead</strong> as the scheduler has no &ldquo;software component&rdquo;:
+the hardware does all the scheduling.</li>
+<li><strong>Highly efficient memory usage</strong>: All the tasks share a single call stack and
+there&rsquo;s no hard dependency on a dynamic memory allocator.</li>
+<li><strong>All Cortex M3, M4 and M7 devices are fully supported</strong>. M0(+) is partially
+supported as the whole API is not available due to missing hardware features</li>
+</ul>
+<p>This framework is actually a port of the core ideas of the <a href="http://www.rtfm-lang.org/">RTFM language</a> to
+Rust. The RTFM language was created by <a href="https://www.ltu.se/">LTU</a>&rsquo;s Embedded Systems group, led by
+prof. <a href="https://www.ltu.se/staff/p/pln-1.11258?l=en">Per Lindgren</a>, to develop real time systems for which FreeRTOS didn&rsquo;t fit
+the bill. Prof. Lindgren and I have been working on this port for a while, and
+we believe it&rsquo;s now in good shape enough for a v0.1.0 release.</p>
+<p>In the rest of this post I&rsquo;ll illustrate the core concepts of the RTFM
+framework by building an application that runs two tasks concurrently.</p>
+<h1 id="the-application">The application</h1>
+<p>Will be a LED roulette (for lack of a better word) controlled via serial
+interface. This is what it will look like:</p>
+<!-- raw HTML omitted -->
+<p>This roulette never actually stops spinning, but its spin direction can be
+reversed at any time (see 00:00:03) by sending the <code>&quot;reverse&quot;</code> command over the
+serial interface. The roulette can operate in two modes: <em>continuous</em> mode
+(00:00:00 - 00:00:06) where the roulette keeps spinning in the same direction,
+and <em>bounce</em> mode (00:00:06-00:00:11) where the roulette reverses its direction
+every time it completes one turn. The mode can be selected by sending one of
+these two strings through the serial interface: <code>&quot;continuous&quot;</code> and <code>&quot;bounce&quot;</code>.</p>
+<p>In the video I&rsquo;m emulating a serial interface on top of Bluetooth <sup id="fnref:2"><a href="#fn:2" class="footnote-ref" role="doc-noteref">2</a></sup>, and
+I&rsquo;m sending the commands by typing them on a program
+called <a href="https://en.wikipedia.org/wiki/Minicom"><code>minicom</code></a> (shown below).</p>
+<p><img src="/fearless-concurrency/minicom.png" alt="minicom"></p>
+<p>We&rsquo;ll build this application incrementally, but before that let&rsquo;s first port the
+two programs that I presented in the previous post.</p>
+<h1 id="hello-world-again">Hello, world! (again)</h1>
+<p>This is what &ldquo;Hello, world&rdquo; looks like when ported to the RTFM framework. You
+can see the previous version <a href="/quickstart/#hello-world">here</a>.</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#75715e">// examples/hello.rs
+</span><span style="color:#75715e"></span><span style="color:#e6db74">//! Prints &#34;Hello&#34; and then &#34;World&#34; on the OpenOCD console
+</span><span style="color:#e6db74"></span>
+<span style="color:#75715e">#![feature(used)]</span>
+<span style="color:#75715e">#![no_std]</span>
+
+<span style="color:#75715e">// version = &#34;0.2.6&#34;
+</span><span style="color:#75715e"></span><span style="color:#75715e">#[macro_use]</span>
+<span style="color:#66d9ef">extern</span> <span style="color:#66d9ef">crate</span> cortex_m;
+
+<span style="color:#75715e">// version = &#34;0.2.0&#34;
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">extern</span> <span style="color:#66d9ef">crate</span> cortex_m_rt;
+
+<span style="color:#75715e">// version = &#34;0.1.0&#34;
+</span><span style="color:#75715e"></span><span style="color:#75715e">#[macro_use]</span>
+<span style="color:#66d9ef">extern</span> <span style="color:#66d9ef">crate</span> cortex_m_rtfm <span style="color:#66d9ef">as</span> rtfm;
+
+<span style="color:#75715e">// version = &#34;0.4.1&#34;
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">extern</span> <span style="color:#66d9ef">crate</span> f3;
+
+<span style="color:#66d9ef">use</span> f3::stm32f30x;
+<span style="color:#66d9ef">use</span> rtfm::{P0, T0, TMax};
+
+<span style="color:#75715e">// TASKS
+</span><span style="color:#75715e"></span>tasks<span style="color:#f92672">!</span>(stm32f30x, {});
+
+<span style="color:#75715e">// INITIALIZATION PHASE
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">init</span>(_priority: <span style="color:#a6e22e">P0</span>, _threshold: <span style="color:#66d9ef">&amp;</span><span style="color:#a6e22e">TMax</span>) {
+    hprintln<span style="color:#f92672">!</span>(<span style="color:#e6db74">&#34;Hello&#34;</span>);
+}
+
+<span style="color:#75715e">// IDLE LOOP
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">idle</span>(_priority: <span style="color:#a6e22e">P0</span>, _threshold: <span style="color:#a6e22e">T0</span>) -&gt; <span style="color:#f92672">!</span> {
+    hprintln<span style="color:#f92672">!</span>(<span style="color:#e6db74">&#34;World&#34;</span>);
+
+    <span style="color:#75715e">// Sleep
+</span><span style="color:#75715e"></span>    <span style="color:#66d9ef">loop</span> {
+        rtfm::wfi();
+    }
+}
+</code></pre></div><p>First thing to note is the <code>tasks!</code> macro. I mentioned above that the unit of
+concurrency of the RTFM framework is the <em>task</em>. The <code>tasks!</code> macro is used to
+declare all the tasks that made up a program. This particular program has zero
+tasks, and that&rsquo;s why the second argument of the macro is just empty braces.</p>
+<p>The first argument of the <code>tasks!</code> macro <em>must</em> be a device crate generated
+using the <a href="https://docs.rs/svd2rust/0.7.2/svd2rust/">svd2rust</a> tool. In this case our program doesn&rsquo;t directly depend on
+a device crate; instead it depends on the board support crate <a href="https://docs.rs/f3/0.4.1/f3/"><code>f3</code></a>. But the
+<code>f3</code> crate builds upon the device crate <a href="https://docs.rs/stm32f30x/0.4.1/stm32f30x/"><code>stm32f30x</code></a> and re-exports it as part
+of its API so we can still pass the <code>stm32f30x</code> crate to the <code>tasks!</code> macro.</p>
+<p>Next thing to note is that the <code>main</code> function is missing. Instead we have two
+functions: <code>init</code> and <code>idle</code>. <code>main</code> is not required because <code>tasks!</code> expands to
+a <code>main</code> function that will call <code>init</code> first and then <code>idle</code>.</p>
+<p>Finally, note that the  <code>INTERRUPTS</code> variable, where interrupt handlers are
+normally registered, is missing as well: the <code>tasks!</code> macro will create that
+variable for us.</p>
+<p>Now, let&rsquo;s look at both <code>init</code> and <code>idle</code> in detail.</p>
+<p>The signature of <code>init</code> must be <code>fn(P0, &amp;TMax)</code>, and the signature of <code>idle</code>
+must be <code>fn(P0, T0) -&gt; !</code>; both signatures are enforced by the <code>tasks!</code> macro.
+Both <code>init</code> and <code>idle</code> have two similarly looking arguments available to them:
+<code>priority</code> and <code>threshold</code>. These are zero sized <em>tokens</em> that grant them some
+privileges. We won&rsquo;t use them in this program though.</p>
+<p>The RTFM scheduler uses priorities as part of its scheduling algorithm: <em>Tasks</em>
+with a higher priority level are more urgent so the scheduler prioritizes their
+execution. Although they are <em>not</em> tasks, both <code>init</code> and <code>idle</code> also have a
+priority: 0, the lowest priority. The RTFM framework keeps track of priorities
+in the type system, in the form of tokens like <code>P0</code> and <code>P1</code>. The number of
+priority levels is device dependent; the STM32F303VCT6 microcontroller, for
+instance, supports priorities from 0 (<code>P0</code>) to 16 (<code>P16</code>).</p>
+<p>I&rsquo;ll say more about the <code>threshold</code> token later on.</p>
+<p>Next, note that <code>idle</code> is a <em>diverging</em> function, as evidenced by its signature:
+<code>fn(..) -&gt; !</code>; this means that it <em>can&rsquo;t</em> return or terminate. To avoid
+returning from <code>idle</code> after printing &ldquo;World&rdquo; to console, the CPU is put to sleep
+(to conserve energy) by calling the WFI (Wait For Interrupt) instruction in a
+loop. The &ldquo;Hello, world&rdquo; program from the previous post also did this, but
+implicitly.</p>
+<p>To run this program we can continue from
+<a href="/quickstart/#the-cargo-project-template">the demo crate from the previous post</a> and run the following commands:</p>
+<pre><code class="language-console" data-lang="console">$ # add the RTFM framework as a dependency
+$ cargo add cortex-m-rtfm --vers 0.1.0
+
+$ # update the source to use the RTFM framework
+$ edit examples/hello.rs
+
+$ # (re)compile the program
+$ xargo build --example hello
+
+$ # flash and run
+$ arm-none-eabi-gdb target/thumbv7em-none-eabihf/examples/hello
+</code></pre><p>Then you should see this on the OpenOCD console:</p>
+<pre><code class="language-console" data-lang="console">$ openocd -f interface/stlink-v2-1.cfg -f target/stm32f3x.cfg
+(..)
+xPSR: 0x01000000 pc: 0x080007e2 msp: 0x10002000, semihosting
+Hello
+World
+</code></pre><h1 id="a-blinking-task">A blinking task</h1>
+<p>Next, let&rsquo;s port <a href="/quickstart/#board-support-crates">the blinky program from previous post</a> to the RTFM
+framework. Here&rsquo;s the full program:</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#75715e">// examples/blinky.rs
+</span><span style="color:#75715e"></span><span style="color:#e6db74">//! Blinks an LED
+</span><span style="color:#e6db74"></span>
+<span style="color:#75715e">#![feature(const_fn)]</span>
+<span style="color:#75715e">#![feature(used)]</span>
+<span style="color:#75715e">#![no_std]</span>
+
+<span style="color:#75715e">// version = &#34;0.2.0&#34;
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">extern</span> <span style="color:#66d9ef">crate</span> cortex_m_rt;
+
+<span style="color:#75715e">// version = &#34;0.1.0&#34;
+</span><span style="color:#75715e"></span><span style="color:#75715e">#[macro_use]</span>
+<span style="color:#66d9ef">extern</span> <span style="color:#66d9ef">crate</span> cortex_m_rtfm <span style="color:#66d9ef">as</span> rtfm;
+
+<span style="color:#75715e">// version = &#34;0.4.1&#34;
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">extern</span> <span style="color:#66d9ef">crate</span> f3;
+
+<span style="color:#66d9ef">use</span> f3::led::{self, LEDS};
+<span style="color:#66d9ef">use</span> f3::stm32f30x::interrupt::Tim7;
+<span style="color:#66d9ef">use</span> f3::stm32f30x;
+<span style="color:#66d9ef">use</span> f3:<span style="color:#960050;background-color:#1e0010">⏲</span>:<span style="color:#a6e22e">Timer</span>;
+<span style="color:#66d9ef">use</span> rtfm::{Local, P0, P1, T0, T1, TMax};
+
+<span style="color:#75715e">// CONFIGURATION
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">const</span> FREQUENCY: <span style="color:#66d9ef">u32</span> <span style="color:#f92672">=</span> <span style="color:#ae81ff">1</span>; <span style="color:#75715e">// Hz
+</span><span style="color:#75715e"></span>
+<span style="color:#75715e">// RESOURCES
+</span><span style="color:#75715e"></span>peripherals<span style="color:#f92672">!</span>(stm32f30x, {
+    GPIOE: <span style="color:#a6e22e">Peripheral</span> {
+        register_block: <span style="color:#a6e22e">Gpioe</span>,
+        ceiling: <span style="color:#a6e22e">C0</span>,
+    },
+    RCC: <span style="color:#a6e22e">Peripheral</span> {
+        register_block: <span style="color:#a6e22e">Rcc</span>,
+        ceiling: <span style="color:#a6e22e">C0</span>,
+    },
+    TIM7: <span style="color:#a6e22e">Peripheral</span> {
+        register_block: <span style="color:#a6e22e">Tim7</span>,
+        ceiling: <span style="color:#a6e22e">C1</span>,
+    },
+});
+
+<span style="color:#75715e">// INITIALIZATION PHASE
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">init</span>(<span style="color:#66d9ef">ref</span> priority: <span style="color:#a6e22e">P0</span>, threshold: <span style="color:#66d9ef">&amp;</span><span style="color:#a6e22e">TMax</span>) {
+    <span style="color:#66d9ef">let</span> gpioe <span style="color:#f92672">=</span> GPIOE.access(priority, threshold);
+    <span style="color:#66d9ef">let</span> rcc <span style="color:#f92672">=</span> RCC.access(priority, threshold);
+    <span style="color:#66d9ef">let</span> tim7 <span style="color:#f92672">=</span> TIM7.access(priority, threshold);
+    <span style="color:#66d9ef">let</span> timer <span style="color:#f92672">=</span> Timer(<span style="color:#f92672">&amp;</span>tim7);
+
+    <span style="color:#75715e">// Configure the PEx pins as output pins
+</span><span style="color:#75715e"></span>    led::init(<span style="color:#f92672">&amp;</span>gpioe, <span style="color:#f92672">&amp;</span>rcc);
+
+    <span style="color:#75715e">// Configure TIM7 for periodic update events
+</span><span style="color:#75715e"></span>    timer.init(<span style="color:#f92672">&amp;</span>rcc, FREQUENCY);
+
+    <span style="color:#75715e">// Start the timer
+</span><span style="color:#75715e"></span>    timer.resume();
+}
+
+<span style="color:#75715e">// IDLE LOOP
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">idle</span>(_priority: <span style="color:#a6e22e">P0</span>, _threshold: <span style="color:#a6e22e">T0</span>) -&gt; <span style="color:#f92672">!</span> {
+    <span style="color:#75715e">// Sleep
+</span><span style="color:#75715e"></span>    <span style="color:#66d9ef">loop</span> {
+        rtfm::wfi();
+    }
+}
+
+<span style="color:#75715e">// TASKS
+</span><span style="color:#75715e"></span>tasks<span style="color:#f92672">!</span>(stm32f30x, {
+    periodic: <span style="color:#a6e22e">Task</span> {
+        interrupt: <span style="color:#a6e22e">Tim7</span>,
+        priority: <span style="color:#a6e22e">P1</span>,
+        enabled: <span style="color:#a6e22e">true</span>,
+    },
+});
+
+<span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">periodic</span>(<span style="color:#66d9ef">mut</span> task: <span style="color:#a6e22e">Tim7</span>, <span style="color:#66d9ef">ref</span> priority: <span style="color:#a6e22e">P1</span>, <span style="color:#66d9ef">ref</span> threshold: <span style="color:#a6e22e">T1</span>) {
+    <span style="color:#75715e">// Task local data
+</span><span style="color:#75715e"></span>    <span style="color:#66d9ef">static</span> STATE: <span style="color:#a6e22e">Local</span><span style="color:#f92672">&lt;</span><span style="color:#66d9ef">bool</span>, Tim7<span style="color:#f92672">&gt;</span> <span style="color:#f92672">=</span> Local::new(<span style="color:#66d9ef">false</span>);
+
+    <span style="color:#66d9ef">let</span> tim7 <span style="color:#f92672">=</span> TIM7.access(priority, threshold);
+    <span style="color:#66d9ef">let</span> timer <span style="color:#f92672">=</span> Timer(<span style="color:#f92672">&amp;</span>tim7);
+
+    <span style="color:#66d9ef">if</span> timer.clear_update_flag().is_ok() {
+        <span style="color:#66d9ef">let</span> state <span style="color:#f92672">=</span> STATE.borrow_mut(<span style="color:#f92672">&amp;</span><span style="color:#66d9ef">mut</span> task);
+
+        <span style="color:#f92672">*</span>state <span style="color:#f92672">=</span> <span style="color:#f92672">!*</span>state;
+
+        <span style="color:#66d9ef">if</span> <span style="color:#f92672">*</span>state {
+            LEDS[<span style="color:#ae81ff">0</span>].on();
+        } <span style="color:#66d9ef">else</span> {
+            LEDS[<span style="color:#ae81ff">0</span>].off();
+        }
+    } <span style="color:#66d9ef">else</span> {
+        <span style="color:#75715e">// Only reachable through `rtfm::request(periodic)`
+</span><span style="color:#75715e"></span>        <span style="color:#75715e">#[cfg(debug_assertion)]</span>
+        unreachable<span style="color:#f92672">!</span>()
+    }
+}
+</code></pre></div><p>Let&rsquo;s analyze this program in parts:</p>
+<h2 id="peripherals"><code>peripherals!</code></h2>
+<p>First we have the <code>peripherals!</code> macro:</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust">peripherals<span style="color:#f92672">!</span>(stm32f30x, {
+    GPIOE: <span style="color:#a6e22e">Peripheral</span> {
+        register_block: <span style="color:#a6e22e">Gpioe</span>,
+        ceiling: <span style="color:#a6e22e">C0</span>,
+    },
+    RCC: <span style="color:#a6e22e">Peripheral</span> {
+        register_block: <span style="color:#a6e22e">Rcc</span>,
+        ceiling: <span style="color:#a6e22e">C0</span>,
+    },
+    TIM7: <span style="color:#a6e22e">Peripheral</span> {
+        register_block: <span style="color:#a6e22e">Tim7</span>,
+        ceiling: <span style="color:#a6e22e">C1</span>,
+    },
+});
+</code></pre></div><p>When using the RTFM framework you have to declare <em>all</em> the peripherals you are
+going to use in this macro. Both the name of the peripheral (for example:
+<code>GPIOE</code>) and its type (for example: <code>Gpioe</code>) must match the device crate,
+<code>stm32f30x</code> in this case, definitions. What&rsquo;s new here is that each peripheral
+must be assigned a <em>ceiling</em>. For now suffices to say that ceilings are just
+(type level) numbers in the same range as priorities. In this case ceilings can
+range from <code>C0</code> to <code>C16</code>.</p>
+<h2 id="init"><code>init</code></h2>
+<p>Next we have the <code>init</code> function:</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">init</span>(<span style="color:#66d9ef">ref</span> priority: <span style="color:#a6e22e">P0</span>, threshold: <span style="color:#66d9ef">&amp;</span><span style="color:#a6e22e">TMax</span>) {
+    <span style="color:#66d9ef">let</span> gpioe <span style="color:#f92672">=</span> GPIOE.access(priority, threshold);
+    <span style="color:#66d9ef">let</span> rcc <span style="color:#f92672">=</span> RCC.access(priority, threshold);
+    <span style="color:#66d9ef">let</span> tim7 <span style="color:#f92672">=</span> TIM7.access(priority, threshold);
+    <span style="color:#66d9ef">let</span> timer <span style="color:#f92672">=</span> Timer(<span style="color:#f92672">&amp;</span>tim7);
+
+    <span style="color:#75715e">// Configure the PEx pins as output pins
+</span><span style="color:#75715e"></span>    led::init(<span style="color:#f92672">&amp;</span>gpioe, <span style="color:#f92672">&amp;</span>rcc);
+
+    <span style="color:#75715e">// Configure TIM7 for periodic update events
+</span><span style="color:#75715e"></span>    timer.init(<span style="color:#f92672">&amp;</span>rcc, FREQUENCY);
+
+    <span style="color:#75715e">// Start the timer
+</span><span style="color:#75715e"></span>    timer.resume();
+}
+</code></pre></div><p>Here we configure the LED pin and the timer. The timer will be configured to
+generate a periodic update event every one second. The code here is actually the
+same as the one from the previous blog post version. In that old version we
+created a critical section by disabling all the interrupts (<code>interrupt::free</code>).
+That gave us the necessary synchronization to access the peripherals. The same
+happens here: <code>init</code> runs under the same kind of <em>global</em> critical section; this
+is reflected in its <code>threshold</code> token which has type <code>TMax</code>, the maximum
+<em>preemption threshold</em>.</p>
+<p>The <code>threshold</code> token indicates the preemption threshold of the current context.
+This threshold indicates the priority that a task must have to preempt the
+current context. A threshold of 0, <code>T0</code>, indicates that only tasks with priority
+of 1 <em>or</em> higher can preempt the current context. This is the case of the <code>idle</code>
+loop: it can be preempted by <em>any</em> task since tasks are enforced to always have
+a priority of 1 or higher. On the other hand, the maximum threshold, <code>TMax</code>, (as
+used in <code>init</code>) indicates that the current context can&rsquo;t be preempted by any
+task.</p>
+<p>To actually be able to use the peripherals we must first call the <code>access</code>
+method. This method requires you to present both the <code>priority</code> and the
+<code>threshold</code> tokens. There are some conditions that must be met between the
+priority level, the threshold level and the peripheral ceiling for this method
+to work. If the conditions are not met the program won&rsquo;t compile as it would not
+be free of data races. The exact conditions are not important at this point
+because you&rsquo;ll always be able to access any peripheral within the <code>init</code>
+function.</p>
+<h2 id="idle"><code>idle</code></h2>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">idle</span>(_priority: <span style="color:#a6e22e">P0</span>, _threshold: <span style="color:#a6e22e">T0</span>) -&gt; <span style="color:#f92672">!</span> {
+    <span style="color:#75715e">// Sleep
+</span><span style="color:#75715e"></span>    <span style="color:#66d9ef">loop</span> {
+        rtfm::wfi();
+    }
+}
+</code></pre></div><p>In this program the processor is sent to sleep in the <code>idle</code> function.</p>
+<p>We could have written something like this:</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">idle</span>(priority: <span style="color:#a6e22e">P0</span>, threshold: <span style="color:#a6e22e">T0</span>) -&gt; <span style="color:#f92672">!</span> {
+    <span style="color:#75715e">// ..
+</span><span style="color:#75715e"></span>
+    <span style="color:#66d9ef">let</span> <span style="color:#66d9ef">mut</span> state <span style="color:#f92672">=</span> <span style="color:#66d9ef">false</span>;
+    <span style="color:#66d9ef">loop</span> {
+        <span style="color:#66d9ef">while</span> timer.clear_update_flag().is_err() {}
+
+        state <span style="color:#f92672">=</span> <span style="color:#f92672">!</span>state;
+
+        <span style="color:#66d9ef">if</span> state {
+            LEDS[<span style="color:#ae81ff">0</span>].on();
+        } <span style="color:#66d9ef">else</span> {
+            LEDS[<span style="color:#ae81ff">0</span>].off();
+        }
+    }
+}
+</code></pre></div><p>and we would have ended with the same inefficient busy waiting behavior as the
+program from the previous post.</p>
+<p>But we are not going to do that. Instead we are going to use &hellip;</p>
+<h2 id="tasks"><code>tasks!</code></h2>
+<p>In the RTFM framework tasks are implemented on top of interrupt handlers; in
+fact, each task <em>is</em> an interrupt handler. This means that each task is
+triggered by the events that would trigger the corresponding interrupt, and also
+that each task has a priority.</p>
+<p>From the POV of the programmer a task is just a function with the peculiarity
+that it will be called by the hardware when some event happens: 10 ms have
+elapsed, user pressed a button, data arrived, etc.</p>
+<p>In this program, we&rsquo;ll use a single task named <code>periodic</code>:</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust">tasks<span style="color:#f92672">!</span>(stm32f30x, {
+    periodic: <span style="color:#a6e22e">Task</span> {
+        interrupt: <span style="color:#a6e22e">Tim7</span>,
+        priority: <span style="color:#a6e22e">P1</span>,
+        enabled: <span style="color:#a6e22e">true</span>,
+    },
+});
+</code></pre></div><p>This declaration says that the <code>periodic</code> task is the interrupt <code>Tim7</code> (TIM7 is
+the timer we are using to generate periodic update events), and has a priority
+of 1 (<code>P1</code>), the lowest priority a task can have. <code>enabled: true</code> means
+that the <code>Tim7</code> interrupt, and thus this task, <em>will</em> be enabled after <code>init</code>
+finishes but before <code>idle</code> starts.</p>
+<p>This is how scheduling will look like for this program:</p>
+<p><img src="/fearless-concurrency/periodic.svg" alt="A single periodic task"></p>
+<ul>
+<li>The processor will be executing the endless <code>idle</code> function where it sleeps
+most of the time due to the WFI instruction.</li>
+<li>At some point, the update event (<code>UE</code>) will occur waking up the CPU.</li>
+<li>Because the <code>periodic</code> task has higher priority than <code>idle</code> the scheduler
+will <em>pause</em> the execution of <code>idle</code> and then launch the <code>periodic</code> task. IOW,
+the   <code>periodic</code> task will <em>preempt</em> <code>idle</code>.</li>
+<li>Once the <code>periodic</code> task finishes the scheduler will resume the execution
+of the <code>idle</code> loop where the CPU is sent back to sleep.</li>
+<li>The process repeats.</li>
+</ul>
+<p>Something important: tasks have <em>run to completion semantics</em>. The scheduler
+will run every task to completion and only temporarily switch to another task
+<em>if it has higher priority</em>. For this reason tasks must <em>not</em> contain endless
+loops; otherwise lower priority tasks will never get a chance to run (this is
+known as <em>starvation</em>).</p>
+<h2 id="task-local-data">Task local data</h2>
+<p>We have a <code>periodic</code> task (function) that will be executed (called) every
+second. We want to toggle the state of an LED on every invocation of the task
+but the task is effectively a function and has no state. How do we add state?
+The obvious answer would be to use a <code>static mut</code> variable, an unsynchronized
+global variable, but that&rsquo;s <code>unsafe</code>. Instead we&rsquo;ll use the safe task local data
+abstraction: <code>Local</code>.</p>
+<p>Here&rsquo;s the <code>periodic</code> task:</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">periodic</span>(<span style="color:#66d9ef">mut</span> task: <span style="color:#a6e22e">Tim7</span>, <span style="color:#66d9ef">ref</span> priority: <span style="color:#a6e22e">P1</span>, <span style="color:#66d9ef">ref</span> threshold: <span style="color:#a6e22e">T1</span>) {
+    <span style="color:#75715e">// Task local data
+</span><span style="color:#75715e"></span>    <span style="color:#66d9ef">static</span> STATE: <span style="color:#a6e22e">Local</span><span style="color:#f92672">&lt;</span><span style="color:#66d9ef">bool</span>, Tim7<span style="color:#f92672">&gt;</span> <span style="color:#f92672">=</span> Local::new(<span style="color:#66d9ef">false</span>);
+
+    <span style="color:#66d9ef">let</span> tim7 <span style="color:#f92672">=</span> TIM7.access(priority, threshold);
+    <span style="color:#66d9ef">let</span> timer <span style="color:#f92672">=</span> Timer(<span style="color:#f92672">&amp;</span>tim7);
+
+    <span style="color:#66d9ef">if</span> timer.clear_update_flag().is_ok() {
+        <span style="color:#66d9ef">let</span> state <span style="color:#f92672">=</span> STATE.borrow_mut(<span style="color:#f92672">&amp;</span><span style="color:#66d9ef">mut</span> task);
+
+        <span style="color:#f92672">*</span>state <span style="color:#f92672">=</span> <span style="color:#f92672">!*</span>state;
+
+        <span style="color:#66d9ef">if</span> <span style="color:#f92672">*</span>state {
+            LEDS[<span style="color:#ae81ff">0</span>].on();
+        } <span style="color:#66d9ef">else</span> {
+            LEDS[<span style="color:#ae81ff">0</span>].off();
+        }
+    } <span style="color:#66d9ef">else</span> {
+        <span style="color:#75715e">// Only reachable through `rtfm::request(periodic)`
+</span><span style="color:#75715e"></span>        <span style="color:#75715e">#[cfg(debug_assertion)]</span>
+        unreachable<span style="color:#f92672">!</span>()
+    }
+}
+</code></pre></div><p>The signature of the <code>periodic</code> task must match its <code>tasks!</code> declaration; it
+must contain three arguments: a <code>task</code> token whose type must match the
+<code>interrupt</code> field of the declaration, a <code>priority</code> token whose type must match
+the <code>priority</code> field of the declaration, and a <code>threshold</code> token whose type must
+match the level of the <code>priority</code> token.</p>
+<p>The <code>priority</code> and <code>threshold</code> tokens we have already seen. The new token here
+is the <code>task</code> token. Each task has a unique <code>task</code> token type. The main use of
+this token is accessing task local data. When you create task local data you
+pin it to a certain task by assigning a <code>task</code> token type to it (for example,
+the <code>Tim7</code> in <code>Local&lt;bool, Tim7&gt;</code>). Afterwards, you can only access the data if
+you present an instance of the token, which only a single task has access to.
+This arrangement disables sharing of this kind of data across tasks eliminating
+the possibility of data races.</p>
+<p>As for the logic of the <code>periodic</code> task, we simply toggle the boolean <code>STATE</code>
+variable and turn the LED on / off depending on its value. The interesting bit
+here is that we branch depending on the result of
+<code>timer.clear_update_flag().is_ok()</code>. That expression clears the update event
+flag and returns an error (<code>Err</code> variant) if the flag was not set. We have to
+clear that flag or the task will get invoked again right after it finishes. In
+this program we should never hit the <code>Err</code> branch because the task is always
+triggered by the update event. But that may not be the case in general as it&rsquo;s
+possible to manually trigger a task using the <code>rtfm::request</code> function.</p>
+<p>Something I omitted is that the <code>TIM7</code> was <code>access</code>ed without extra
+synchronization. The reason why this was possible is the ceiling value that was
+assigned to <code>TIM7</code> (<code>C1</code>) matches the task priority (<code>P1</code>) and preemption
+threshold (<code>T1</code>).</p>
+<p>If you run this program, you&rsquo;ll see one LED blink. I already showed a video of
+this in <a href="/quickstart/#blinky">the last post</a> so I&rsquo;m not going to post it again.</p>
+<h1 id="led-roulette">LED Roulette</h1>
+<p>With some small changes we can turn the LED blinking application into the LED
+roulette shown in the intro video. The full code for the roulette is <a href="https://docs.rs/f3/0.4.1/f3/examples/_4_roulette/index.html">here</a>.
+These are the relevant changes:</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#75715e">// examples/roulette.rs
+</span><span style="color:#75715e"></span>
+<span style="color:#75715e">// version = &#34;0.2.0&#34;, default-features = false
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">extern</span> <span style="color:#66d9ef">crate</span> cast;
+
+<span style="color:#66d9ef">use</span> cast::{<span style="color:#66d9ef">u8</span>, <span style="color:#66d9ef">usize</span>};
+
+<span style="color:#75715e">// ..
+</span><span style="color:#75715e"></span>
+<span style="color:#75715e">// CONFIGURATION
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">const</span> FREQUENCY: <span style="color:#66d9ef">u32</span> <span style="color:#f92672">=</span> <span style="color:#ae81ff">8</span>; <span style="color:#75715e">// Hz
+</span><span style="color:#75715e"></span>
+<span style="color:#75715e">// ..
+</span><span style="color:#75715e"></span>
+<span style="color:#75715e">// renamed from `periodic` to `roulette`
+</span><span style="color:#75715e"></span>tasks<span style="color:#f92672">!</span>(stm32f30x, {
+    roulette: <span style="color:#a6e22e">Task</span> {
+        interrupt: <span style="color:#a6e22e">Tim7</span>,
+        priority: <span style="color:#a6e22e">P1</span>,
+        enabled: <span style="color:#a6e22e">true</span>,
+    },
+});
+
+<span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">roulette</span>(<span style="color:#66d9ef">mut</span> task: <span style="color:#a6e22e">Tim7</span>, <span style="color:#66d9ef">ref</span> priority: <span style="color:#a6e22e">P1</span>, <span style="color:#66d9ef">ref</span> threshold: <span style="color:#a6e22e">T1</span>) {
+    <span style="color:#66d9ef">static</span> STATE: <span style="color:#a6e22e">Local</span><span style="color:#f92672">&lt;</span><span style="color:#66d9ef">u8</span>, Tim7<span style="color:#f92672">&gt;</span> <span style="color:#f92672">=</span> Local::new(<span style="color:#ae81ff">0</span>);
+
+    <span style="color:#66d9ef">let</span> tim7 <span style="color:#f92672">=</span> TIM7.access(priority, threshold);
+    <span style="color:#66d9ef">let</span> timer <span style="color:#f92672">=</span> Timer(<span style="color:#f92672">&amp;</span>tim7);
+
+    <span style="color:#66d9ef">if</span> timer.clear_update_flag().is_ok() {
+        <span style="color:#66d9ef">let</span> state <span style="color:#f92672">=</span> STATE.borrow_mut(<span style="color:#f92672">&amp;</span><span style="color:#66d9ef">mut</span> task);
+
+        <span style="color:#66d9ef">let</span> curr <span style="color:#f92672">=</span> <span style="color:#f92672">*</span>state;
+        <span style="color:#66d9ef">let</span> next <span style="color:#f92672">=</span> (curr <span style="color:#f92672">+</span> <span style="color:#ae81ff">1</span>) <span style="color:#f92672">%</span> <span style="color:#66d9ef">u8</span>(LEDS.len()).unwrap();
+
+        LEDS[<span style="color:#66d9ef">usize</span>(curr)].off();
+        LEDS[<span style="color:#66d9ef">usize</span>(next)].on();
+
+        <span style="color:#f92672">*</span>state <span style="color:#f92672">=</span> next;
+    } <span style="color:#66d9ef">else</span> {
+        <span style="color:#75715e">// Only reachable through `rtfm::request(roulette)`
+</span><span style="color:#75715e"></span>        <span style="color:#75715e">#[cfg(debug_assertion)]</span>
+        unreachable<span style="color:#f92672">!</span>()
+    }
+}
+</code></pre></div><p>Outcome:</p>
+<!-- raw HTML omitted -->
+<p>Note that the roulette is spinning in clockwise direction. And yes, this
+roulette is spinning faster than the one shown in the intro video.</p>
+<h1 id="serial-loopback">Serial loopback</h1>
+<p>Now we are going to write a totally different program to test out the serial
+interface: a loopback. A software loopback is when you send back the data you
+just received without processing it. This is a great way to sanity check that
+your serial code is working (and that you got the wiring right).</p>
+<p>By default <sup id="fnref:3"><a href="#fn:3" class="footnote-ref" role="doc-noteref">3</a></sup> <code>minicom</code> doesnt print back the characters you type, which
+are the characters you send through the terminal interface. However, if the
+other side of the serial connection is doing a loopback then you should see
+what you type printed on the console because that&rsquo;s what the serial device sends
+back  to you.</p>
+<p>The full source of the loopback program is <a href="https://docs.rs/f3/0.4.1/f3/examples/_5_loopback/index.html">here</a>. These are the
+relevant bits:</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#75715e">// example/loopback.rs
+</span><span style="color:#75715e"></span>
+<span style="color:#75715e">// CONFIGURATION
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">pub</span> <span style="color:#66d9ef">const</span> BAUD_RATE: <span style="color:#66d9ef">u32</span> <span style="color:#f92672">=</span> <span style="color:#ae81ff">115_200</span>; <span style="color:#75715e">// bits per second
+</span><span style="color:#75715e"></span>
+<span style="color:#75715e">// RESOURCES
+</span><span style="color:#75715e"></span>peripherals<span style="color:#f92672">!</span>(stm32f30x, {
+    GPIOA: <span style="color:#a6e22e">Peripheral</span> {
+        register_block: <span style="color:#a6e22e">Gpioa</span>,
+        ceiling: <span style="color:#a6e22e">C0</span>,
+    },
+    RCC: <span style="color:#a6e22e">Peripheral</span> {
+        register_block: <span style="color:#a6e22e">Rcc</span>,
+        ceiling: <span style="color:#a6e22e">C0</span>,
+    },
+    USART1: <span style="color:#a6e22e">Peripheral</span> {
+        register_block: <span style="color:#a6e22e">Usart1</span>,
+        ceiling: <span style="color:#a6e22e">C1</span>,
+    },
+});
+
+<span style="color:#75715e">// INITIALIZATION PHASE
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">init</span>(<span style="color:#66d9ef">ref</span> priority: <span style="color:#a6e22e">P0</span>, threshold: <span style="color:#66d9ef">&amp;</span><span style="color:#a6e22e">TMax</span>) {
+    <span style="color:#66d9ef">let</span> gpioa <span style="color:#f92672">=</span> GPIOA.access(priority, threshold);
+    <span style="color:#66d9ef">let</span> rcc <span style="color:#f92672">=</span> RCC.access(priority, threshold);
+    <span style="color:#66d9ef">let</span> usart1 <span style="color:#f92672">=</span> USART1.access(priority, threshold);
+
+    <span style="color:#66d9ef">let</span> serial <span style="color:#f92672">=</span> Serial(<span style="color:#f92672">&amp;</span>usart1);
+
+    serial.init(<span style="color:#f92672">&amp;</span>gpioa, <span style="color:#f92672">&amp;</span>rcc, BAUD_RATE);
+}
+
+<span style="color:#75715e">// ..
+</span><span style="color:#75715e"></span>
+<span style="color:#75715e">// TASKS
+</span><span style="color:#75715e"></span>tasks<span style="color:#f92672">!</span>(stm32f30x, {
+    loopback: <span style="color:#a6e22e">Task</span> {
+        interrupt: <span style="color:#a6e22e">Usart1Exti25</span>,
+        priority: <span style="color:#a6e22e">P1</span>,
+        enabled: <span style="color:#a6e22e">true</span>,
+    },
+});
+
+<span style="color:#75715e">// Send back the received byte
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">loopback</span>(_task: <span style="color:#a6e22e">Usart1Exti25</span>, <span style="color:#66d9ef">ref</span> priority: <span style="color:#a6e22e">P1</span>, <span style="color:#66d9ef">ref</span> threshold: <span style="color:#a6e22e">T1</span>) {
+    <span style="color:#66d9ef">let</span> usart1 <span style="color:#f92672">=</span> USART1.access(priority, threshold);
+    <span style="color:#66d9ef">let</span> serial <span style="color:#f92672">=</span> Serial(<span style="color:#f92672">&amp;</span>usart1);
+
+    <span style="color:#66d9ef">if</span> <span style="color:#66d9ef">let</span> Ok(byte) <span style="color:#f92672">=</span> serial.read() {
+        <span style="color:#66d9ef">if</span> serial.write(byte).is_err() {
+            <span style="color:#75715e">// As we are echoing the bytes as soon as they arrive, it should
+</span><span style="color:#75715e"></span>            <span style="color:#75715e">// be impossible to have a TX buffer overrun
+</span><span style="color:#75715e"></span>            <span style="color:#75715e">#[cfg(debug_assertions)]</span>
+            unreachable<span style="color:#f92672">!</span>()
+        }
+    } <span style="color:#66d9ef">else</span> {
+        <span style="color:#75715e">// Only reachable through `rtfm::request(loopback)`
+</span><span style="color:#75715e"></span>        <span style="color:#75715e">#[cfg(debug_assertions)]</span>
+        unreachable<span style="color:#f92672">!</span>()
+    }
+}
+</code></pre></div><p>Let&rsquo;s go through the program in parts:</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#75715e">// CONFIGURATION
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">pub</span> <span style="color:#66d9ef">const</span> BAUD_RATE: <span style="color:#66d9ef">u32</span> <span style="color:#f92672">=</span> <span style="color:#ae81ff">115_200</span>; <span style="color:#75715e">// bits per second
+</span></code></pre></div><p>We have to pick a transmission speed for the interface. Any number will do as
+long as both sides are configured to run at the same speed. <code>115_200</code> is a
+standard and pretty common baud rate.</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">init</span>(<span style="color:#66d9ef">ref</span> priority: <span style="color:#a6e22e">P0</span>, threshold: <span style="color:#66d9ef">&amp;</span><span style="color:#a6e22e">TMax</span>) {
+    <span style="color:#66d9ef">let</span> gpioa <span style="color:#f92672">=</span> GPIOA.access(priority, threshold);
+    <span style="color:#66d9ef">let</span> rcc <span style="color:#f92672">=</span> RCC.access(priority, threshold);
+    <span style="color:#66d9ef">let</span> usart1 <span style="color:#f92672">=</span> USART1.access(priority, threshold);
+
+    <span style="color:#66d9ef">let</span> serial <span style="color:#f92672">=</span> Serial(<span style="color:#f92672">&amp;</span>usart1);
+
+    serial.init(<span style="color:#f92672">&amp;</span>gpioa, <span style="color:#f92672">&amp;</span>rcc, BAUD_RATE);
+}
+</code></pre></div><p>In <code>init</code> we configure the Serial interface to run at <code>115_200</code> bits per
+second. It should be noted that the <code>init</code> method also configures the USART1
+peripheral to generate interrupt events when a new byte is received.</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust">tasks<span style="color:#f92672">!</span>(stm32f30x, {
+    loopback: <span style="color:#a6e22e">Task</span> {
+        interrupt: <span style="color:#a6e22e">Usart1Exti25</span>,
+        priority: <span style="color:#a6e22e">P1</span>,
+        enabled: <span style="color:#a6e22e">true</span>,
+    },
+});
+</code></pre></div><p>Here we bind the <code>loopback</code> task to the <code>Usart1Exti25</code> interrupt handler. As
+already mentioned the <code>Usart1Exti25</code> interrupt, and thus the <code>loopback</code> task,
+will be triggered every time a new byte is received.</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">loopback</span>(_task: <span style="color:#a6e22e">Usart1Exti25</span>, <span style="color:#66d9ef">ref</span> priority: <span style="color:#a6e22e">P1</span>, <span style="color:#66d9ef">ref</span> threshold: <span style="color:#a6e22e">T1</span>) {
+    <span style="color:#66d9ef">let</span> usart1 <span style="color:#f92672">=</span> USART1.access(priority, threshold);
+    <span style="color:#66d9ef">let</span> serial <span style="color:#f92672">=</span> Serial(<span style="color:#f92672">&amp;</span>usart1);
+
+    <span style="color:#66d9ef">if</span> <span style="color:#66d9ef">let</span> Ok(byte) <span style="color:#f92672">=</span> serial.read() {
+        <span style="color:#66d9ef">if</span> serial.write(byte).is_err() {
+            <span style="color:#75715e">// As we are echoing the bytes as soon as they arrive, it should
+</span><span style="color:#75715e"></span>            <span style="color:#75715e">// be impossible to have a TX buffer overrun
+</span><span style="color:#75715e"></span>            <span style="color:#75715e">#[cfg(debug_assertions)]</span>
+            unreachable<span style="color:#f92672">!</span>()
+        }
+    } <span style="color:#66d9ef">else</span> {
+        <span style="color:#75715e">// Only reachable through `rtfm::request(loopback)`
+</span><span style="color:#75715e"></span>        <span style="color:#75715e">#[cfg(debug_assertions)]</span>
+        unreachable<span style="color:#f92672">!</span>()
+    }
+}
+</code></pre></div><p>The <code>loopback</code> task will send back the byte that was just received. It&rsquo;s
+important to note that both the <code>read</code> and <code>write</code> methods used here are <em>non
+blocking</em>. Two error conditions needs to be dealt with:</p>
+<ul>
+<li>
+<p><code>serial.read()</code> returns an error if there was no new data available. This
+condition should be unreachable in our program because the <code>loopback</code> task
+only runs every time a new byte is available.</p>
+</li>
+<li>
+<p><code>serial.write(byte)</code> returns an error if the TX (send) buffer overflows, which
+should only occur when attempting to send bytes faster than what the current
+baud rate setting allows. This shouldn&rsquo;t be a problem in this case because we
+are sending <em>one</em> byte back every time a new byte arrives so the TX data rate
+can never exceed the RX (receive) data rate, which caps at <code>115_200</code> bps.</p>
+</li>
+</ul>
+<p>Let&rsquo;s draw a possible timeline of events for this program:</p>
+<p><img src="/fearless-concurrency/loopback.svg" alt="Loopback"></p>
+<p>There&rsquo;s only one task running and is non periodic. The task will run only when a
+new byte arrives. We&rsquo;ll call this new byte arrived event <code>RX</code>.</p>
+<h1 id="concurrency">Concurrency</h1>
+<p>Now let&rsquo;s merge these two last programs into a single one. The merged program
+will run the <code>roulette</code> and <code>loopback</code> tasks concurrently. This is actually
+trivial to implement beacuse the two tasks are independent: they don&rsquo;t share
+state or have a run task A after task B&quot; kind of relationship.</p>
+<p>The full source of the merged program is <a href="https://docs.rs/f3/0.4.1/f3/examples/_6_concurrency/index.html">here</a>. The relevant
+parts are shown below:</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#75715e">// ..
+</span><span style="color:#75715e"></span>
+<span style="color:#75715e">// INITIALIZATION PHASE
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">init</span>(<span style="color:#66d9ef">ref</span> priority: <span style="color:#a6e22e">P0</span>, threshold: <span style="color:#66d9ef">&amp;</span><span style="color:#a6e22e">TMax</span>) {
+    <span style="color:#75715e">// ..
+</span><span style="color:#75715e"></span>
+    <span style="color:#75715e">// merge both `init`s
+</span><span style="color:#75715e"></span>    led::init(<span style="color:#f92672">&amp;</span>gpioe, <span style="color:#f92672">&amp;</span>rcc);
+    timer.init(<span style="color:#f92672">&amp;</span>rcc, FREQUENCY);
+    serial.init(<span style="color:#f92672">&amp;</span>gpioa, <span style="color:#f92672">&amp;</span>rcc, BAUD_RATE);
+
+    timer.resume();
+}
+
+<span style="color:#75715e">// TASKS
+</span><span style="color:#75715e">// declare both tasks
+</span><span style="color:#75715e"></span>tasks<span style="color:#f92672">!</span>(stm32f30x, {
+    loopback: <span style="color:#a6e22e">Task</span> {
+        interrupt: <span style="color:#a6e22e">Usart1Exti25</span>,
+        priority: <span style="color:#a6e22e">P1</span>,
+        enabled: <span style="color:#a6e22e">true</span>,
+    },
+    roulette: <span style="color:#a6e22e">Task</span> {
+        interrupt: <span style="color:#a6e22e">Tim7</span>,
+        priority: <span style="color:#a6e22e">P1</span>,
+        enabled: <span style="color:#a6e22e">true</span>,
+    },
+});
+
+<span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">loopback</span>(_task: <span style="color:#a6e22e">Usart1Exti25</span>, <span style="color:#66d9ef">ref</span> priority: <span style="color:#a6e22e">P1</span>, <span style="color:#66d9ef">ref</span> threshold: <span style="color:#a6e22e">T1</span>) {
+    <span style="color:#75715e">// same as before
+</span><span style="color:#75715e"></span>}
+
+<span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">roulette</span>(<span style="color:#66d9ef">mut</span> task: <span style="color:#a6e22e">Tim7</span>, <span style="color:#66d9ef">ref</span> priority: <span style="color:#a6e22e">P1</span>, <span style="color:#66d9ef">ref</span> threshold: <span style="color:#a6e22e">T1</span>) {
+    <span style="color:#75715e">// same as before
+</span><span style="color:#75715e"></span>}
+</code></pre></div><p>If you run this program you should see the LED roulette in action <em>and</em> the
+serial console should echo what you type. Yay, multitasking!</p>
+<p>Lets see how the scheduler would handle these two task running concurrently:</p>
+<p><img src="/fearless-concurrency/concurrency.svg" alt="Concurrency"></p>
+<p>The timeline depicts three situations:</p>
+<ul>
+<li>
+<p>Only one task, the <code>roulette</code> task, runs.</p>
+</li>
+<li>
+<p>The <code>loopback</code> task is running, and an Update Event (<code>UE</code>) occurs. Because
+both   tasks have the same priority the execution of the <code>roulette</code> task will
+be   postponed until after <code>loopback</code> ends.</p>
+</li>
+<li>
+<p>Similar situation but a RX event occurs during the execution of the <code>roulette</code>
+task. Again, <code>receive</code> won&rsquo;t run until after <code>roulette</code> ends.</p>
+</li>
+</ul>
+<h1 id="parsing">Parsing</h1>
+<p>Let&rsquo;s continue building the final application. We&rsquo;ll have to parse the strings
+received through the serial interface. This will require storing the characters
+into a buffer. We&rsquo;ll use the <a href="https://docs.rs/heapless/0.1.0/heapless/"><code>heapless</code></a> crate to avoid depending on a dynamic
+memory allocator; this crate provides common data structures backed by
+statically allocated memory.</p>
+<p>These are the relevant changes:</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#75715e">// version = &#34;0.1.0&#34;
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">extern</span> <span style="color:#66d9ef">crate</span> heapless;
+
+<span style="color:#75715e">// ..
+</span><span style="color:#75715e"></span>
+<span style="color:#75715e">// Growable array backed by a fixed size chunk of memory
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">use</span> heapless::Vec;
+
+<span style="color:#75715e">// ..
+</span><span style="color:#75715e"></span>
+<span style="color:#75715e">// renamed the `loopback` task to `receive`
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">receive</span>(<span style="color:#66d9ef">mut</span> task: <span style="color:#a6e22e">Usart1Exti25</span>, <span style="color:#66d9ef">ref</span> priority: <span style="color:#a6e22e">P1</span>, <span style="color:#66d9ef">ref</span> threshold: <span style="color:#a6e22e">T1</span>) {
+    <span style="color:#75715e">// 16 byte buffer
+</span><span style="color:#75715e"></span>    <span style="color:#66d9ef">static</span> BUFFER: <span style="color:#a6e22e">Local</span><span style="color:#f92672">&lt;</span>Vec<span style="color:#f92672">&lt;</span><span style="color:#66d9ef">u8</span>, [<span style="color:#66d9ef">u8</span>; <span style="color:#ae81ff">16</span>]<span style="color:#f92672">&gt;</span>, Usart1Exti25<span style="color:#f92672">&gt;</span> <span style="color:#f92672">=</span> {
+        Local::new(Vec::new([<span style="color:#ae81ff">0</span>; <span style="color:#ae81ff">16</span>]))
+    };
+
+    <span style="color:#66d9ef">let</span> usart1 <span style="color:#f92672">=</span> USART1.access(priority, threshold);
+    <span style="color:#66d9ef">let</span> serial <span style="color:#f92672">=</span> Serial(<span style="color:#f92672">&amp;</span>usart1);
+
+    <span style="color:#66d9ef">if</span> <span style="color:#66d9ef">let</span> Ok(byte) <span style="color:#f92672">=</span> serial.read() {
+        <span style="color:#66d9ef">if</span> serial.write(byte).is_err() {
+            <span style="color:#75715e">// As we are echoing the bytes as soon as they arrive, it should
+</span><span style="color:#75715e"></span>            <span style="color:#75715e">// be impossible to have a TX buffer overrun
+</span><span style="color:#75715e"></span>            <span style="color:#75715e">#[cfg(debug_assertions)]</span>
+            unreachable<span style="color:#f92672">!</span>()
+        }
+
+        <span style="color:#66d9ef">let</span> buffer <span style="color:#f92672">=</span> BUFFER.borrow_mut(<span style="color:#f92672">&amp;</span><span style="color:#66d9ef">mut</span> task);
+
+        <span style="color:#66d9ef">if</span> byte <span style="color:#f92672">==</span> <span style="color:#e6db74">b&#39;\r&#39;</span> {
+            <span style="color:#75715e">// end of command
+</span><span style="color:#75715e"></span>
+            <span style="color:#66d9ef">match</span> <span style="color:#f92672">&amp;**</span>buffer {
+                <span style="color:#e6db74">b&#34;bounce&#34;</span> <span style="color:#f92672">=&gt;</span> <span style="color:#75715e">/* TODO */</span>,
+                <span style="color:#e6db74">b&#34;continuous&#34;</span> <span style="color:#f92672">=&gt;</span> <span style="color:#75715e">/* TODO */</span>,
+                <span style="color:#e6db74">b&#34;reverse&#34;</span> <span style="color:#f92672">=&gt;</span> <span style="color:#75715e">/* TODO */</span>,
+                _ <span style="color:#f92672">=&gt;</span> {}
+            }
+
+            <span style="color:#75715e">// clear the buffer to prepare for the next command
+</span><span style="color:#75715e"></span>            buffer.clear();
+        } <span style="color:#66d9ef">else</span> {
+            <span style="color:#75715e">// push the byte into the buffer
+</span><span style="color:#75715e"></span>
+            <span style="color:#66d9ef">if</span> buffer.push(byte).is_err() {
+                <span style="color:#75715e">// error: buffer full
+</span><span style="color:#75715e"></span>                <span style="color:#75715e">// KISS: we just clear the buffer when it gets full
+</span><span style="color:#75715e"></span>                buffer.clear();
+            }
+        }
+    } <span style="color:#66d9ef">else</span> {
+        <span style="color:#75715e">// Only reachable through `rtfm::request(receive)`
+</span><span style="color:#75715e"></span>        <span style="color:#75715e">#[cfg(debug_assertions)]</span>
+        unreachable<span style="color:#f92672">!</span>()
+    }
+}
+</code></pre></div><p>Now we are parsing user commands but we are not obeying them. To do that, we&rsquo;ll
+need some form of communication between the <code>roulette</code> task and the <code>receive</code>
+task.</p>
+<h1 id="sharing-memory">Sharing memory</h1>
+<p>The RTFM framework provides a <code>Resource</code> abstraction that can be used to share
+memory between two or more tasks in a data race free manner.</p>
+<p>We&rsquo;ll use the following resource to share state <sup id="fnref:4"><a href="#fn:4" class="footnote-ref" role="doc-noteref">4</a></sup> between the
+<code>roulette</code> and <code>receive</code> tasks:</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#66d9ef">static</span> SHARED: <span style="color:#a6e22e">Resource</span><span style="color:#f92672">&lt;</span>State, C1<span style="color:#f92672">&gt;</span> <span style="color:#f92672">=</span> Resource::new(State::new());
+</code></pre></div><p>where <code>State</code> is defined like this:</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#66d9ef">struct</span> <span style="color:#a6e22e">State</span> {
+    direction: <span style="color:#a6e22e">Cell</span><span style="color:#f92672">&lt;</span>Direction<span style="color:#f92672">&gt;</span>,
+    mode: <span style="color:#a6e22e">Cell</span><span style="color:#f92672">&lt;</span>Mode<span style="color:#f92672">&gt;</span>,
+}
+
+<span style="color:#66d9ef">impl</span> State {
+    <span style="color:#66d9ef">const</span> <span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">new</span>() -&gt; <span style="color:#a6e22e">Self</span> {
+        State {
+            direction: <span style="color:#a6e22e">Cell</span>::new(Direction::Clockwise),
+            mode: <span style="color:#a6e22e">Cell</span>::new(Mode::Continuous),
+        }
+    }
+}
+
+<span style="color:#75715e">#[derive(Clone, Copy)]</span>
+<span style="color:#66d9ef">enum</span> <span style="color:#a6e22e">Direction</span> {
+    Clockwise,
+    Counterclockwise,
+}
+
+<span style="color:#66d9ef">impl</span> Direction {
+    <span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">reverse</span>(self) -&gt; <span style="color:#a6e22e">Self</span> {
+        <span style="color:#66d9ef">match</span> self {
+            Direction::Clockwise <span style="color:#f92672">=&gt;</span> Direction::Counterclockwise,
+            Direction::Counterclockwise <span style="color:#f92672">=&gt;</span> Direction::Clockwise,
+        }
+    }
+}
+
+<span style="color:#75715e">#[derive(Clone, Copy, PartialEq)]</span>
+<span style="color:#66d9ef">enum</span> <span style="color:#a6e22e">Mode</span> {
+    Bounce,
+    Continuous,
+}
+</code></pre></div><p>When you declare a resource you must assign a <em>ceiling</em> to it in its type
+signature. I&rsquo;ll assign a ceiling of 1 (<code>C1</code>) to this resource; this value
+matches the priority of both the <code>roulette</code> and <code>receive</code> tasks.</p>
+<p>Because both tasks run at the same priority no preemption can occur: if both
+tasks needs to run at around the same time one task will be postponed until
+after the other finishes. Because of this no data race can occur if <code>roulette</code>
+and <code>receive</code> directly <code>access</code> the <code>SHARED</code> resource.</p>
+<p>With that in mind, let&rsquo;s see the new task code.</p>
+<p>Here&rsquo;s the complete <code>receive</code> task:</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">receive</span>(<span style="color:#66d9ef">mut</span> task: <span style="color:#a6e22e">Usart1Exti25</span>, <span style="color:#66d9ef">ref</span> priority: <span style="color:#a6e22e">P1</span>, <span style="color:#66d9ef">ref</span> threshold: <span style="color:#a6e22e">T1</span>) {
+    <span style="color:#75715e">// 16 byte buffer
+</span><span style="color:#75715e"></span>    <span style="color:#66d9ef">static</span> BUFFER: <span style="color:#a6e22e">Local</span><span style="color:#f92672">&lt;</span>Vec<span style="color:#f92672">&lt;</span><span style="color:#66d9ef">u8</span>, [<span style="color:#66d9ef">u8</span>; <span style="color:#ae81ff">16</span>]<span style="color:#f92672">&gt;</span>, Usart1Exti25<span style="color:#f92672">&gt;</span> <span style="color:#f92672">=</span> {
+        Local::new(Vec::new([<span style="color:#ae81ff">0</span>; <span style="color:#ae81ff">16</span>]))
+    };
+
+    <span style="color:#66d9ef">let</span> usart1 <span style="color:#f92672">=</span> USART1.access(priority, threshold);
+    <span style="color:#66d9ef">let</span> serial <span style="color:#f92672">=</span> Serial(<span style="color:#f92672">&amp;</span>usart1);
+
+    <span style="color:#66d9ef">if</span> <span style="color:#66d9ef">let</span> Ok(byte) <span style="color:#f92672">=</span> serial.read() {
+        <span style="color:#66d9ef">if</span> serial.write(byte).is_err() {
+            <span style="color:#75715e">// As we are echoing the bytes as soon as they arrive, it should
+</span><span style="color:#75715e"></span>            <span style="color:#75715e">// be impossible to have a TX buffer overrun
+</span><span style="color:#75715e"></span>            <span style="color:#75715e">#[cfg(debug_assertions)]</span>
+            unreachable<span style="color:#f92672">!</span>()
+        }
+
+        <span style="color:#66d9ef">let</span> buffer <span style="color:#f92672">=</span> BUFFER.borrow_mut(<span style="color:#f92672">&amp;</span><span style="color:#66d9ef">mut</span> task);
+
+        <span style="color:#66d9ef">if</span> byte <span style="color:#f92672">==</span> <span style="color:#e6db74">b&#39;\r&#39;</span> {
+            <span style="color:#75715e">// end of command
+</span><span style="color:#75715e"></span>
+            <span style="color:#75715e">// NEW!
+</span><span style="color:#75715e"></span>            <span style="color:#66d9ef">let</span> shared <span style="color:#f92672">=</span> SHARED.access(priority, threshold);
+            <span style="color:#66d9ef">match</span> <span style="color:#f92672">&amp;**</span>buffer {
+                <span style="color:#e6db74">b&#34;bounce&#34;</span> <span style="color:#f92672">=&gt;</span> shared.mode.set(Mode::Bounce),
+                <span style="color:#e6db74">b&#34;continuous&#34;</span> <span style="color:#f92672">=&gt;</span> shared.mode.set(Mode::Continuous),
+                <span style="color:#e6db74">b&#34;reverse&#34;</span> <span style="color:#f92672">=&gt;</span> {
+                    shared.direction.set(shared.direction.get().reverse());
+                }
+                _ <span style="color:#f92672">=&gt;</span> {}
+            }
+
+            <span style="color:#75715e">// clear the buffer to prepare for the next command
+</span><span style="color:#75715e"></span>            buffer.clear();
+        } <span style="color:#66d9ef">else</span> {
+            <span style="color:#75715e">// push the byte into the buffer
+</span><span style="color:#75715e"></span>
+            <span style="color:#66d9ef">if</span> buffer.push(byte).is_err() {
+                <span style="color:#75715e">// error: buffer full
+</span><span style="color:#75715e"></span>                <span style="color:#75715e">// KISS: we just clear the buffer when it gets full
+</span><span style="color:#75715e"></span>                buffer.clear();
+            }
+        }
+    } <span style="color:#66d9ef">else</span> {
+        <span style="color:#75715e">// Only reachable through `rtfm::request(receive)`
+</span><span style="color:#75715e"></span>        <span style="color:#75715e">#[cfg(debug_assertions)]</span>
+        unreachable<span style="color:#f92672">!</span>()
+    }
+}
+</code></pre></div><p>And here&rsquo;s the updated <code>roulette</code> task:</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">roulette</span>(<span style="color:#66d9ef">mut</span> task: <span style="color:#a6e22e">Tim7</span>, <span style="color:#66d9ef">ref</span> priority: <span style="color:#a6e22e">P1</span>, <span style="color:#66d9ef">ref</span> threshold: <span style="color:#a6e22e">T1</span>) {
+    <span style="color:#66d9ef">static</span> STATE: <span style="color:#a6e22e">Local</span><span style="color:#f92672">&lt;</span><span style="color:#66d9ef">u8</span>, Tim7<span style="color:#f92672">&gt;</span> <span style="color:#f92672">=</span> Local::new(<span style="color:#ae81ff">0</span>);
+
+    <span style="color:#66d9ef">let</span> tim7 <span style="color:#f92672">=</span> TIM7.access(priority, threshold);
+    <span style="color:#66d9ef">let</span> timer <span style="color:#f92672">=</span> Timer(<span style="color:#f92672">&amp;</span>tim7);
+
+    <span style="color:#66d9ef">if</span> timer.clear_update_flag().is_ok() {
+        <span style="color:#66d9ef">let</span> state <span style="color:#f92672">=</span> STATE.borrow_mut(<span style="color:#f92672">&amp;</span><span style="color:#66d9ef">mut</span> task);
+        <span style="color:#66d9ef">let</span> curr <span style="color:#f92672">=</span> <span style="color:#f92672">*</span>state;
+
+        <span style="color:#75715e">// NEW!
+</span><span style="color:#75715e"></span>        <span style="color:#66d9ef">let</span> shared <span style="color:#f92672">=</span> SHARED.access(priority, threshold);
+        <span style="color:#66d9ef">let</span> <span style="color:#66d9ef">mut</span> direction <span style="color:#f92672">=</span> shared.direction.get();
+
+        <span style="color:#66d9ef">if</span> curr <span style="color:#f92672">==</span> <span style="color:#ae81ff">0</span> <span style="color:#f92672">&amp;&amp;</span> shared.mode.get() <span style="color:#f92672">==</span> Mode::Bounce {
+            direction <span style="color:#f92672">=</span> direction.reverse();
+            shared.direction.set(direction);
+        }
+
+        <span style="color:#66d9ef">let</span> n <span style="color:#f92672">=</span> <span style="color:#66d9ef">u8</span>(LEDS.len()).unwrap();
+        <span style="color:#66d9ef">let</span> next <span style="color:#f92672">=</span> <span style="color:#66d9ef">match</span> direction {
+            Direction::Clockwise <span style="color:#f92672">=&gt;</span> (curr <span style="color:#f92672">+</span> <span style="color:#ae81ff">1</span>) <span style="color:#f92672">%</span> n,
+            Direction::Counterclockwise <span style="color:#f92672">=&gt;</span> curr.checked_sub(<span style="color:#ae81ff">1</span>).unwrap_or(n <span style="color:#f92672">-</span> <span style="color:#ae81ff">1</span>),
+        };
+
+        LEDS[<span style="color:#66d9ef">usize</span>(curr)].off();
+        LEDS[<span style="color:#66d9ef">usize</span>(next)].on();
+
+        <span style="color:#f92672">*</span>state <span style="color:#f92672">=</span> next;
+    } <span style="color:#66d9ef">else</span> {
+        <span style="color:#75715e">// Only reachable through `rtfm::request(roulette)`
+</span><span style="color:#75715e"></span>        <span style="color:#75715e">#[cfg(debug_assertion)]</span>
+        unreachable<span style="color:#f92672">!</span>()
+    }
+}
+</code></pre></div><p>This <code>access</code> method has the exact same signature as the peripheral&rsquo;s one. Both
+methods require you to present a <code>priority</code> and a <code>threshold</code> token. This is no
+coincidence: when we declare peripherals in the <code>peripherals!</code> macro we are
+actually converting the raw peripherals defined in the device crate into actual
+resources. That&rsquo;s why you have to assign ceilings in the <code>peripherals!</code> macro:
+all resources must have a ceiling assigned to them.</p>
+<p>If you run this program (<a href="https://docs.rs/f3/0.4.1/f3/examples/_7_resource/index.html">here</a>&rsquo;s the full code) you&rsquo;ll get the
+same behavior as the one shown in the intro video 🎉.</p>
+<p>So, are we done? Nope, not yet. Let&rsquo;s now spice things up with some &hellip;</p>
+<h1 id="preemption">Preemption</h1>
+<p>The <code>receive</code> task can now take much longer because it does parsing. In the
+worst case scenario a new byte may arrive <em>just before</em> the (timer) update event
+causing the <code>roulette</code> task to wait for <em>several</em> cycles until after the
+<code>receive</code> task is finished. This deviation from true periodicity is known as
+jitter. Although unlikely to be perceived in this particular application, jitter
+can cause problems in more critical applications like control systems so let&rsquo;s
+see how to address it.</p>
+<p>To reduce jitter we can increase the priority of the <code>roulette</code> task to 2.
+This way, if the previous scenario arises (update event right after the
+<code>receive</code> task starts) the processor will stop executing the <code>receive</code> task, run
+the <code>roulette</code> task and once it&rsquo;s done with that it will resume the execution of
+the <code>receive</code> task.</p>
+<p>So, let&rsquo;s just change the priority of the <code>roulette</code> task in the <code>tasks!</code> macro.</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust">tasks<span style="color:#f92672">!</span>(stm32f30x, {
+    roulette: <span style="color:#a6e22e">Task</span> {
+        interrupt: <span style="color:#a6e22e">Tim7</span>,
+        priority: <span style="color:#a6e22e">P2</span>, <span style="color:#75715e">// changed to `P2`
+</span><span style="color:#75715e"></span>        enabled: <span style="color:#a6e22e">true</span>,
+    },
+    receive: <span style="color:#a6e22e">Task</span> {
+        interrupt: <span style="color:#a6e22e">Usart1Exti25</span>,
+        priority: <span style="color:#a6e22e">P1</span>,
+        enabled: <span style="color:#a6e22e">true</span>,
+    },
+});
+</code></pre></div><p>We&rsquo;ll have to update the signature of the <code>roulette</code> task accordingly as well as
+fix some ceiling values:</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust">peripherals<span style="color:#f92672">!</span>(stm32f30x, {
+    (..)
+    TIM7: <span style="color:#a6e22e">Peripheral</span> {
+        register_block: <span style="color:#a6e22e">Tim7</span>,
+        ceiling: <span style="color:#a6e22e">C2</span>, <span style="color:#75715e">// was `C1`
+</span><span style="color:#75715e"></span>    },
+    (..)
+});
+
+<span style="color:#75715e">// the ceiling was `C1`
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">static</span> SHARED: <span style="color:#a6e22e">Resource</span><span style="color:#f92672">&lt;</span>State, C2<span style="color:#f92672">&gt;</span> <span style="color:#f92672">=</span> Resource::new(State::new());
+
+<span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">roulette</span>(<span style="color:#66d9ef">mut</span> task: <span style="color:#a6e22e">Tim7</span>, <span style="color:#66d9ef">ref</span> priority: <span style="color:#a6e22e">P2</span>, <span style="color:#66d9ef">ref</span> threshold: <span style="color:#a6e22e">T2</span>) {
+    <span style="color:#75715e">// same as before
+</span><span style="color:#75715e"></span>}
+</code></pre></div><p>And &hellip;</p>
+<pre><code>error[E0277]: the trait bound `..` is not satisfied
+   --&gt; examples/data-race.rs:168:33
+    |
+168 |             let shared = SHARED.access(priority, threshold);
+</code></pre><p>The program no longer compiles! And that&rsquo;s great because the Rust compiler just
+caught a data race &ndash; although I admit that the error message is awful. Here&rsquo;s a
+better view of the source of the error:</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">receive</span>(<span style="color:#66d9ef">mut</span> task: <span style="color:#a6e22e">Usart1Exti25</span>, <span style="color:#66d9ef">ref</span> priority: <span style="color:#a6e22e">P1</span>, <span style="color:#66d9ef">ref</span> threshold: <span style="color:#a6e22e">T1</span>) {
+    <span style="color:#75715e">// ..
+</span><span style="color:#75715e"></span>
+    <span style="color:#66d9ef">if</span> <span style="color:#66d9ef">let</span> Ok(byte) <span style="color:#f92672">=</span> serial.read() {
+        <span style="color:#75715e">// ..
+</span><span style="color:#75715e"></span>
+        <span style="color:#66d9ef">if</span> byte <span style="color:#f92672">==</span> <span style="color:#e6db74">b&#39;\r&#39;</span> {
+            <span style="color:#75715e">// end of command
+</span><span style="color:#75715e"></span>
+            <span style="color:#66d9ef">let</span> shared <span style="color:#f92672">=</span> SHARED.access(priority, threshold);
+            <span style="color:#75715e">//~^ compiler error!
+</span><span style="color:#75715e"></span>
+            <span style="color:#75715e">// ..
+</span></code></pre></div><p>What went wrong? When we increased the priority of the <code>roulette</code> task we made
+preemption of the <code>receive</code> task possible &ndash; that was the goal. The problem
+with this is that both <code>roulette</code> and <code>receive</code> may modify the <code>SHARED</code>
+resource, but this time <em>unsynchronized</em> mutation is possible: the <code>receive</code>
+task could be performing a read-modify-write operation on the resource and get
+preempted by the <code>roulette</code> task, which can do the same! This is a potential
+data race so the compiler rejects the program.</p>
+<p>How do we fix this? We have to add synchronization. More precisely, we must
+ensure that no preemption occurs while the <code>receive</code> task is modifying the
+<code>SHARED</code> resource. How do we that? We temporarily <em>raise</em> the preemption
+threshold.</p>
+<p>Let&rsquo;s refresh our memory: a preemption threshold of <code>T1</code> indicates that only a
+task with a priority of 2 or higher can preempt the current context. That&rsquo;s the
+preemption threshold of the <code>receive</code> task. With that threshold the <code>roulette</code>
+task, which has a priority of 2, <em>can</em> preempt the <code>receive</code> task. If we could
+<em>raise</em> that preemption level of the <code>receive</code> task to 2 (<code>T2</code>) then the
+<code>roulette</code> wouldn&rsquo;t be able to preempt it.</p>
+<p><code>threshold</code> tokens have a <code>raise</code> method that does exactly that. This method
+takes two arguments: the first one is a resource and second one is a closure.
+This method will <em>temporarily</em> raise the preemption threshold of the task to
+match the resource ceiling value and execute the closure under that raised
+threshold condition. This is effectively a critical section for the duration of
+the closure.</p>
+<p>Let&rsquo;s put that in use. Here&rsquo;s the updated <code>receive</code> task:</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">receive</span>(<span style="color:#66d9ef">mut</span> task: <span style="color:#a6e22e">Usart1Exti25</span>, <span style="color:#66d9ef">ref</span> priority: <span style="color:#a6e22e">P1</span>, <span style="color:#66d9ef">ref</span> threshold: <span style="color:#a6e22e">T1</span>) {
+    <span style="color:#75715e">// ..
+</span><span style="color:#75715e"></span>
+        <span style="color:#66d9ef">if</span> byte <span style="color:#f92672">==</span> <span style="color:#e6db74">b&#39;\r&#39;</span> {
+            <span style="color:#75715e">// end of command
+</span><span style="color:#75715e"></span>
+            <span style="color:#66d9ef">match</span> <span style="color:#f92672">&amp;**</span>buffer {
+                <span style="color:#e6db74">b&#34;bounce&#34;</span> <span style="color:#f92672">=&gt;</span> {
+                    threshold.raise(
+                        <span style="color:#f92672">&amp;</span>SHARED, <span style="color:#f92672">|</span>threshold<span style="color:#f92672">|</span> {
+                            <span style="color:#66d9ef">let</span> shared <span style="color:#f92672">=</span> SHARED.access(priority, threshold);
+                            shared.mode.set(Mode::Bounce)
+                        }
+                    );
+                }
+                <span style="color:#e6db74">b&#34;continuous&#34;</span> <span style="color:#f92672">=&gt;</span> {
+                    threshold.raise(
+                        <span style="color:#f92672">&amp;</span>SHARED, <span style="color:#f92672">|</span>threshold<span style="color:#f92672">|</span> {
+                            <span style="color:#66d9ef">let</span> shared <span style="color:#f92672">=</span> SHARED.access(priority, threshold);
+                            shared.mode.set(Mode::Continuous)
+                        }
+                    );
+                }
+                <span style="color:#e6db74">b&#34;reverse&#34;</span> <span style="color:#f92672">=&gt;</span> {
+                    threshold.raise(<span style="color:#f92672">&amp;</span>SHARED, <span style="color:#f92672">|</span>threshold<span style="color:#f92672">|</span> {
+                        <span style="color:#66d9ef">let</span> shared <span style="color:#f92672">=</span> SHARED.access(priority, threshold);
+                        shared.direction.set(shared.direction.get().reverse());
+                    });
+                }
+                _ <span style="color:#f92672">=&gt;</span> {}
+            }
+
+            buffer.clear();
+
+            <span style="color:#75715e">// ..
+</span></code></pre></div><p>We use the <code>Threshold.raise</code> critical sections to perform updates of the
+<code>SHARED</code> resource <em>atomically</em>. During these critical sections <code>roulette</code> can&rsquo;t
+preempt the <code>receive</code> task so data races are impossible.</p>
+<p>How would this program look from a scheduling point of view? See below:</p>
+<p><img src="/fearless-concurrency/preemption.svg" alt="Preemption"></p>
+<p>Three scenarios are shown.</p>
+<ul>
+<li>
+<p>The <code>roulette</code> task is being executed and an RX event arrives. Because the
+<code>receive</code> task has lower priority than the <code>roulette</code> task the <code>receive</code> task
+will be postponed until after the <code>roulette</code> task ends.</p>
+</li>
+<li>
+<p>The <code>receive</code> task is being executed and an update event arrives. Because the
+<code>roulette</code> task has higher priority than the <code>receive</code> task the <code>roulette</code>
+task will <em>preempt</em> the <code>receive</code> task. After the <code>roulette</code> task is finished
+the <code>receive</code> task will be <em>resumed</em>.</p>
+</li>
+<li>
+<p>The <code>receive</code> task is being executed. The parsing path is hit and the
+<code>SHARED</code> resource needs to be updated. The threshold of the <code>receive</code> task is
+temporarily raised while <code>SHARED</code> is being modified. During this critical
+section an update event arrives, but because the priority of the <code>roulette</code>
+task is the same as the current threshold no preemption occurs. Once the
+critical sections finishes and the threshold is lowered the <code>roulette</code> task
+immediately preempts the <code>receive</code> task. After the <code>roulette</code> task finishes
+the <code>receive</code> task is resumed.</p>
+</li>
+</ul>
+<p>That&rsquo;s the final version of the application! (full code <a href="https://docs.rs/f3/0.4.1/f3/examples/_8_preemption/index.html">here</a>)
+Let&rsquo;s leave coding aside and learn more about the &hellip;</p>
+<h1 id="the-ceiling-system">The ceiling system</h1>
+<p>I will now tell you all the rules of the ceiling system. Well, there&rsquo;s only one
+rule actually:</p>
+<blockquote>
+<p>A task with priority <code>TP</code> can only <code>access</code> a resource with ceiling <code>RC</code> given
+a current preemption threshold <code>PT</code> if and only if <code>TP &lt;= RC</code> AND <code>PT &gt;= RC</code>.</p>
+</blockquote>
+<p>But let&rsquo;s re-frame this rule into a practical guideline. It&rsquo;s usually the case
+that you know what the priorities of your tasks are as these can be derived from
+the deadline constraints of your application. Preemption thresholds are dynamic
+due to the <code>raise</code> method, and their initial value is known once you know the
+tasks priorities so no problem there either. The problem is computing the
+ceiling of resources: if you get them wrong then you won&rsquo;t be able to use the
+resources in the tasks that you want. So here&rsquo;s the rule of thumb for picking
+ceilings:</p>
+<blockquote>
+<p>The ceiling of a resource should match the priority of the highest priority
+task that can access it</p>
+</blockquote>
+<p>Example: If the resource R must be accessed by tasks A, B and C with priorities
+<code>P2</code>, <code>P3</code> and <code>P1</code> respectively then you should set the ceiling of the
+resource to <code>C3</code>.</p>
+<p>You can flip the rule of thumb to answer the question &ldquo;<em>who</em> can access this
+resource?&quot;:</p>
+<blockquote>
+<p>A resource with ceiling CN can only be accessed by tasks with a priority of N
+or lower</p>
+</blockquote>
+<p>After you have computed the resource ceilings the next question is: <em>How</em> do you
+access the resource from the different tasks?</p>
+<blockquote>
+<p>From the set of tasks that can access a resource, the ones with priority equal
+to the resource ceiling can directly <code>access</code> it; the others will have to use
+a <code>Threshold.raise</code> critical section to access the resource.</p>
+</blockquote>
+<p>Those are the guidelines for the general case.</p>
+<p>What about extreme values? Remember that the minimum task priority is <code>P1</code>. From
+this fact the following corollary arises:</p>
+<blockquote>
+<p>A resource with a ceiling <code>C0</code> can only be accessed by <code>idle</code> and <code>init</code>.</p>
+</blockquote>
+<p>Due to how the hardware works you can&rsquo;t use <code>Threshold.raise</code> to raise the
+threshold all the way to <code>TMax</code>. If you need a <code>TMax</code> token to access a <code>CMax</code>
+resource then you&rsquo;ll have to use the <code>rtfm::atomic</code> <sup id="fnref:5"><a href="#fn:5" class="footnote-ref" role="doc-noteref">5</a></sup> function which is
+a <em>global</em> critical section that disables all interrupts / tasks.</p>
+<p>Talking about critical sections, <code>Threshold.raise</code> is &hellip;</p>
+<h1 id="not-your-typical-critical-section">Not your typical critical section</h1>
+<p>When people say critical section they usually mean turning off <strong>all</strong> the
+interrupts. In RTFM, this would the equivalent of blocking every other task from
+running. Although this approach ensures the atomicity of the routine that is
+executed within the critical section, it introduces more task blocking than
+necessary, which is bad from a scheduling perspective.</p>
+<p><code>Threshold.raise</code> does <em>not</em> do that. It only blocks tasks <em>that would cause a
+data race</em>. Other higher priority tasks <em>can</em> preempt the <code>Threshold.raise</code>
+closure and continue to make progress. The ceiling system will ensure that the
+preemption of those tasks doesn&rsquo;t lead to data races.</p>
+<p>Let me show you an example:</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#66d9ef">static</span> R1: <span style="color:#a6e22e">Resource</span><span style="color:#f92672">&lt;</span>(), C2<span style="color:#f92672">&gt;</span> <span style="color:#f92672">=</span> Resource::new(());
+
+<span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">t1</span>(_task: <span style="color:#a6e22e">Exti0</span>, <span style="color:#66d9ef">ref</span> priority: <span style="color:#a6e22e">P1</span>, <span style="color:#66d9ef">ref</span> threshold: <span style="color:#a6e22e">T1</span>) {
+    hprintln<span style="color:#f92672">!</span>(<span style="color:#e6db74">&#34;t1: start&#34;</span>);
+
+    <span style="color:#75715e">// we need to raise the ceiling to access R1
+</span><span style="color:#75715e"></span>    threshold.raise(<span style="color:#f92672">&amp;</span>R1, <span style="color:#f92672">|</span>ceil<span style="color:#f92672">|</span> {
+        <span style="color:#66d9ef">let</span> r1 <span style="color:#f92672">=</span> R1.access(priority, threshold);
+
+        hprintln<span style="color:#f92672">!</span>(<span style="color:#e6db74">&#34;t1: before request&#34;</span>);
+        rtfm::request(t2);
+        hprintln<span style="color:#f92672">!</span>(<span style="color:#e6db74">&#34;t1: after request&#34;</span>);
+    });
+}
+
+<span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">t2</span>(_task: <span style="color:#a6e22e">Exti1</span>, priority: <span style="color:#a6e22e">P3</span>, ceiling: <span style="color:#a6e22e">C3</span>) {
+    hprintln<span style="color:#f92672">!</span>(<span style="color:#e6db74">&#34;t2&#34;</span>);
+}
+</code></pre></div><p>This prints:</p>
+<pre><code class="language-console" data-lang="console">t1: start
+t1: before request
+t2
+t1: after request
+</code></pre><p><code>Threshold.raise</code> doesn&rsquo;t block <em>all</em> tasks. <code>t2</code>, which has greater priority
+than <code>R1</code>&rsquo;s ceiling can preempt that critical section.</p>
+<p>&ldquo;But wouldn&rsquo;t it be bad if <code>t2</code> accessed the resource <code>R1</code> after it has
+preempted <code>t1</code>?&rdquo;. Yes, that would be bad BUT such program wouldn&rsquo;t compile.</p>
+<p>If we change <code>t2</code> to look like this:</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">t2</span>(_task: <span style="color:#a6e22e">Exti1</span>, <span style="color:#66d9ef">ref</span> priority: <span style="color:#a6e22e">P3</span>, <span style="color:#66d9ef">ref</span> threshold: <span style="color:#a6e22e">T3</span>) {
+    <span style="color:#66d9ef">let</span> r1 <span style="color:#f92672">=</span> R1.access(priority, threshold);
+    <span style="color:#75715e">//~^ error
+</span><span style="color:#75715e"></span>}
+</code></pre></div><p>You&rsquo;ll get a compiler error.</p>
+<p>This follows from the ceiling rules: <code>t2</code> has priority <code>P3</code> so it can&rsquo;t access a
+resource with ceiling <code>C2</code>; only tasks with a priority <code>P2</code> or lower can
+access <code>R1</code>.</p>
+<h1 id="resources-are-not-mutexes">Resources are NOT Mutexes</h1>
+<p>Although <code>Resource</code>s provide a form of mutual exclusion, they <em>can&rsquo;t</em> deadlock
+like Mutexes do. This deadlock freedom is a consequence of the invariants that
+hold in the tasks and resources system:</p>
+<ul>
+<li>Once a task has started it can always access to all its resources without
+having to wait / block / spin.</li>
+<li>A task won&rsquo;t <em>start</em> if the above condition can&rsquo;t be met.</li>
+</ul>
+<p>These invariants are guaranteed by the ceiling system: Once a task has entered a
+critical section to access a resource no other task can preempt the first one
+to access the same resource.</p>
+<p>Here&rsquo;s an example of how using Mutexes and threads can result in a deadlock:</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#75715e">// MUTEXES
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">static</span> X: <span style="color:#a6e22e">Mutex</span><span style="color:#f92672">&lt;</span><span style="color:#66d9ef">i32</span><span style="color:#f92672">&gt;</span> <span style="color:#f92672">=</span> Mutex::new(<span style="color:#ae81ff">0</span>);
+<span style="color:#66d9ef">static</span> Y: <span style="color:#a6e22e">Mutex</span><span style="color:#f92672">&lt;</span><span style="color:#66d9ef">i32</span><span style="color:#f92672">&gt;</span> <span style="color:#f92672">=</span> Mutex::new(<span style="color:#ae81ff">0</span>);
+
+<span style="color:#75715e">// THREADS
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">a</span>() {
+    <span style="color:#75715e">// ..
+</span><span style="color:#75715e"></span>
+    <span style="color:#66d9ef">let</span> x <span style="color:#f92672">=</span> X.lock();
+
+    <span style="color:#75715e">// context switch -&gt; B
+</span><span style="color:#75715e"></span>
+    <span style="color:#66d9ef">let</span> y <span style="color:#f92672">=</span> Y.lock();
+
+    <span style="color:#f92672">*</span>x <span style="color:#f92672">+=</span> <span style="color:#f92672">*</span>y;
+
+    <span style="color:#75715e">// release the locks
+</span><span style="color:#75715e"></span>    drop((x, y));
+
+    <span style="color:#75715e">// ..
+</span><span style="color:#75715e"></span>}
+
+<span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">b</span>() {
+    <span style="color:#75715e">// ..
+</span><span style="color:#75715e"></span>
+    <span style="color:#66d9ef">let</span> y <span style="color:#f92672">=</span> Y.lock();
+
+    <span style="color:#75715e">// blocks, context switch -&gt; A
+</span><span style="color:#75715e"></span>    <span style="color:#66d9ef">let</span> x <span style="color:#f92672">=</span> X.lock();
+
+    <span style="color:#f92672">*</span>y <span style="color:#f92672">+=</span> <span style="color:#f92672">*</span>x;
+
+    <span style="color:#75715e">// release the locks
+</span><span style="color:#75715e"></span>    drop((x, y));
+
+    <span style="color:#75715e">// ..
+</span><span style="color:#75715e"></span>}
+</code></pre></div><p>Here we have a program with two threads and two mutexes where both threads have
+to access both mutexes. Let&rsquo;s see how this program may deadlock:</p>
+<ul>
+<li>Let&rsquo;s suppose thread A runs first.</li>
+<li>At some point it locks the mutex X.</li>
+<li>Now suppose that A&rsquo;s time slice runs out just after locking X; the scheduler
+switches to thread B.</li>
+<li>Thread B runs, eventually locks the mutex Y, and then tries to lock mutex X.</li>
+<li>Since thread A is holding that mutex thread B has to block.</li>
+<li>With no other option the scheduler switches back to thread A.</li>
+<li>Thread A resumes execution and tries to lock mutex Y but it can&rsquo;t because
+thread B is holding it so it blocks too.</li>
+</ul>
+<p>Now both threads are blocked, each one is waiting for the mutex that the other
+thread holds and none can make progress. You got yourself a deadlock.</p>
+<p>Now, let&rsquo;s see the equivalent program using tasks and resources:</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#75715e">// RESOURCES
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">static</span> X: <span style="color:#a6e22e">Resource</span><span style="color:#f92672">&lt;</span>Cell<span style="color:#f92672">&lt;</span><span style="color:#66d9ef">i32</span><span style="color:#f92672">&gt;</span>, C2<span style="color:#f92672">&gt;</span> <span style="color:#f92672">=</span> Resource::new(Cell::new(<span style="color:#ae81ff">0</span>));
+<span style="color:#66d9ef">static</span> Y: <span style="color:#a6e22e">Resource</span><span style="color:#f92672">&lt;</span>Cell<span style="color:#f92672">&lt;</span><span style="color:#66d9ef">i32</span><span style="color:#f92672">&gt;</span>, C2<span style="color:#f92672">&gt;</span> <span style="color:#f92672">=</span> Resource::new(Cell::new(<span style="color:#ae81ff">0</span>));
+
+<span style="color:#75715e">// TASKS
+</span><span style="color:#75715e"></span>tasks<span style="color:#f92672">!</span>(stm32f30x, {
+    a: <span style="color:#a6e22e">Task</span> {
+        interrupt: <span style="color:#a6e22e">Tim6Dacunder</span>,
+        priority: <span style="color:#a6e22e">P1</span>,
+        enabled: <span style="color:#a6e22e">true</span>,
+    },
+    b: <span style="color:#a6e22e">Task</span> {
+        interrupt: <span style="color:#a6e22e">Tim7</span>,
+        priority: <span style="color:#a6e22e">P2</span>,
+        enabled: <span style="color:#a6e22e">true</span>,
+    },
+});
+
+<span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">a</span>(_task: <span style="color:#a6e22e">Tim6Dacunder</span>, <span style="color:#66d9ef">ref</span> priority: <span style="color:#a6e22e">P1</span>, <span style="color:#66d9ef">ref</span> threshold: <span style="color:#a6e22e">T1</span>) {
+    <span style="color:#75715e">// ..
+</span><span style="color:#75715e"></span>
+    threshold.raise(<span style="color:#f92672">&amp;</span>X, <span style="color:#f92672">|</span>threshold<span style="color:#f92672">|</span> {
+        <span style="color:#66d9ef">let</span> x <span style="color:#f92672">=</span> X.access(priority, threshold);
+
+        <span style="color:#75715e">// &lt;- Tim7 update event - task B is postponed
+</span><span style="color:#75715e"></span>
+        <span style="color:#66d9ef">let</span> y <span style="color:#f92672">=</span> Y.access(priority, threshold);
+
+        x.set(x.get() <span style="color:#f92672">+</span> y.get());
+    });
+
+    <span style="color:#75715e">// task B preempts task A
+</span><span style="color:#75715e"></span>
+    <span style="color:#75715e">// ..
+</span><span style="color:#75715e"></span>}
+
+<span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">b</span>(_task: <span style="color:#a6e22e">Tim7</span>, <span style="color:#66d9ef">ref</span> priority: <span style="color:#a6e22e">P2</span>, <span style="color:#66d9ef">ref</span> threshold: <span style="color:#a6e22e">T2</span>) {
+    <span style="color:#75715e">// ..
+</span><span style="color:#75715e"></span>
+    <span style="color:#66d9ef">let</span> y <span style="color:#f92672">=</span> Y.access(priority, threshold);
+    <span style="color:#66d9ef">let</span> x <span style="color:#f92672">=</span> X.access(priority, threshold);
+
+    y.set(x.get() <span style="color:#f92672">+</span> y.get());
+
+    <span style="color:#75715e">// ..
+</span><span style="color:#75715e"></span>}
+</code></pre></div><p>Similar scenario: two tasks and two resources where both tasks must access both
+resources. Here I give task B a higher priority so context switching can occur
+midway A&rsquo;s execution.</p>
+<p>Let&rsquo;s see how events would unfold in this case:</p>
+<ul>
+<li>Let&rsquo;s suppose task A runs first.</li>
+<li>To access X and Y task A must temporarily raise its preemption level to match
+the resources' ceilings. This creates a critical section.</li>
+<li>During this critical section an update event may arrive but, because of the
+critical section, task B will be postponed until after the critical section
+ends.</li>
+<li>As soon as A&rsquo;s critical section ends, B immediately preempts A and starts its
+execution.</li>
+<li>As B can&rsquo;t be preempted by A, due the differences in priorities, B can freely
+access the resources.</li>
+</ul>
+<p>There you go: no deadlock. You can tweak the priorities, add more tasks, add
+more resources and perform the same analysis but the conclusion will be the
+same: no deadlock can occur.</p>
+<p>You could carefully design your use of <code>Mutex</code>es and threads to avoid deadlocks.
+In the above Mutex example locking X <em>before</em> Y in thread B would have
+prevented the deadlock. However, this may not always be so obvious, and the
+compiler will happily compile a program that deadlocks. On the other hand, with
+tasks and resources you <em>never</em> have to worry about deadlocks. As long as you
+use the ceiling system correctly &ndash; and the compiler enforces this &ndash; you simply
+can&rsquo;t deadlock.</p>
+<h1 id="outro">Outro</h1>
+<p>Wow, that was a lot of stuff. We just did <em>totally memory safe</em> multitasking. No
+<code>unsafe</code>, no deadlocks, and the compiler detected data races at compile time.
+All this on a single core microcontroller without relying on a garbage
+collector, dynamic memory collector or operating system.</p>
+<p>The best part: this is just the beginning of the RTFM framework.</p>
+<p>There&rsquo;s a bunch of stuff in the pipeline:</p>
+<ul>
+<li>More synchronization primitives like readers-writer resources and channels.</li>
+<li>Offset based timing semantics backed by a device agnostic implementation,
+offering task chaining with periodic as well as arbitrary timing patterns.
+Leaving all device specific timers free to use for application purposes.</li>
+<li>Possibly these <em>Concurrent Reactive Objects</em> prof. Lindgren keeps telling me
+about.</li>
+</ul>
+<p>Longer term work will likely involve:</p>
+<ul>
+<li>Tooling for Worst Case Execution Time (WCET) analysis.</li>
+<li>Tooling for scheduling analysis.</li>
+<li>Exploring building a DSL as a compiler plugin to remove the burden of
+computing ceiling values from the user &ndash; those values can be derived using
+whole program static analysis.</li>
+</ul>
+<p>If you have a Cortex-M microcontroller around please give the RTFM framework a
+try! We&rsquo;d love to hear what you think of it.</p>
+<p>In the next post I&rsquo;ll analyze the overhead of the RTFM framework. Both the
+runtime overhead of <code>Threshold.raise</code> and switching tasks as well as the memory
+overhead of adding tasks and of using the <code>Resource</code> abstraction. I&rsquo;ll leave you
+with this:</p>
+<pre><code class="language-console" data-lang="console">$ arm-none-eabi-size preemption
+   text    data     bss     dec     hex filename
+   1978       2      21    2001     7d1 preemption
+</code></pre><p>The size of the final version of this post&rsquo;s application.</p>
+<hr>
+<p><strong>Thank you patrons! ❤️</strong></p>
+<p>I want to wholeheartedly thank <a href="https://github.com/Razican">Iban Eguia</a>, <a href="https://github.com/aturon">Aaron Turon</a>, <a href="https://github.com/archaelus">Geoff Cant</a> and 8
+more people for supporting my work on Patreon.</p>
+<hr>
+<p>Let&rsquo;s discuss on <a href="https://www.reddit.com/r/rust/comments/6a5p9o/eir_fearless_concurrency_in_your_microcontroller/">reddit</a>.</p>
+<section class="footnotes" role="doc-endnotes">
+<hr>
+<ol>
+<li id="fn:1" role="doc-endnote">
+<p>I call it framework, instead of just library, because it forces a
+certain structure into your program <a href="#fnref:1" class="footnote-backref" role="doc-backlink">&#x21a9;&#xfe0e;</a></p>
+</li>
+<li id="fn:2" role="doc-endnote">
+<p>using the <a href="https://en.wikipedia.org/wiki/List_of_Bluetooth_protocols#Radio_frequency_communication_.28RFCOMM.29">RFCOMM</a> protocol <a href="#fnref:2" class="footnote-backref" role="doc-backlink">&#x21a9;&#xfe0e;</a></p>
+</li>
+<li id="fn:3" role="doc-endnote">
+<p>There&rsquo;s a local echo setting to enable that local echo but we are not
+going to use it <a href="#fnref:3" class="footnote-backref" role="doc-backlink">&#x21a9;&#xfe0e;</a></p>
+</li>
+<li id="fn:4" role="doc-endnote">
+<p>Yes, a channel abstraction would have been better but we don&rsquo;t yet
+have those in RTFM. I opted for not further complicating the example by
+using shared state instead of building a channel abstraction on top of
+<code>Resource</code>. <a href="#fnref:4" class="footnote-backref" role="doc-backlink">&#x21a9;&#xfe0e;</a></p>
+</li>
+<li id="fn:5" role="doc-endnote">
+<p><code>rtfm::atomic</code> <em>is</em> the <code>interrupt::free</code> function presented in the
+previous post but its signature has been tailored to the RTFM framework. <a href="#fnref:5" class="footnote-backref" role="doc-backlink">&#x21a9;&#xfe0e;</a></p>
+</li>
+</ol>
+</section>
+
+    </div>
+
+    
+    
+    <div class="article-toc" >
+        <h3>Contents</h3>
+        <nav id="TableOfContents">
+  <ul>
+    <li><a href="#peripherals"><code>peripherals!</code></a></li>
+    <li><a href="#init"><code>init</code></a></li>
+    <li><a href="#idle"><code>idle</code></a></li>
+    <li><a href="#tasks"><code>tasks!</code></a></li>
+    <li><a href="#task-local-data">Task local data</a></li>
+  </ul>
+</nav>
+    </div>
+    
+    
+
+    
+  </div>
+</section>
+
+
+<section class="section">
+  <div class="container has-text-centered">
+    <p><a rel="license" href="http://creativecommons.org/licenses/by/4.0/"><img alt="Creative Commons License" src="https://i.creativecommons.org/l/by/4.0/80x15.png" /></a><br/>Jorge Aparicio</p>
+  </div>
+</section>
+
+
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/styles/tomorrow-night.min.css" />
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/highlight.min.js" integrity="sha256-aYTdUrn6Ow1DDgh5JTc3aDGnnju48y/1c8s1dgkYPQ8=" crossorigin="anonymous"></script>
+
+<script type="text/javascript" src="//cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/languages/armasm.min.js"></script>
+
+<script type="text/javascript" src="//cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/languages/c.min.js"></script>
+
+<script type="text/javascript" src="//cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/languages/diff.min.js"></script>
+
+<script type="text/javascript" src="//cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/languages/llvm.min.js"></script>
+
+<script type="text/javascript" src="//cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/languages/rust.min.js"></script>
+
+<script type="text/javascript" src="//cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/languages/shell.min.js"></script>
+
+<script>hljs.initHighlightingOnLoad();</script>
+
+
+</body>

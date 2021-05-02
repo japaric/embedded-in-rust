@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8" standalone="yes"?>
+<rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom">
+  <channel>
+    <title>safety on Embedded in Rust</title>
+    <link>https://blog.japaric.io/tags/safety/</link>
+    <description>Recent content in safety on Embedded in Rust</description>
+    <generator>Hugo -- gohugo.io</generator>
+    <language>en-us</language>
+    <copyright>&lt;a rel=&#34;license&#34; href=&#34;http://creativecommons.org/licenses/by/4.0/&#34;&gt;&lt;img alt=&#34;Creative Commons License&#34; src=&#34;https://i.creativecommons.org/l/by/4.0/80x15.png&#34; /&gt;&lt;/a&gt;&lt;br/&gt;Jorge Aparicio</copyright>
+    <lastBuildDate>Sat, 17 Feb 2018 18:16:39 +0100</lastBuildDate><atom:link href="https://blog.japaric.io/tags/safety/index.xml" rel="self" type="application/rss+xml" />
+    <item>
+      <title>Zero cost stack overflow protection for ARM Cortex-M devices</title>
+      <link>https://blog.japaric.io/stack-overflow-protection/</link>
+      <pubDate>Sat, 17 Feb 2018 18:16:39 +0100</pubDate>
+      
+      <guid>https://blog.japaric.io/stack-overflow-protection/</guid>
+      <description>One of the core features of Rust is memory safety. Whenever possible the compiler enforces memory safety at compile. One example of this is the borrow checker which prevents data races, iterator invalidation, pointer invalidation and other issues at compile time. Other memory problems like buffer overflows can&amp;rsquo;t be prevented at compile time. In those cases the compiler inserts runtime checks, bounds checks in this case, to enforce memory safety at runtime.</description>
+    </item>
+    
+  </channel>
+</rss>

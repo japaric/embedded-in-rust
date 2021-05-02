@@ -1,0 +1,359 @@
+<!DOCTYPE html>
+<html lang="en-us">
+<head>
+	<meta name="generator" content="Hugo 0.82.0" />
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta content="Rust, embedded, development" name="keywords">
+<meta content="Jorge Aparicio" name="author">
+<meta property="og:title" content="Embedded in Rust">
+<meta property="og:url" content="https://blog.japaric.io/">
+<meta property="og:description" content="A blog about Rust and embedded stuff">
+<meta property="og:type" content="website" />
+<title>Embedded in Rust</title>
+<link rel="stylesheet" href="https://blog.japaric.io//css/style.css">
+<link rel="shortcut icon" href="https://blog.japaric.io//wave.ico">
+<link rel="alternate" type="application/atom+xml" title="Embedded in Rust Posts" href="https://blog.japaric.io//index.xml">
+<link href="//maxcdn.bootstrapcdn.com/font-awesome/4.7.0/css/font-awesome.min.css" rel="stylesheet" integrity="sha384-wvfXpqpZZVQGK6TAh5PVlGOfQNHSoD2xbE+QkPxCAFlNEevoEH3Sl0sibVcOQVnN" crossorigin="anonymous">
+
+<link rel="stylesheet" href="//cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/styles/github.min.css">
+
+</head>
+
+<section class="section">
+  <div class="container">
+    <nav class="nav">
+      <div class="nav-left">
+        <a class="nav-item" href="https://blog.japaric.io/"><h1 class="title is-4">Embedded in Rust</h1></a>
+      </div>
+      <div class="nav-right">
+        <nav class="nav-item level is-mobile">
+          
+          <a class="level-item" href="https://github.com/japaric" target="_blank">
+            <span class="icon">
+              <i class="fa fa-github"></i>
+            </span>
+          </a>
+          
+          <a class="level-item" href="/index.xml" target="_blank">
+            <span class="icon">
+              <i class="fa fa-rss"></i>
+            </span>
+          </a>
+          
+        </nav>
+      </div>
+    </nav>
+  </div>
+</section>
+
+<section class="section">
+  <div class="container">
+    
+    <article>
+      <h1 class="title"><a href="https://blog.japaric.io/embedded-rust-in-2018/">Embedded Rust in 2018</a></h1>
+      <h2 class="subtitle is-5">January 21, 2018</h2>
+      
+      <div class="content">
+        This is my #Rust2018 blog post.
+These are some things I think the Rust team needs to address this year to make Rust a (more) viable alternative to C/C++ in the area of bare metal (i.e. no_std) embedded applications.
+Stability Here&rsquo;s a list of breakage / regressions I encountered (i.e. that I had to work around / fix) during 2017:
+  Changes in target specification files broke compilation of no_std projects that use custom targets.
+        
+        ...<a class="button is-link" href="https://blog.japaric.io/embedded-rust-in-2018/" style="height:28px">
+          Read more
+          <span class="icon is-small">
+            <i class="fa fa-angle-double-right"></i>
+          </span>
+        </a>
+        
+      </div>
+    </article>
+    
+    <article>
+      <h1 class="title"><a href="https://blog.japaric.io/brave-new-io/">Brave new I/O</a></h1>
+      <h2 class="subtitle is-5">January 18, 2018</h2>
+      
+        <div class="tags">
+    
+        <a class="button is-link" href="/tags/i/o">I/O</a>
+    
+        <a class="button is-link" href="/tags/microcontroller">microcontroller</a>
+    
+</div>
+
+      
+      <div class="content">
+        Hey there! It&rsquo;s been a while. I&rsquo;ve been working on some cool stuff for you. Now that&rsquo;s in more or less good shape I can blog about it!
+This blog post introduces our new approach to I/O in embedded contexts.
+Overview: The register model First some background information
+In microcontrollers all external I/O requires interacting with peripherals. Peripherals are additional pieces of electronics that sit in the same chip / package as the core processor.
+        
+        ...<a class="button is-link" href="https://blog.japaric.io/brave-new-io/" style="height:28px">
+          Read more
+          <span class="icon is-small">
+            <i class="fa fa-angle-double-right"></i>
+          </span>
+        </a>
+        
+      </div>
+    </article>
+    
+    <article>
+      <h1 class="title"><a href="https://blog.japaric.io/rtfm-v2/">RTFM v2: simpler, less overhead and more device support</a></h1>
+      <h2 class="subtitle is-5">July 29, 2017</h2>
+      
+        <div class="tags">
+    
+        <a class="button is-link" href="/tags/arm-cortex-m">ARM Cortex-m</a>
+    
+        <a class="button is-link" href="/tags/concurrency">concurrency</a>
+    
+        <a class="button is-link" href="/tags/rtfm">RTFM</a>
+    
+</div>
+
+      
+      <div class="content">
+        Hiya folks! It&rsquo;s been a while. Today I&rsquo;m pleased to present the next version of the Real Time For the Masses framework: cortex-m-rtfm v0.2.0 or just v2, which is how I like to call it.
+Here&rsquo;s the executive summary of the changes:
+  v2 is simpler. v1 used a bunch of tokens &ndash; ceiling tokens, priority tokens, preemption threshold tokens and task tokens &ndash; for memory safety; this made the API rather boilerplatery.
+        
+        ...<a class="button is-link" href="https://blog.japaric.io/rtfm-v2/" style="height:28px">
+          Read more
+          <span class="icon is-small">
+            <i class="fa fa-angle-double-right"></i>
+          </span>
+        </a>
+        
+      </div>
+    </article>
+    
+    <article>
+      <h1 class="title"><a href="https://blog.japaric.io/cpu-monitor/">A CPU usage monitor for the RTFM framework</a></h1>
+      <h2 class="subtitle is-5">June 4, 2017</h2>
+      
+        <div class="tags">
+    
+        <a class="button is-link" href="/tags/arm-cortex-m">ARM Cortex-M</a>
+    
+        <a class="button is-link" href="/tags/performance">performance</a>
+    
+        <a class="button is-link" href="/tags/recipe">recipe</a>
+    
+        <a class="button is-link" href="/tags/rtfm">rtfm</a>
+    
+</div>
+
+      
+      <div class="content">
+        We have used the RTFM framework in the previous posts but put most of the application logic in tasks, and always sent the processor to sleep in the idle function. In this post we&rsquo;ll put the idle function to better use and build a CPU usage monitor there.
+Idle The main logic of the CPU usage monitor will be in the idle function. Let&rsquo;s see how it works:
+// RESOURCES peripherals!
+        
+        ...<a class="button is-link" href="https://blog.japaric.io/cpu-monitor/" style="height:28px">
+          Read more
+          <span class="icon is-small">
+            <i class="fa fa-angle-double-right"></i>
+          </span>
+        </a>
+        
+      </div>
+    </article>
+    
+    <article>
+      <h1 class="title"><a href="https://blog.japaric.io/itm/">The ITM and the quest for faster logging</a></h1>
+      <h2 class="subtitle is-5">May 31, 2017</h2>
+      
+        <div class="tags">
+    
+        <a class="button is-link" href="/tags/arm-cortex-m">ARM Cortex-M</a>
+    
+        <a class="button is-link" href="/tags/analysis">analysis</a>
+    
+</div>
+
+      
+      <div class="content">
+        In this post we&rsquo;ll explore the different alternatives one has to log data from a microcontroller to some host machine. Be it for printf style debugging or for logging sensor data.
+The Blue Pill This time I&rsquo;ll use a different development board: the Blue Pill.
+On the center the Blue Pill development board. On the left side a UART to USB adapter based on the CH340G. On the right side an SWD programmer: a Chinese clone of the ST-LINK.
+        
+        ...<a class="button is-link" href="https://blog.japaric.io/itm/" style="height:28px">
+          Read more
+          <span class="icon is-small">
+            <i class="fa fa-angle-double-right"></i>
+          </span>
+        </a>
+        
+      </div>
+    </article>
+    
+    <article>
+      <h1 class="title"><a href="https://blog.japaric.io/rtfm-overhead/">Overhead analysis of the RTFM framework</a></h1>
+      <h2 class="subtitle is-5">May 23, 2017</h2>
+      
+        <div class="tags">
+    
+        <a class="button is-link" href="/tags/arm-cortex-m">ARM Cortex-M</a>
+    
+        <a class="button is-link" href="/tags/rtfm">rtfm</a>
+    
+        <a class="button is-link" href="/tags/analysis">analysis</a>
+    
+</div>
+
+      
+      <div class="content">
+        In the last post I introduced the RTFM framework, and made several claims about it being highly efficient both in memory usage and runtime overhead. In this post I&rsquo;ll analyze all the RTFM concurrency primitives to back up those claims. To do that I&rsquo;ll first introduce a non-invasive timing method that&rsquo;s accurate to a single clock cycle, which is the time the processor spends to execute one of the simplest instructions.
+        
+        ...<a class="button is-link" href="https://blog.japaric.io/rtfm-overhead/" style="height:28px">
+          Read more
+          <span class="icon is-small">
+            <i class="fa fa-angle-double-right"></i>
+          </span>
+        </a>
+        
+      </div>
+    </article>
+    
+    <article>
+      <h1 class="title"><a href="https://blog.japaric.io/fearless-concurrency/">Fearless concurrency in your microcontroller</a></h1>
+      <h2 class="subtitle is-5">May 9, 2017</h2>
+      
+        <div class="tags">
+    
+        <a class="button is-link" href="/tags/arm-cortex-m">ARM Cortex-M</a>
+    
+        <a class="button is-link" href="/tags/concurrency">concurrency</a>
+    
+        <a class="button is-link" href="/tags/rtfm">rtfm</a>
+    
+</div>
+
+      
+      <div class="content">
+        I want to start by thanking all the people that has sent improvements and comments to all the crates and tools I presented in the last blog post. The Rust community rocks!
+ Last time I showed you how to easily develop Rust programs for pretty much any ARM Cortex-M microcontroller. In this post I&rsquo;ll show you one way of doing memory safe concurrency. It&rsquo;s important to note that the Rust language doesn&rsquo;t impose a single concurrency model.
+        
+        ...<a class="button is-link" href="https://blog.japaric.io/fearless-concurrency/" style="height:28px">
+          Read more
+          <span class="icon is-small">
+            <i class="fa fa-angle-double-right"></i>
+          </span>
+        </a>
+        
+      </div>
+    </article>
+    
+    <article>
+      <h1 class="title"><a href="https://blog.japaric.io/quickstart/">Rust your ARM microcontroller!</a></h1>
+      <h2 class="subtitle is-5">April 28, 2017</h2>
+      
+        <div class="tags">
+    
+        <a class="button is-link" href="/tags/arm-cortex-m">ARM Cortex-M</a>
+    
+        <a class="button is-link" href="/tags/template">template</a>
+    
+        <a class="button is-link" href="/tags/tooling">tooling</a>
+    
+        <a class="button is-link" href="/tags/tutorial">tutorial</a>
+    
+</div>
+
+      
+      <div class="content">
+        IMPORTANT! READ THIS!
+Hello there! This article is outdated and following it will only confuse you. Check out the embedded Rust book and the rest of the embedded WG bookshelf for up to date and maintained documentation on embedded Rust development.
+If you still want to read this post, for historical reasons and what now, scroll down.
+ Want to program your microcontroller in Rust but your microcontroller vendor doesn&rsquo;t provide a Rust HAL / SDK?
+        
+        ...<a class="button is-link" href="https://blog.japaric.io/quickstart/" style="height:28px">
+          Read more
+          <span class="icon is-small">
+            <i class="fa fa-angle-double-right"></i>
+          </span>
+        </a>
+        
+      </div>
+    </article>
+    
+    <article>
+      <h1 class="title"><a href="https://blog.japaric.io/hello-world/">Hello, world!</a></h1>
+      <h2 class="subtitle is-5">April 24, 2017</h2>
+      
+      <div class="content">
+        Hey there! Welcome to my blog, where I&rsquo;ll be writing about Rust and embedded systems-y stuff &ndash; that&rsquo;s it, mainly about programming ARM Cortex-M microcontrollers as that&rsquo;s what Rust best supports today 1. But, I&rsquo;m interested in anything that has a #![no_std] attribute in it 2 so I may cover some other stuff as well.
+That being said, this first post is neither about Rust or embedded stuff as it&rsquo;s mainly for testing my blogging setup; so, why not write about that instead?
+        
+        ...<a class="button is-link" href="https://blog.japaric.io/hello-world/" style="height:28px">
+          Read more
+          <span class="icon is-small">
+            <i class="fa fa-angle-double-right"></i>
+          </span>
+        </a>
+        
+      </div>
+    </article>
+    
+  </div>
+</section>
+<section class="section">
+  <div class="container">
+    <nav class="level is-mobile">
+      <div class="level-left">
+        <div class="level-item">
+          
+          <a class="button" href="/">
+            <span class="icon is-small is-marginless">
+              <i class="fa fa-angle-left"></i>
+            </span>
+            Newer
+          </a>
+          
+        </div>
+      </div>
+      <div class="level-right is-marginless">
+        <div class="level-item">
+          
+          <a class="button is-disabled">
+            Older
+            <span class="icon is-small is-marginless">
+              <i class="fa fa-angle-right"></i>
+            </span>
+          </a>
+          
+        </div>
+      </div>
+    </nav>
+  </div>
+</section>
+
+<section class="section">
+  <div class="container has-text-centered">
+    <p><a rel="license" href="http://creativecommons.org/licenses/by/4.0/"><img alt="Creative Commons License" src="https://i.creativecommons.org/l/by/4.0/80x15.png" /></a><br/>Jorge Aparicio</p>
+  </div>
+</section>
+
+
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/styles/tomorrow-night.min.css" />
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/highlight.min.js" integrity="sha256-aYTdUrn6Ow1DDgh5JTc3aDGnnju48y/1c8s1dgkYPQ8=" crossorigin="anonymous"></script>
+
+<script type="text/javascript" src="//cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/languages/armasm.min.js"></script>
+
+<script type="text/javascript" src="//cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/languages/c.min.js"></script>
+
+<script type="text/javascript" src="//cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/languages/diff.min.js"></script>
+
+<script type="text/javascript" src="//cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/languages/llvm.min.js"></script>
+
+<script type="text/javascript" src="//cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/languages/rust.min.js"></script>
+
+<script type="text/javascript" src="//cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/languages/shell.min.js"></script>
+
+<script>hljs.initHighlightingOnLoad();</script>
+
+
+

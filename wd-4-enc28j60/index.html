@@ -1,0 +1,491 @@
+<!DOCTYPE html>
+<html lang="en-us">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta content="Rust, embedded, development" name="keywords">
+<meta content="Jorge Aparicio" name="author">
+<meta property="og:title" content="Weekly driver 4: ENC28J60, Ethernet for your microcontroller - Embedded in Rust">
+<meta property="og:url" content="https://blog.japaric.io/wd-4-enc28j60/">
+<meta property="og:description" content="A blog about Rust and embedded stuff">
+<meta property="og:type" content="website" />
+<title>Weekly driver 4: ENC28J60, Ethernet for your microcontroller | Embedded in Rust</title>
+<link rel="stylesheet" href="https://blog.japaric.io//css/style.css">
+<link rel="shortcut icon" href="https://blog.japaric.io//wave.ico">
+<link rel="alternate" type="application/atom+xml" title="Embedded in Rust Posts" href="https://blog.japaric.io//index.xml">
+<link href="//maxcdn.bootstrapcdn.com/font-awesome/4.7.0/css/font-awesome.min.css" rel="stylesheet" integrity="sha384-wvfXpqpZZVQGK6TAh5PVlGOfQNHSoD2xbE+QkPxCAFlNEevoEH3Sl0sibVcOQVnN" crossorigin="anonymous">
+
+<link rel="stylesheet" href="//cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/styles/github.min.css">
+
+</head>
+
+<body>
+<section class="section">
+  <div class="container">
+    <nav class="nav">
+      <div class="nav-left">
+        <a class="nav-item" href="https://blog.japaric.io/"><h1 class="title is-4">Embedded in Rust</h1></a>
+      </div>
+      <div class="nav-right">
+        <nav class="nav-item level is-mobile">
+          
+          <a class="level-item" href="https://github.com/japaric" target="_blank">
+            <span class="icon">
+              <i class="fa fa-github"></i>
+            </span>
+          </a>
+          
+          <a class="level-item" href="/index.xml" target="_blank">
+            <span class="icon">
+              <i class="fa fa-rss"></i>
+            </span>
+          </a>
+          
+        </nav>
+      </div>
+    </nav>
+  </div>
+</section>
+
+<section class="section">
+  <div class="container">
+    <h1 class="title">Weekly driver 4: ENC28J60, Ethernet for your microcontroller</h1>
+    <h2 class="subtitle is-5">March 13, 2018 by Jorge Aparicio</h2>
+    
+    <div class="content">
+      <p>It&rsquo;s week number 11 and the weekly driver #4 is out! <a href="/wd-1-2-l3gd20-lsm303dlhc-madgwick/">Last time</a>, I did drivers 1 and 2 so you may be
+wondering where&rsquo;s driver 3? <a href="https://crates.io/crates/adc-mcp3008">Driver #3</a>, the <a href="http://www.microchip.com/wwwproducts/en/MCP3008">MCP3008</a> (8 channel 10-bit ADC with SPI interface),
+was covered by <a href="https://github.com/pcein">@pcein</a> in <a href="http://pramode.in/2018/02/24/an-introduction-to-writing-embedded-hal-based-drivers-in-rust/">their blog</a>. Also, as of now there are at least 14 (!) <a href="https://github.com/rust-lang-nursery/embedded-wg/issues/39#issue-289457410">drivers being
+worked on by the community</a>.</p>
+<p>This week I&rsquo;m releasing a driver for the <a href="http://www.microchip.com/wwwproducts/en/en022889">ENC28J60</a>, an <a href="https://en.wikipedia.org/wiki/Ethernet">Ethernet</a> controller with SPI interface.
+This IC lets you connect your microcontroller, if it has a SPI interface, to a Local Area Network
+or, with more work, to the internet. Apart from the IC you need a RJ45 connector and a few other
+components so I&rsquo;m using <a href="https://www.aliexpress.com/item/-/32341839317.html">this module</a> which has the ENC28J60 and all the required components on a
+single board.</p>
+<!-- raw HTML omitted -->
+<h1 id="enc28j60"><code>enc28j60</code></h1>
+<p>The driver crate, the <a href="https://crates.io/crates/enc28j60"><code>enc28j60</code></a>, that lets you interface this chip is kind of boring &ndash; as all
+drivers should be: boring and with no surprises in them.</p>
+<p>To initialize a driver you pass something that implements the SPI traits from the <a href="https://crates.io/crates/embedded-hal"><code>embedded-hal</code></a>
+crate plus a nCS (Clock Select) pin. You can optionally pass the INT and RESET pins; if you pass the
+INT (interrupt) pin you can make use of the interrupt API; if you pass the RESET pin then
+initialization will use that to reset the ENC28J60 instead of using a software reset. You also need
+to pass something that provides delay functionality; a delay is needed in the initialization because
+silicon bugs are a thing <sup id="fnref:1"><a href="#fn:1" class="footnote-ref" role="doc-noteref">1</a></sup>. Finally, you have to pass the size of the internal RX (reception)
+buffer and the MAC address that the device will use.</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#66d9ef">let</span> <span style="color:#66d9ef">mut</span> enc28j60 <span style="color:#f92672">=</span> Enc28j60::new(spi, ncs, int, reset, <span style="color:#f92672">&amp;</span><span style="color:#66d9ef">mut</span> delay, <span style="color:#ae81ff">7</span> <span style="color:#f92672">*</span> KB, MAC)<span style="color:#f92672">?</span>;
+</code></pre></div><p>The SPI interface usually runs at a lower rate (e.g. 1 Mbps) than the Ethernet interface (10 Mbps)
+so it&rsquo;s not possible to move the incoming data into the microcontroller memory as it arrives. That&rsquo;s
+why the ENC28J60 has 8 KB of RAM; in that memory it stores (buffers) all the incoming data until the
+microcontroller has a chance to read it out. This memory is also used to store the data to transmit
+so it&rsquo;s necessary to split the 8 KB in two regions: one for transmission (TX) and one for reception
+(RX). That&rsquo;s what the 7 KB in the code snippet is all about: it&rsquo;s the size of the RX part.</p>
+<p>To send out data you use the <code>transmit</code> method. This method copies (in a blocking fashion) the
+specified <code>bytes</code> into the ENC28J60 memory and starts a transmission.</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust">enc28j60.transmit(bytes)<span style="color:#f92672">?</span>;
+</code></pre></div><p><code>transmit</code> won&rsquo;t block until the transmission is finished though. For that you can use the <code>flush</code>
+method.</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust">enc28j60.flush()<span style="color:#f92672">?</span>;
+</code></pre></div><p>But note that the current implementation of <code>transmit</code> will <code>flush</code> any in progress transmission.
+This may be lifted in the future to let you queue several frames to send in the ENC28J60 memory.</p>
+<p>The <code>bytes</code> you transmit <em>should</em> be a valid Ethernet frame otherwise the recipient is likely to
+discard your data. In the current API <code>bytes</code> has type <code>&amp;[u8]</code>, which means that it&rsquo;s up to the
+caller to ensure that the data is a valid Ethernet frame. The driver doesn&rsquo;t demand any more
+elaborated (new)type to let you use it with any network stack you want.</p>
+<p>As per the spec Ethernet frames <em>must</em> include a frame check sequence (a CRC) at their end. The
+ENC28J60 takes care of computing that and appending it to the frame so the microcontroller doesn&rsquo;t
+have to deal with it. The ENC28J60 will also take care of padding <code>bytes</code> so the frame meets the
+minimum length of 64 bytes.</p>
+<p>To check if there&rsquo;s new data available you have the <code>pending_packets</code> method which returns the
+number of packets that are stored in the ENC28J60 memory and that still need to be processed (read
+out).</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#66d9ef">let</span> pending_packets <span style="color:#f92672">=</span> enc28j60.pending_packets()<span style="color:#f92672">?</span>;
+</code></pre></div><p>Once you have confirmed that there are packets that still need to be processed you can read them out
+using the <code>receive</code> method.</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#66d9ef">let</span> buf <span style="color:#f92672">=</span> [<span style="color:#ae81ff">0</span>; <span style="color:#ae81ff">256</span>];
+<span style="color:#66d9ef">while</span> enc28j60.pending_packets()<span style="color:#f92672">?</span> <span style="color:#f92672">&gt;</span> <span style="color:#ae81ff">0</span> {
+    <span style="color:#66d9ef">let</span> n <span style="color:#f92672">=</span> enc28j60.receive(<span style="color:#f92672">&amp;</span><span style="color:#66d9ef">mut</span> buf)<span style="color:#f92672">?</span>;
+    <span style="color:#66d9ef">let</span> frame <span style="color:#f92672">=</span> <span style="color:#f92672">&amp;</span>buffer[..n <span style="color:#66d9ef">as</span> <span style="color:#66d9ef">usize</span>];
+    <span style="color:#75715e">// ..
+</span><span style="color:#75715e"></span>}
+</code></pre></div><p><code>receive</code> pretty much mimics the API of <a href="https://doc.rust-lang.org/std/io/trait.Read.html#tymethod.read"><code>std::io::Read::read</code></a> but returns the number of bytes read
+as a <code>u16</code> value because that&rsquo;s the smallest integer type that makes sense in this case (remember:
+only 8 KB of memory).</p>
+<p>Note that the ENC28J60 contains a receiver filter and that, by default, will filter out (ignore)
+packets with invalid CRC, unicast packets that are <em>not</em> addressed to the MAC of the ENC28J60 and
+packets that are <em>not</em> broadcasts.</p>
+<p>That&rsquo;s the description of the boring driver now let&rsquo;s look at some demos!</p>
+<h1 id="demos">Demos</h1>
+<p>(All these demos were tested on the <a href="http://wiki.stm32duino.com/index.php?title=Blue_Pill">Blue Pill</a> development board.)</p>
+<h2 id="ping"><code>ping</code></h2>
+<p>The first demo is a &ldquo;pong server&rdquo; (code <a href="https://github.com/japaric/stm32f103xx-hal/blob/ed402cfaf09c5d0723fb2e751173a6aab3bca8ff/examples/enc28j60.rs">here</a>). Basically, it&rsquo;s a program that responds to
+the <code>ping</code> command.</p>
+<p>If you ping the hardcoded IP address of the microcontroller you&rsquo;ll see this:</p>
+<pre><code class="language-console" data-lang="console">$ # remove the IP and MAC address of the microcontroller from the ARP cache
+$ _ arp -d 192.168.1.33
+
+$ ping -c3 192.168.1.33
+PING 192.168.1.33 (192.168.1.33) 56(84) bytes of data.
+64 bytes from 192.168.1.33: icmp_seq=1 ttl=64 time=28.4 ms
+64 bytes from 192.168.1.33: icmp_seq=2 ttl=64 time=15.6 ms
+64 bytes from 192.168.1.33: icmp_seq=3 ttl=64 time=15.6 ms
+
+--- 192.168.1.33 ping statistics ---
+3 packets transmitted, 3 received, 0% packet loss, time 2003ms
+rtt min/avg/max/mdev = 15.674/19.950/28.497/6.043 ms
+</code></pre><p>For comparison here&rsquo;s the output of <code>ping</code>ing my router:</p>
+<pre><code class="language-console" data-lang="console">$ ping -c3 192.168.1.1
+PING 192.168.1.1 (192.168.1.1) 56(84) bytes of data.
+64 bytes from 192.168.1.1: icmp_seq=1 ttl=64 time=2.24 ms
+64 bytes from 192.168.1.1: icmp_seq=2 ttl=64 time=2.22 ms
+64 bytes from 192.168.1.1: icmp_seq=3 ttl=64 time=2.18 ms
+
+--- 192.168.1.1 ping statistics ---
+3 packets transmitted, 3 received, 0% packet loss, time 2002ms
+rtt min/avg/max/mdev = 2.188/2.219/2.240/0.022 ms
+</code></pre><p>The Round Trip Time (RTT) is 86% smaller in the case of the router.</p>
+<p>The microcontroller will also log a bunch of stuff to the <a href="/itm">ITM</a>. Here are the logs that were
+generated during the execution of the first <code>ping</code> command:</p>
+<pre><code class="language-console" data-lang="console">$ itmdump -f /dev/ttyUSB0
+Rx(60)
+* ether::Frame { destination: mac::Addr([0xff, 0xff, 0xff, 0xff, 0xff, 0xff]), source: mac::Addr([0x9c, 0xb6, 0xd0, 0xed, 0xad, 0xff]), type: Arp }
+** arp::Packet { oper: Request, sha: mac::Addr([0x9c, 0xb6, 0xd0, 0xed, 0xad, 0xff]), spa: ipv4::Addr([192, 168, 1, 11]), tha: mac::Addr([0x00, 0x00, 0x00, 0x00, 0x00, 0x00]), tpa: ipv4::Addr([192, 168, 1, 33]) }
+
+** arp::Packet { oper: Reply, sha: mac::Addr([0x20, 0x18, 0x03, 0x01, 0x00, 0x00]), spa: ipv4::Addr([192, 168, 1, 33]), tha: mac::Addr([0x9c, 0xb6, 0xd0, 0xed, 0xad, 0xff]), tpa: ipv4::Addr([192, 168, 1, 11]) }
+* ether::Frame { destination: mac::Addr([0x9c, 0xb6, 0xd0, 0xed, 0xad, 0xff]), source: mac::Addr([0x20, 0x18, 0x03, 0x01, 0x00, 0x00]), type: Arp }
+Tx(42)
+
+Rx(98)
+* ether::Frame { destination: mac::Addr([0x20, 0x18, 0x03, 0x01, 0x00, 0x00]), source: mac::Addr([0x9c, 0xb6, 0xd0, 0xed, 0xad, 0xff]), type: Ipv4 }
+** ipv4::Packet { version: 4, ihl: 5, dscp: 0, ecn: 0, total_length: 84, identification: 4374, df: true, mf: false, fragment_offset: 0, ttl: 64, protocol: Icmp, checksum: 0xa616, source: ipv4::Addr([192, 168, 1, 11]), destination: ipv4::Addr([192, 168, 1, 33]) }
+*** icmp::Packet { type: EchoRequest, code: 0, checksum: 0x5638, id: 22953, seq_no: 1 }
+
+*** icmp::Packet { type: EchoReply, code: 0, checksum: 0x5e38, id: 22953, seq_no: 1 }
+** ipv4::Packet { version: 4, ihl: 5, dscp: 0, ecn: 0, total_length: 84, identification: 4374, df: true, mf: false, fragment_offset: 0, ttl: 64, protocol: Icmp, checksum: 0xa616, source: ipv4::Addr([192, 168, 1, 33]), destination: ipv4::Addr([192, 168, 1, 11]) }
+* ether::Frame { destination: mac::Addr([0x9c, 0xb6, 0xd0, 0xed, 0xad, 0xff]), source: mac::Addr([0x20, 0x18, 0x03, 0x01, 0x00, 0x00]), type: Ipv4 }
+Tx(98)
+
+Rx(98)
+* ether::Frame { destination: mac::Addr([0x20, 0x18, 0x03, 0x01, 0x00, 0x00]), source: mac::Addr([0x9c, 0xb6, 0xd0, 0xed, 0xad, 0xff]), type: Ipv4 }
+** ipv4::Packet { version: 4, ihl: 5, dscp: 0, ecn: 0, total_length: 84, identification: 5023, df: true, mf: false, fragment_offset: 0, ttl: 64, protocol: Icmp, checksum: 0xa38d, source: ipv4::Addr([192, 168, 1, 11]), destination: ipv4::Addr([192, 168, 1, 33]) }
+*** icmp::Packet { type: EchoRequest, code: 0, checksum: 0x1531, id: 22953, seq_no: 2 }
+
+*** icmp::Packet { type: EchoReply, code: 0, checksum: 0x1d31, id: 22953, seq_no: 2 }
+** ipv4::Packet { version: 4, ihl: 5, dscp: 0, ecn: 0, total_length: 84, identification: 5023, df: true, mf: false, fragment_offset: 0, ttl: 64, protocol: Icmp, checksum: 0xa38d, source: ipv4::Addr([192, 168, 1, 33]), destination: ipv4::Addr([192, 168, 1, 11]) }
+* ether::Frame { destination: mac::Addr([0x9c, 0xb6, 0xd0, 0xed, 0xad, 0xff]), source: mac::Addr([0x20, 0x18, 0x03, 0x01, 0x00, 0x00]), type: Ipv4 }
+Tx(98)
+
+Rx(98)
+* ether::Frame { destination: mac::Addr([0x20, 0x18, 0x03, 0x01, 0x00, 0x00]), source: mac::Addr([0x9c, 0xb6, 0xd0, 0xed, 0xad, 0xff]), type: Ipv4 }
+** ipv4::Packet { version: 4, ihl: 5, dscp: 0, ecn: 0, total_length: 84, identification: 5092, df: true, mf: false, fragment_offset: 0, ttl: 64, protocol: Icmp, checksum: 0xa348, source: ipv4::Addr([192, 168, 1, 11]), destination: ipv4::Addr([192, 168, 1, 33]) }
+*** icmp::Packet { type: EchoRequest, code: 0, checksum: 0x2c29, id: 22953, seq_no: 3 }
+
+*** icmp::Packet { type: EchoReply, code: 0, checksum: 0x3429, id: 22953, seq_no: 3 }
+** ipv4::Packet { version: 4, ihl: 5, dscp: 0, ecn: 0, total_length: 84, identification: 5092, df: true, mf: false, fragment_offset: 0, ttl: 64, protocol: Icmp, checksum: 0xa348, source: ipv4::Addr([192, 168, 1, 33]), destination: ipv4::Addr([192, 168, 1, 11]) }
+* ether::Frame { destination: mac::Addr([0x9c, 0xb6, 0xd0, 0xed, 0xad, 0xff]), source: mac::Addr([0x20, 0x18, 0x03, 0x01, 0x00, 0x00]), type: Ipv4 }
+Tx(98)
+</code></pre><p>There are four exchanges in these logs: 1 <a href="https://en.wikipedia.org/wiki/Address_Resolution_Protocol">ARP</a> exchange and 3 <a href="https://en.wikipedia.org/wiki/Internet_Control_Message_Protocol">ICMP</a> exchanges. Let&rsquo;s look at
+them in more detail.</p>
+<h3 id="arp">ARP</h3>
+<p>The first exchange is this ARP exchange.</p>
+<pre><code class="language-console" data-lang="console">Rx(60)
+* ether::Frame { destination: mac::Addr([0xff, 0xff, 0xff, 0xff, 0xff, 0xff]), source: mac::Addr([0x9c, 0xb6, 0xd0, 0xed, 0xad, 0xff]), type: Arp }
+** arp::Packet { oper: Request, sha: mac::Addr([0x9c, 0xb6, 0xd0, 0xed, 0xad, 0xff]), spa: ipv4::Addr([192, 168, 1, 11]), tha: mac::Addr([0x00, 0x00, 0x00, 0x00, 0x00, 0x00]), tpa: ipv4::Addr([192, 168, 1, 33]) }
+
+** arp::Packet { oper: Reply, sha: mac::Addr([0x20, 0x18, 0x03, 0x01, 0x00, 0x00]), spa: ipv4::Addr([192, 168, 1, 33]), tha: mac::Addr([0x9c, 0xb6, 0xd0, 0xed, 0xad, 0xff]), tpa: ipv4::Addr([192, 168, 1, 11]) }
+* ether::Frame { destination: mac::Addr([0x9c, 0xb6, 0xd0, 0xed, 0xad, 0xff]), source: mac::Addr([0x20, 0x18, 0x03, 0x01, 0x00, 0x00]), type: Arp }
+Tx(42)
+</code></pre><p>In these logs <code>Rx($N)</code> indicates that <code>$N</code> bytes were received &ndash; the 4 bytes of the CRC are <em>not</em>
+included in this number. The lines below the <code>Rx($N)</code> line correspond to the headers found in the
+received data. As we are dealing with Ethernet frames the first header will always be an Ethernet
+frame. In this case, the payload of the Ethernet frame is an ARP packet.</p>
+<p>The <code>Tx($N)</code> in the logs indicate that the <code>$N</code> bytes were sent to the ENC28J60 for transmission &ndash;
+this number doesn&rsquo;t include the CRC or the zero padding that the ENC28J60 appends to the frame. The
+lines above the <code>Tx($N)</code> line indicate the headers included in the transmitted data.</p>
+<p>So, what&rsquo;s this ARP thing?</p>
+<p>My laptop wants to <code>ping</code> the microcontroller and knows its IP address: 192.168.1.33 (that&rsquo;s the
+first argument of the <code>ping</code> command) but it doesn&rsquo;t know its MAC address, which is required to send
+an Ethernet frame.</p>
+<p>Before actually <code>ping</code>ing the microcontroller the laptop will first <em>broadcast</em> (MAC address =
+ff:ff:ff:ff:ff:ff) an ARP request. The request basically asks everyone on the LAN: &ldquo;what&rsquo;s the MAC
+address (THA: Target Hardware Address) of the machine with IP address (TPA: Target Protocol Address)
+192.168.1.33?&rdquo;</p>
+<p>When the microcontroller sees its IP in this request it will answer with another ARP packet
+indicating that its MAC address (SHA: Sender Hardware Address) is 20:18:03:01:00:00 and that its IP
+address (SPA: Sender Protocol Address) is 192.168.1.33.</p>
+<p>From this exchange the microcontroller also learns the MAC address and IP address of my laptop: this
+information is in the SHA and SPA fields of the received ARP packet.</p>
+<p>So, the Address Resolution Protocol (ARP) is used to find out how Protocol Addresses, like IPv4
+addresses, map to Hardware Addresses, like MAC addresses &ndash; at least within a LAN and when using
+IPv4 as the data link layer.</p>
+<h3 id="icmp">ICMP</h3>
+<p>What the <code>ping</code> command does under the hood is send ICMP packets of the EchoRequest type to the
+specified IP address. Machines that receive this kind of ICMP packet <em>must</em> respond with ICMP
+packets of the EchoReply type. The <code>ping</code> program processes these responses and shows some
+statistics about the exchange like the Round Trip Time and the hop distance between the nodes (cf.
+ttl).</p>
+<p>Back to the exchange, once my laptop learned the MAC address of the microcontroller it started
+sending ICMP packets. The first ICMP exchange is shown below:</p>
+<pre><code class="language-console" data-lang="console">Rx(98)
+* ether::Frame { destination: mac::Addr([0x20, 0x18, 0x03, 0x01, 0x00, 0x00]), source: mac::Addr([0x9c, 0xb6, 0xd0, 0xed, 0xad, 0xff]), type: Ipv4 }
+** ipv4::Packet { version: 4, ihl: 5, dscp: 0, ecn: 0, total_length: 84, identification: 4374, df: true, mf: false, fragment_offset: 0, ttl: 64, protocol: Icmp, checksum: 0xa616, source: ipv4::Addr([192, 168, 1, 11]), destination: ipv4::Addr([192, 168, 1, 33]) }
+*** icmp::Packet { type: EchoRequest, code: 0, checksum: 0x5638, id: 22953, seq_no: 1 }
+
+*** icmp::Packet { type: EchoReply, code: 0, checksum: 0x5e38, id: 22953, seq_no: 1 }
+** ipv4::Packet { version: 4, ihl: 5, dscp: 0, ecn: 0, total_length: 84, identification: 4374, df: true, mf: false, fragment_offset: 0, ttl: 64, protocol: Icmp, checksum: 0xa616, source: ipv4::Addr([192, 168, 1, 33]), destination: ipv4::Addr([192, 168, 1, 11]) }
+* ether::Frame { destination: mac::Addr([0x9c, 0xb6, 0xd0, 0xed, 0xad, 0xff]), source: mac::Addr([0x20, 0x18, 0x03, 0x01, 0x00, 0x00]), type: Ipv4 }
+Tx(98)
+</code></pre><p>The first thing to note is that this time the destination MAC address specified in the received
+Ethernet frame is the MAC address of the microcontroller, and not the broadcast address. The payload
+of the Ethernet frame this time is an IPv4 packet and the payload of that packet is an ICMP packet.</p>
+<p>As expected the ICMP packet is of the EchoRequest type. Its <code>id</code> (identifier) field indicates the
+PID of the <code>ping</code> command, and the <code>seq_no</code> (sequence number) field tracks the number of packets
+send by the <code>ping</code> command. If you look at the full log you&rsquo;ll see that <code>id</code> remains constant across
+all the ICMP exchanges whereas <code>seq_no</code> monotonically increases.</p>
+<p>The microcontroller sends back a EchoReply packet in response to this EchoRequest packet. Most of
+the information in the headers, like the <code>id</code> and <code>seq_no</code> fields, as well as the payload of the
+request are preserved in the reply.</p>
+<h3 id="benchmark">Benchmark</h3>
+<p>The pong server I showed works fine but it&rsquo;s wasteful because it busy waits for new packets so I
+partially <a href="https://github.com/japaric/stm32f103xx-hal/blob/ed402cfaf09c5d0723fb2e751173a6aab3bca8ff/examples/enc28j60-reactive.rs">rewrote</a> it to be reactive: now it sleeps most of the time and only wakes up to
+process newly received packets. It does this using the INT (interrupt) pin as a source of
+interrupts: the ENC28J60 notifies the microcontroller about new packets by driving the INT pin low
+and this wakes up the microcontroller.</p>
+<p>To this version I also added a CPU monitor with the goal of being able to benchmark the performance
+of the pong server. Then I benchmarked the final version by spawning several parallel instances of
+the <code>ping</code> command. The results are shown below:</p>
+<table>
+<thead>
+<tr>
+<th><code>ping</code>s</th>
+<th>CPU usage during one second (worst of 10 samples)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td>0.6591%</td>
+</tr>
+<tr>
+<td>2</td>
+<td>0.8111%</td>
+</tr>
+<tr>
+<td>4</td>
+<td>1.8581%</td>
+</tr>
+<tr>
+<td>8</td>
+<td>3.2091%</td>
+</tr>
+<tr>
+<td>16</td>
+<td>6.3993%</td>
+</tr>
+<tr>
+<td>32</td>
+<td>12.8010%</td>
+</tr>
+</tbody>
+</table>
+<p>I should note that the CPU was operating at 8 MHz, that logs were disabled during the collection of
+these statistics and that the driver only exposes a blocking API <sup id="fnref:2"><a href="#fn:2" class="footnote-ref" role="doc-noteref">2</a></sup> at the moment so CPU usage
+could actually be reduced in the future.</p>
+<h2 id="udp">UDP</h2>
+<p>The second demo is a UDP echo server (the code is the <a href="https://github.com/japaric/stm32f103xx-hal/blob/ed402cfaf09c5d0723fb2e751173a6aab3bca8ff/examples/enc28j60.rs">same</a> as the first demo&rsquo;s). This
+program will send back <em>all</em> the received UDP datagrams, regardless of what their destination port
+is.</p>
+<p>You can test this demo using netcat:</p>
+<pre><code class="language-console" data-lang="console">$ nc -u 192.168.1.33 1337
+hello
+hello
+Rustaceans
+Rustaceans
+</code></pre><p>The server will echo back everything you send to it.</p>
+<p>Here are the logs captured during that UDP exchange:</p>
+<pre><code class="language-console" data-lang="console">$ itmdump -f /dev/ttyUSB0
+Rx(60)
+* ether::Frame {destination: mac::Addr([0x20, 0x18, 0x03, 0x01, 0x00, 0x00]), source: mac::Addr([0x9c, 0xb6, 0xd0, 0xed, 0xad, 0xff]), type: Ipv4 }
+** ipv4::Packet { version: 4, ihl: 5, dscp: 0, ecn: 0, total_length: 34, identification: 3907, df: true, mf: false, fragment_offset: 0, ttl: 64, protocol: Udp, checksum: 0xa80b, source: ipv4::Addr([192, 168, 1, 11]), destination: ipv4::Addr([192, 168, 1, 33]) }
+*** udp::Packet { source: 58248, destination: 1337, length: 14, checksum: 20407 }
+
+*** udp::Packet { source: 1337, destination: 58248, length: 14, checksum: 0 }
+** ipv4::Packet { version: 4, ihl: 5, dscp: 0, ecn: 0, total_length: 34, identification: 3907, df: true, mf: false, fragment_offset: 0, ttl: 64, protocol: Udp, checksum: 0xa80b, source: ipv4::Addr([192, 168, 1, 33]), destination: ipv4::Addr([192, 168, 1, 11]) }
+* ether::Frame { destination: mac::Addr([0x9c, 0xb6, 0xd0, 0xed, 0xad, 0xff]), source: mac::Addr([0x20, 0x18, 0x03, 0x01, 0x0, 0x00]), type: Ipv4 }
+Tx(48)
+
+Rx(60)
+* ether::Frame { destination: mac::Addr([0x20, 0x18, 0x03, 0x01, 0x00, 0x00]), source: mac::Addr([0x9c, 0xb6, 0xd0, 0xed, 0xad, 0xff]), type: Ipv4 }
+** ipv4::Packet { version: 4, ihl: 5, dscp: 0, ecn: 0, total_length: 39, identification: 4839, df: true, mf: false, fragment_offset: 0, ttl: 64, protocol: Udp, checksum: 0xa462, source: ipv4::Addr([192, 168, 1, 11]), destination: ipv4::Addr([192, 168, 1, 33]) }
+*** udp::Packet { source: 58248, destination: 1337, length: 19, checksum: 36455 }
+
+*** udp::Packet { source: 1337, destination: 58248, length: 19, checksum: 0 }
+** ipv4::Packet { version: 4, ihl: 5, dscp: 0, ecn: 0, total_length: 39, identification: 4839, df: true, mf: false, fragment_offset: 0, ttl: 64, protocol: Udp, checksum: 0xa462, source: ipv4::Addr([192, 168, 1, 33]), destination: ipv4::Addr([192, 168, 1, 11]) }
+* ether::Frame { destination: mac::Addr([0x9c, 0xb6, 0xd0, 0xed, 0xad, 0xff]), source: mac::Addr([0x20, 0x18, 0x03, 0x01, 0x00, 0x00]), type: Ipv4 }
+Tx(53)
+</code></pre><p>This time we have UDP datagrams, instead of ICMP packets, inside the IPv4 packets. I should note
+that the echo server doesn&rsquo;t bother with updating the checksum of the UDP datagrams and just zeroes
+it <sup id="fnref:3"><a href="#fn:3" class="footnote-ref" role="doc-noteref">3</a></sup>; that&rsquo;s why you see that all the responses have their UDP checksum set to zero.</p>
+<p>I think this is a good time to show the binary size of the demo program:</p>
+<pre><code class="language-console" data-lang="console">$ arm-none-eabi-size enc28j60
+   text    data     bss     dec     hex filename
+   7158       0       4    7162    1bfa enc28j60
+</code></pre><p>This size is with the logging functionality removed.</p>
+<h2 id="coap">CoAP</h2>
+<p>The third and final demo (code <a href="https://github.com/japaric/stm32f103xx-hal/blob/ed402cfaf09c5d0723fb2e751173a6aab3bca8ff/examples/enc28j60-coap.rs">here</a>) is a simple <a href="https://en.wikipedia.org/wiki/Constrained_Application_Protocol">CoAP</a> server.</p>
+<p>If you are not familiar with the Constrained Application Protocol (CoAP) it&rsquo;s, more or less, a
+simplified version of HTTP that runs on top of UDP (HTTP uses TCP as its transport layer). In CoAP
+you also have GET, PUT, POST and DELETE methods that you can use to implement RESTful APIs.</p>
+<p>The difference between HTTP and CoAP is that CoAP has been designed to run on resource constrained
+nodes; <a href="https://tools.ietf.org/html/rfc7252">its RFC</a> explicitly mentions &ldquo;8-bit microcontrollers with small amount of ROM and RAM&rdquo;
+as an example of the environments it targets.</p>
+<p>In this demo the CoAP server exposes a single resource: an LED at path <code>/led</code>. The state of the LED
+can be queried / modified using GET / PUT requests, respectively.</p>
+<p>The <a href="https://github.com/japaric/jnet"><code>jnet</code></a> crate provides a simple CoAP client that you can use to interact with the CoAP server.</p>
+<p>This is how a GET request looks like:</p>
+<pre><code class="language-console" data-lang="console">$ coap GET coap://192.168.1.33/led
+-&gt; coap::Message { version: 1, type: Confirmable, code: Method::Get, message_id: 0, options: {UriPath: &quot;led&quot;} }
+&lt;- coap::Message { version: 1, type: Acknowledgement, code: Response::Content, message_id: 0, payload: &quot;on&quot; }
+on
+</code></pre><p>And this is how a PUT request looks like:</p>
+<pre><code class="language-console" data-lang="console">$ coap PUT coap://192.168.1.33/led off
+-&gt; coap::Message { version: 1, type: Confirmable, code: Method::Put, message_id: 0, options: {UriPath: &quot;led&quot;}, payload: &quot;off&quot; }
+&lt;- coap::Message { version: 1, type: Acknowledgement, code: Response::Changed, message_id: 0 }
+</code></pre><p>Here&rsquo;s a video where I interact with the CoAP server to control the LED:</p>
+<!-- raw HTML omitted -->
+<p>And here are the logs collected during the first two CoAP requests:</p>
+<pre><code class="language-console" data-lang="console">$ itmdump -f /dev/ttyUSB0
+Rx(60)
+* ether::Frame { destination: mac::Addr([0x20, 0x18, 0x03, 0x01, 0x00, 0x00]), source: mac::Addr([0x9c, 0xb6, 0xd0, 0xed, 0xad, 0xff]), type: Ipv4 }
+** ipv4::Packet { version: 4, ihl: 5, dscp: 0, ecn: 0, total_length: 37, identification: 20643, df: true, mf: false, fragment_offset: 0, ttl: 64, protocol: Udp, checksum: 0x66a8, source: ipv4::Addr([192, 168, 1, 11]), destination: ipv4::Addr([192, 168, 1, 33]) }
+*** udp::Packet { source: 11983, destination: 5683, length: 17, checksum: 57209 }
+**** coap::Message { version: 1, type: Confirmable, code: Method::Get, message_id: 0, options: {UriPath: &quot;led&quot;} }
+
+**** coap::Message { version: 1, type: Acknowledgement, code: Response::Content, message_id: 0, payload: &quot;off&quot; }
+*** udp::Packet { source: 5683, destination: 11983, length: 16, checksum: 0 }
+** ipv4::Packet { version: 4, ihl: 5, dscp: 0, ecn: 0, total_length: 36, identification: 20643, df: true, mf: false, fragment_offset: 0, ttl: 64, protocol: Udp, checksum: 0x66a9, source: ipv4::Addr([192, 168, 1, 33]), destination: ipv4::Addr([192, 168, 1, 11]) }
+* ether::Frame { destination: mac::Addr([0x9c, 0xb6, 0xd0, 0xed, 0xad, 0xff]), source: mac::Addr([0x20, 0x18, 0x03, 0x01, 0x00, 0x00]), type: Ipv4 }
+Tx(50)
+
+Rx(60)
+* ether::Frame { destination: mac::Addr([0x20, 0x18, 0x03, 0x01, 0x00, 0x00]), source: mac::Addr([0x9c, 0xb6, 0xd0, 0xed, 0xad, 0xff]), type: Ipv4 }
+** ipv4::Packet { version: 4, ihl: 5, dscp: 0, ecn: 0, total_length: 39, identification: 22193, df: true, mf: false, fragment_offset: 0, ttl: 64, protocol: Udp, checksum: 0x6098, source: ipv4::Addr([192, 168, 1, 11]), destination: ipv4::Addr([192, 168, 1, 33]) }
+*** udp::Packet { source: 53402, destination: 5683, length: 19, checksum: 53048 }
+**** coap::Message { version: 1, type: Confirmable, code: Method::Put, message_id: 0, options: {UriPath: &quot;led&quot;}, payload: &quot;on&quot; }
+
+**** coap::Message { version: 1, type: Acknowledgement, code: Response::Changed, message_id: 0 }
+*** udp::Packet { source: 5683, destination: 53402, length: 13, checksum: 0 }
+** ipv4::Packet { version: 4, ihl: 5, dscp: 0, ecn: 0, total_length: 33, identification: 22193, df: true, mf: false, fragment_offset: 0, ttl: 64, protocol: Udp, checksum: 0x609e, source: ipv4::Addr([192, 168, 1, 33]), destination: ipv4::Addr([192, 168, 1, 11]) }
+* ether::Frame { destination: mac::Addr([0x9c, 0xb6, 0xd0, 0xed, 0xad, 0xff]), source: mac::Addr([0x20, 0x18, 0x03, 0x01, 0x00, 0x00]), type: Ipv4 }
+Tx(47)
+</code></pre><p>This is binary size of the CoAP demo with logging functionality disabled:</p>
+<pre><code class="language-console" data-lang="console">$ arm-none-eabi-size enc28j60-coap
+   text    data     bss     dec     hex filename
+   9186       0       4    9190    23e6 enc28j60-coap
+</code></pre><p>I swear that at some point the binary size of the CoAP demo was about the size of the UDP echo server.
+I, somehow, seem to have made some change that regressed the binary size by around 2 KB <em>sigh</em>. This
+is why I should commit more often.</p>
+<h1 id="conclusion">Conclusion</h1>
+<p>There you go: Ethernet functionality for all devices that have a SPI interface via the ENC28J60. The
+driver have been kept as simple as possible to let you use it with any network stack. I&rsquo;ve been
+doing my own network experiments in the <a href="https://github.com/japaric/jnet"><code>jnet</code></a> crate but you should definitively check out the
+<a href="https://crates.io/crates/smoltcp"><code>smoltcp</code></a> crate (I haven&rsquo;t tested it myself) which is a mature network stack with actual socket
+abstractions &ndash; it would be great to have an example of <code>enc28j60</code> + <code>smoltcp</code> in the
+<a href="https://github.com/japaric/stm32f103xx-hal"><code>stm32f103xx-hal</code></a> crate!</p>
+<hr>
+<p><strong>Thank you patrons! ❤️</strong></p>
+<p>I want to wholeheartedly thank:</p>
+<!-- raw HTML omitted -->
+<!-- raw HTML omitted -->
+<!-- raw HTML omitted -->
+<p><a href="https://github.com/Razican">Iban Eguia</a>,
+<a href="https://github.com/aturon">Aaron Turon</a>,
+<a href="https://github.com/archaelus">Geoff Cant</a>,
+<a href="http://www.harrisonchin.com/">Harrison Chin</a>,
+<a href="https://github.com/brandonedens">Brandon Edens</a>,
+<a href="https://github.com/whitequark">whitequark</a>,
+<a href="https://jamesmunns.com/">James Munns</a>,
+<a href="https://github.com/flundstrom2">Fredrik Lundström</a>,
+<a href="https://github.com/kjetilkjeka">Kjetil Kjeka</a>,
+Kor Nielsen,
+<a href="https://myrrlyn.net/">Alexander Payne</a>,
+<a href="https://metafluff.com/">Dietrich Ayala</a>,
+<a href="http://kenkeiter.com/">Kenneth Keiter</a>,
+<a href="https://github.com/HadrienG2">Hadrien Grasland</a>,
+<a href="https://github.com/vitiral">vitiral</a>
+and 54 more people for supporting my work on Patreon.</p>
+<!-- raw HTML omitted -->
+<hr>
+<p>Let&rsquo;s discuss on <a href="https://www.reddit.com/r/rust/comments/84183w/weekly_driver_4_enc28j60_ethernet_for_your/">reddit</a>.</p>
+<section class="footnotes" role="doc-endnotes">
+<hr>
+<ol>
+<li id="fn:1" role="doc-endnote">
+<p>Vendors document silicon bugs in a document called Silicon Errata. <a href="http://ww1.microchip.com/downloads/en/DeviceDoc/80349b.pdf">Here</a> is the Silicon
+Errata for the ENC28J60; I had to work around 5 (!) silicon bugs in the driver to make it work. <a href="#fnref:1" class="footnote-backref" role="doc-backlink">&#x21a9;&#xfe0e;</a></p>
+</li>
+<li id="fn:2" role="doc-endnote">
+<p>Methods like <code>transmit</code> and <code>receive</code> could be made asynchronous / non-blocking with the help
+of the DMA but we don&rsquo;t have traits for DMA based I/O in <code>embedded-hal</code> at the moment. <a href="#fnref:2" class="footnote-backref" role="doc-backlink">&#x21a9;&#xfe0e;</a></p>
+</li>
+<li id="fn:3" role="doc-endnote">
+<p>This is allowed by the spec when using IPv4 as the data link layer. <a href="#fnref:3" class="footnote-backref" role="doc-backlink">&#x21a9;&#xfe0e;</a></p>
+</li>
+</ol>
+</section>
+
+    </div>
+
+    
+    
+    <div class="article-toc" >
+        <h3>Contents</h3>
+        <nav id="TableOfContents">
+  <ul>
+    <li><a href="#ping"><code>ping</code></a>
+      <ul>
+        <li><a href="#arp">ARP</a></li>
+        <li><a href="#icmp">ICMP</a></li>
+        <li><a href="#benchmark">Benchmark</a></li>
+      </ul>
+    </li>
+    <li><a href="#udp">UDP</a></li>
+    <li><a href="#coap">CoAP</a></li>
+  </ul>
+</nav>
+    </div>
+    
+    
+
+    
+  </div>
+</section>
+
+
+<section class="section">
+  <div class="container has-text-centered">
+    <p><a rel="license" href="http://creativecommons.org/licenses/by/4.0/"><img alt="Creative Commons License" src="https://i.creativecommons.org/l/by/4.0/80x15.png" /></a><br/>Jorge Aparicio</p>
+  </div>
+</section>
+
+
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/styles/tomorrow-night.min.css" />
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/highlight.min.js" integrity="sha256-aYTdUrn6Ow1DDgh5JTc3aDGnnju48y/1c8s1dgkYPQ8=" crossorigin="anonymous"></script>
+
+<script type="text/javascript" src="//cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/languages/armasm.min.js"></script>
+
+<script type="text/javascript" src="//cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/languages/c.min.js"></script>
+
+<script type="text/javascript" src="//cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/languages/diff.min.js"></script>
+
+<script type="text/javascript" src="//cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/languages/llvm.min.js"></script>
+
+<script type="text/javascript" src="//cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/languages/rust.min.js"></script>
+
+<script type="text/javascript" src="//cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/languages/shell.min.js"></script>
+
+<script>hljs.initHighlightingOnLoad();</script>
+
+
+</body>

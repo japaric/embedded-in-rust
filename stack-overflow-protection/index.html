@@ -1,0 +1,432 @@
+<!DOCTYPE html>
+<html lang="en-us">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta content="Rust, embedded, development" name="keywords">
+<meta content="Jorge Aparicio" name="author">
+<meta property="og:title" content="Zero cost stack overflow protection for ARM Cortex-M devices - Embedded in Rust">
+<meta property="og:url" content="https://blog.japaric.io/stack-overflow-protection/">
+<meta property="og:description" content="A blog about Rust and embedded stuff">
+<meta property="og:type" content="website" />
+<title>Zero cost stack overflow protection for ARM Cortex-M devices | Embedded in Rust</title>
+<link rel="stylesheet" href="https://blog.japaric.io//css/style.css">
+<link rel="shortcut icon" href="https://blog.japaric.io//wave.ico">
+<link rel="alternate" type="application/atom+xml" title="Embedded in Rust Posts" href="https://blog.japaric.io//index.xml">
+<link href="//maxcdn.bootstrapcdn.com/font-awesome/4.7.0/css/font-awesome.min.css" rel="stylesheet" integrity="sha384-wvfXpqpZZVQGK6TAh5PVlGOfQNHSoD2xbE+QkPxCAFlNEevoEH3Sl0sibVcOQVnN" crossorigin="anonymous">
+
+<link rel="stylesheet" href="//cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/styles/github.min.css">
+
+</head>
+
+<body>
+<section class="section">
+  <div class="container">
+    <nav class="nav">
+      <div class="nav-left">
+        <a class="nav-item" href="https://blog.japaric.io/"><h1 class="title is-4">Embedded in Rust</h1></a>
+      </div>
+      <div class="nav-right">
+        <nav class="nav-item level is-mobile">
+          
+          <a class="level-item" href="https://github.com/japaric" target="_blank">
+            <span class="icon">
+              <i class="fa fa-github"></i>
+            </span>
+          </a>
+          
+          <a class="level-item" href="/index.xml" target="_blank">
+            <span class="icon">
+              <i class="fa fa-rss"></i>
+            </span>
+          </a>
+          
+        </nav>
+      </div>
+    </nav>
+  </div>
+</section>
+
+<section class="section">
+  <div class="container">
+    <h1 class="title">Zero cost stack overflow protection for ARM Cortex-M devices</h1>
+    <h2 class="subtitle is-5">February 17, 2018 by Jorge Aparicio</h2>
+    
+      <div class="tags">
+    
+        <a class="button is-link" href="/tags/arm-cortex-m">ARM Cortex-M</a>
+    
+        <a class="button is-link" href="/tags/safety">safety</a>
+    
+</div>
+
+    
+    <div class="content">
+      <p>One of the core features of Rust is memory safety. Whenever possible the compiler enforces memory
+safety at compile. One example of this is the borrow checker which prevents data races, iterator
+invalidation, pointer invalidation and other issues at compile time. Other memory problems like
+buffer overflows can&rsquo;t be prevented at compile time. In those cases the compiler inserts runtime
+checks, bounds checks in this case, to enforce memory safety at runtime.</p>
+<p>What about stack overflows? For quite a long time Rust didn&rsquo;t have stack overflow checking but that
+wasn&rsquo;t much of a problem on tier 1 platforms since these platforms have an OS and a MMU (Memory
+Management Unit) that prevents stack overflows from wreaking havoc.</p>
+<p>Consider this (silly) program that calls a recursive function that allocates a 1 MB array on the
+stack.</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">main</span>() {
+    println<span style="color:#f92672">!</span>(<span style="color:#e6db74">&#34;{}&#34;</span>, fib(<span style="color:#ae81ff">10</span>));
+}
+
+<span style="color:#75715e">#[inline(never)]</span>
+<span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">fib</span>(n: <span style="color:#66d9ef">u64</span>) -&gt; <span style="color:#66d9ef">u64</span> {
+    <span style="color:#66d9ef">let</span> _use_stack <span style="color:#f92672">=</span> [<span style="color:#ae81ff">0</span><span style="color:#66d9ef">u8</span>; <span style="color:#ae81ff">1024</span> <span style="color:#f92672">*</span> <span style="color:#ae81ff">1024</span>];
+
+    <span style="color:#66d9ef">if</span> n <span style="color:#f92672">&lt;</span> <span style="color:#ae81ff">2</span> {
+        <span style="color:#ae81ff">1</span>
+    } <span style="color:#66d9ef">else</span> {
+        fib(n <span style="color:#f92672">-</span> <span style="color:#ae81ff">1</span>) <span style="color:#f92672">+</span> fib(n <span style="color:#f92672">-</span> <span style="color:#ae81ff">2</span>)
+    }
+}
+</code></pre></div><p>If you run this safe program using last year nightly you get a segmentation fault.</p>
+<pre><code class="language-console" data-lang="console">$ # last year nightly
+$ cargo run +nightly-2017-02-16
+[1]    15156 segmentation fault (core dumped)  cargo run +nightly-2017-02-16
+</code></pre><p>But if you run it with a recent nightly you&rsquo;ll get an abort and a meaningful error message.</p>
+<pre><code class="language-console" data-lang="console">$ cargo run +nightly-2018-02-16
+thread 'main' has overflowed its stack
+fatal runtime error: stack overflow
+[1]    16042 abort (core dumped)  cargo run +nightly-2018-02-16
+</code></pre><p>The difference in behavior is due to <em>stack probe</em> support landing in rustc / LLVM last year. Like
+bounds checks, stack probes are also a runtime memory safety mechanism but for catching stack
+overflows. At the time of writing only x86 / x86_64 has stack probe support in rustc / LLVM.</p>
+<h1 id="mmu-less-devices">MMU-less devices</h1>
+<p>But what&rsquo;s the effect of a stack overflow on bare metal devices that have no OS or a MMU like the
+ARM Cortex-M?</p>
+<p>Let&rsquo;s find out with this (silly) program:</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#75715e">#![no_std]</span>
+
+<span style="color:#66d9ef">extern</span> <span style="color:#66d9ef">crate</span> cortex_m;
+<span style="color:#66d9ef">extern</span> <span style="color:#66d9ef">crate</span> stm32f103xx;
+
+<span style="color:#66d9ef">use</span> cortex_m::asm;
+
+<span style="color:#66d9ef">const</span> PATTERN: <span style="color:#66d9ef">u32</span> <span style="color:#f92672">=</span> <span style="color:#ae81ff">0xdeadbeef</span>;
+
+<span style="color:#75715e">// initialize some RAM to a known bit pattern
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">static</span> <span style="color:#66d9ef">mut</span> DATA: [<span style="color:#66d9ef">u32</span>; <span style="color:#ae81ff">1024</span>] <span style="color:#f92672">=</span> [PATTERN; <span style="color:#ae81ff">1024</span>];
+
+<span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">main</span>() {
+    asm::bkpt();
+
+    <span style="color:#66d9ef">let</span> _x <span style="color:#f92672">=</span> fib(<span style="color:#ae81ff">100</span>);
+}
+
+<span style="color:#75715e">#[inline(never)]</span>
+<span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">fib</span>(n: <span style="color:#66d9ef">u32</span>) -&gt; <span style="color:#66d9ef">u32</span> {
+    <span style="color:#66d9ef">if</span> <span style="color:#66d9ef">unsafe</span> { DATA.last() } <span style="color:#f92672">!=</span> Some(<span style="color:#f92672">&amp;</span>PATTERN) {
+        <span style="color:#75715e">// `DATA` never changes so this should be unreachable, right?
+</span><span style="color:#75715e"></span>        asm::bkpt();
+    }
+
+    <span style="color:#75715e">// allocate and zero a 1KB of stack memory
+</span><span style="color:#75715e"></span>    <span style="color:#66d9ef">let</span> _use_stack <span style="color:#f92672">=</span> [<span style="color:#ae81ff">0</span><span style="color:#66d9ef">u8</span>; <span style="color:#ae81ff">1024</span>];
+
+    <span style="color:#66d9ef">if</span> n <span style="color:#f92672">&lt;</span> <span style="color:#ae81ff">2</span> {
+        <span style="color:#ae81ff">1</span>
+    } <span style="color:#66d9ef">else</span> {
+        fib(n <span style="color:#f92672">-</span> <span style="color:#ae81ff">1</span>) <span style="color:#f92672">+</span> fib(n <span style="color:#f92672">-</span> <span style="color:#ae81ff">2</span>)
+    }
+}
+</code></pre></div><p>You can probably guess how this will go &hellip; If you debug this program and inspect the memory where
+<code>DATA</code> is located at the first breakpoint, before <code>fib</code> is called, you&rsquo;ll see something like this:</p>
+<pre><code class="language-console" data-lang="console">&gt; # GDB
+&gt; continue
+overflow::main () at src/main.rs:14
+14          asm::bkpt();
+
+&gt; # breakpoint in `main`
+
+&gt; x/1028x 0x20000000 # inspect the DATA variable
+0x20000000: 0xdeadbeef  0xdeadbeef  0xdeadbeef  0xdeadbeef  # start of DATA
+(..)
+0x20000ff0: 0xdeadbeef  0xdeadbeef  0xdeadbeef  0xdeadbeef  # end of DATA
+0x20001000: 0xc260b0e9  0xda79849d  0x517bb7fa  0xa84886ba  # uninitialized RAM
+</code></pre><p>That matches the expected bit pattern. So far so good.</p>
+<p>If you resume the program until it hits the second breakpoint, the one inside the <code>fib</code> function,
+you&rsquo;ll see this:</p>
+<pre><code class="language-console" data-lang="console">&gt; continue
+overflow::fib (n=86) at src/main.rs:22
+22              asm::bkpt();
+
+&gt; # breakpoint in `fib`
+
+&gt; x/1028x 0x20000000
+0x20000000: 0xdeadbeef  0xdeadbeef  0xdeadbeef  0xdeadbeef  # start of DATA
+(..)
+0x20000fb0: 0xdeadbeef  0xdeadbeef  0xdeadbeef  0xdeadbeef
+0x20000fc0: 0x20000ffc  0x08001070  0x20000ffc  0x08001070
+0x20000fd0: 0xdeadbeef  0x00000001  0x2000107c  0x08001074
+0x20000fe0: 0x2000107c  0x08001074  0x20001048  0x0800036b
+0x20000ff0: 0x20000000  0x00000001  0x00000000  0x00000001  # end of DATA
+0x20001000: 0x00000000  0x00000001  0x2000107c  0x08001074
+</code></pre><p>The <code>DATA</code> variable has been silently corrupted! Although this program has some <code>unsafe</code> code the
+memory corruption is not caused by the <code>unsafe</code> code; it is caused by calling the <code>fib</code> function,
+which is safe to call.</p>
+<p>This means that ARM Cortex-M programs which only contain safe code can run into memory corruption
+issues and that goes against Rust core feature of being memory safe. Let&rsquo;s fix it!</p>
+<h1 id="fixing-it">Fixing it</h1>
+<p>Stack probes seems like the right way to fix this, but unfortunately stack probe support is only
+available on x86 and here we are talking about the ARM Cortex-M architecture. There&rsquo;s another
+problem as well: the <a href="https://github.com/rust-lang-nursery/compiler-builtins/blob/0ba07e49264a54cb5bbd4856fcea083bb3fbec15/src/probestack.rs#L50">x86 implementation</a> of stack probes assumes there&rsquo;s some paging (virtual
+memory) mechanism being used so that implementation can&rsquo;t be directly translated to bare metal ARM.
+Finally, stack probes impose a runtime overhead on function calls so it&rsquo;s not a zero cost solution.</p>
+<p>Thankfully, there&rsquo;s another way to fix this and that&rsquo;s truly zero cost. Before I explain it let me
+first show you how stack overflows cause memory corruption.</p>
+<p>This is the memory layout of a bare metal Cortex-M program like the one I showed before.</p>
+<!-- raw HTML omitted -->
+<p>Static variables, like the <code>DATA</code> variable from the previous program, are stored at the bottom
+(start) of RAM, in the <code>.bss</code> and <code>.data</code> sections, which are fixed in size. The stack is located
+at the top (end) of RAM and it grows downwards. If the stack grows too large it can crash into
+the <code>.bss+.data</code> section, overwriting it; this corrupts <code>static</code> variables.</p>
+<p>The way to prevent stack overflows from corrupting memory is simple: you place the <code>.bss+.data</code>
+section at the <em>top</em> of RAM and put the stack below it. Like this:</p>
+<!-- raw HTML omitted -->
+<p>In this scenario when the stack grows too large it ends up crashing into the boundary of the RAM
+region and that triggers a <em>hard fault</em> exception. With this layout the <code>static</code> variables remain
+safe during a stack overflow condition. Nice!</p>
+<h2 id="cortex-m-rt-ld"><code>cortex-m-rt-ld</code></h2>
+<p>Now all we need to do is change the memory layout of the program. The <a href="https://crates.io/crates/cortex-m-rt"><code>cortex-m-rt</code></a> crate decides
+the memory layout by providing a linker script to the linker. This linker script describes the
+memory layout of the program in a declarative manner (details <a href="https://sourceware.org/binutils/docs/ld/Scripts.html">here</a>, if you are interested).</p>
+<p>The problem is that linker scripts don&rsquo;t support arranging memory as we want: they only let you
+specify the <em>start</em> address of sections like <code>.bss+.data</code> but in this case we want to specify the
+<em>end</em> address of <code>.bss+.data</code>. We can&rsquo;t specify the start address of <code>.bss+.data</code> to be
+<code>0x2000_4000</code> or some other fixed number because the correct number depends on the size of the
+<code>.bss+.data</code> section and linker scripts don&rsquo;t provide support to get the size of an <em>output</em> section
+&ndash; simply because the size is not known at link time; the size of a section will only be known
+<em>after</em> the linking process.</p>
+<p>The workaround for this missing linker script functionality is &hellip; to link the program <em>twice</em> &ndash;
+this technique is <a href="https://stackoverflow.com/a/39477543">also used in the C world</a>. Linking is done the first time to figure out the
+size of the <code>.bss+.data</code> section; after linking you can run <code>arm-none-eabi-size</code> over the output
+binary and find out the size. In the second linking step we feed the size of the section to the
+linker script, as a <em>hardcoded</em> number, and use that to select the right start address of the
+<code>.bss+.data</code> section.</p>
+<p>In C this two step linking is done using Makefiles. We can&rsquo;t replicate that approach in Rust because
+it requires having the user explicitly write down the linker invocations and in Rust land linking is
+done transparently by <code>rustc</code> / Cargo.</p>
+<p>So what we&rsquo;ll do instead is to use a <em>linker wrapper</em>. Instead of linking the program using
+<code>arm-none-eabi-ld</code> we&rsquo;ll use a linker wrapper called <a href="https://crates.io/crates/cortex-m-rt-ld"><code>cortex-m-rt-ld</code></a>. This wrapper is a Rust
+program that will call the linker twice.</p>
+<p>The only thing a user needs to do, apart from installing <code>cortex-m-rt-ld</code>, is to change the linker
+in Cargo&rsquo;s configuration file:</p>
+<pre><code class="language-console" data-lang="console">$ # this file comes from the cortex-m-quickstart template v0.2.4
+$ cat .cargo/config
+[target.thumbv7m-none-eabi]
+runner = 'arm-none-eabi-gdb'
+rustflags = [
+  &quot;-C&quot;, &quot;link-arg=-Tlink.x&quot;,
+  &quot;-C&quot;, &quot;linker=cortex-m-rt-ld&quot;, # &lt;- CHANGED!
+  &quot;-Z&quot;, &quot;linker-flavor=ld&quot;,
+  &quot;-Z&quot;, &quot;thinlto=no&quot;,
+]
+
+[build]
+target = &quot;thumbv7m-none-eabi&quot;
+</code></pre><p>This will make <code>rustc</code> invoke <code>cortex-m-rt-ld</code> with all the arguments it would normally pass to
+<code>arm-none-eabi-ld</code>.</p>
+<h2 id="in-practice">In practice</h2>
+<p>Let&rsquo;s put this technique in practice by relinking the Cortex M program I showed before. But before
+we do that let&rsquo;s look at the linker sections of the binary we debugged.</p>
+<pre><code class="language-console" data-lang="console">$ arm-none-eabi-size -Ax target/thumbv7m-none-eabi/debug/overflow
+section                  size         addr
+.vector_table           0x130    0x8000000
+.text                   0xeb2    0x8000130
+.rodata                 0x294    0x8000ff0
+.stack                 0x5000   0x20000000
+.bss                      0x0   0x20000000
+.data                  0x1000   0x20000000
+</code></pre><p>This output shows the start addresses and the sizes of the <code>.stack</code>, <code>.bss</code> and <code>.data</code> sections.
+From the output you can see that they overlap: <code>.stack</code> starts at address <code>0x2000_5000</code> and ends at
+address <code>0x2000_0000</code> (remember that it grows downwards); <code>.data</code> starts at address <code>0x2000_0000</code>
+and ends at address
+<code>0x2000_1000</code>.</p>
+<p>Now let&rsquo;s relink the program using <code>cortex-m-rt-ld</code> and look at the linker sections again.</p>
+<pre><code class="language-console" data-lang="console">$ arm-none-eabi-size -Ax target/thumbv7m-none-eabi/debug/overflow
+section                  size         addr
+.vector_table           0x130    0x8000000
+.text                   0xeb2    0x8000130
+.rodata                 0x294    0x8000ff0
+.stack                 0x4000   0x20000000
+.bss                      0x0   0x20004000
+.data                  0x1000   0x20004000
+</code></pre><p>Now the sections don&rsquo;t overlap! <code>.stack</code> starts at address <code>0x2000_4000</code> and ends at address
+<code>0x2000_0000</code>; <code>.data</code> starts at address <code>0x2000_4000</code> and ends at address <code>0x2000_5000</code>.</p>
+<p>I mentioned that on stack overflow a hard fault exception would be triggered. Turns out we can
+define <em>how</em> that is handled using the <code>exception!</code> macro so we can choose how the program should
+behave on a stack overflow condition.</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#75715e">#![no_std]</span>
+
+<span style="color:#66d9ef">extern</span> <span style="color:#66d9ef">crate</span> cortex_m;
+<span style="color:#75715e">#[macro_use(exception)]</span> <span style="color:#75715e">// NEW!
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">extern</span> <span style="color:#66d9ef">crate</span> stm32f103xx;
+
+<span style="color:#75715e">// same program as before
+</span><span style="color:#75715e"></span>
+<span style="color:#75715e">// NEW!
+</span><span style="color:#75715e"></span>exception<span style="color:#f92672">!</span>(HARD_FAULT, on_stack_overflow);
+
+<span style="color:#75715e">#[inline(always)]</span>
+<span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">on_stack_overflow</span>() {
+    asm::bkpt();
+}
+</code></pre></div><p>Now let&rsquo;s run this program.</p>
+<pre><code>&gt; # GDB
+&gt; continue
+overflow::main () at src/main.rs:15
+15          asm::bkpt();
+
+&gt; # breakpoint in `main`
+
+&gt; continue
+HARD_FAULT () at &lt;exception macros&gt;:14
+14      &lt;exception macros&gt;: No such file or directory.
+
+&gt; # breakpoint in `on_stack_overflow`
+
+&gt; x/1028x 0x20003ff0
+0x20003ff0: 0x00000000  0x00000000  0x00000014  0xffffffff
+0x20004000: 0xdeadbeef  0xdeadbeef  0xdeadbeef  0xdeadbeef # start of DATA
+(..)
+0x20004ff0: 0xdeadbeef  0xdeadbeef  0xdeadbeef  0xdeadbeef # end of DATA
+</code></pre><p>This time we hit the <code>HARD_FAULT</code> exception handler during the stack overflow and the <code>DATA</code>
+variable remained intact.</p>
+<h1 id="what-if-i-have-a-heap">What if I have a heap?</h1>
+<p>When you have a heap and you use the standard memory layout you can run into two different problems:
+a stack overflow can overwrite the <code>.heap</code>; and memory allocations can make the <code>.heap</code> grow too
+large and crash into the <code>.stack</code>, overwriting it.</p>
+<!-- raw HTML omitted -->
+<p>Again, tweaking the memory layout can prevent the problem. If you place the <code>.heap</code> at the top of
+the RAM, place <code>.bss+.data</code> below it and the <code>.stack</code> below that then you avoid memory corruption in
+both scenarios.</p>
+<!-- raw HTML omitted -->
+<p><code>cortex-m-rt-ld</code> supports this memory layout but it requires you to specify the size of the <code>.heap</code>
+in a linker script. You can do that by adding a <code>_heap_size</code> symbol to <code>memory.x</code>, if you are
+providing that file; or by passing a new linker script that provides that symbol to the linker.</p>
+<p>The former will look like this:</p>
+<pre><code class="language-console" data-lang="console">$ tail -n1 memory.x
+_heap_size = 0x400; /* 1 KB */
+</code></pre><p>And the latter will look like this:</p>
+<pre><code class="language-console" data-lang="console">$ echo '_heap_size = 0x400;' &gt; heap.x
+
+$ cat .cargo/config
+[target.thumbv7m-none-eabi]
+runner = 'arm-none-eabi-gdb'
+rustflags = [
+  &quot;-C&quot;, &quot;link-arg=-Tlink.x&quot;,
+  &quot;-C&quot;, &quot;link-arg=-Theap.x&quot;, # NEW!
+  &quot;-C&quot;, &quot;linker=cortex-m-rt-ld&quot;,
+  &quot;-Z&quot;, &quot;linker-flavor=ld&quot;,
+  &quot;-Z&quot;, &quot;thinlto=no&quot;,
+]
+
+[build]
+target = &quot;thumbv7m-none-eabi&quot;
+</code></pre><p>Here are the linker sections of our running example after adding a 1 KB heap and linking it using
+<code>cortex-m-rt-ld</code>.</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#75715e">$</span> arm<span style="color:#f92672">-</span>none<span style="color:#f92672">-</span>eabi<span style="color:#f92672">-</span>size <span style="color:#f92672">-</span>Ax target<span style="color:#f92672">/</span>thumbv7m<span style="color:#f92672">-</span>none<span style="color:#f92672">-</span>eabi<span style="color:#f92672">/</span>debug<span style="color:#f92672">/</span>overflow
+section                  size         addr
+.vector_table           <span style="color:#ae81ff">0x130</span>    <span style="color:#ae81ff">0x8000000</span>
+.text                   <span style="color:#ae81ff">0xe8e</span>    <span style="color:#ae81ff">0x8000130</span>
+.rodata                 <span style="color:#ae81ff">0x294</span>    <span style="color:#ae81ff">0x8000fc0</span>
+.stack                 <span style="color:#ae81ff">0x3c00</span>   <span style="color:#ae81ff">0x20000000</span>
+.bss                      <span style="color:#ae81ff">0x0</span>   <span style="color:#ae81ff">0x20003c00</span>
+.data                  <span style="color:#ae81ff">0x1000</span>   <span style="color:#ae81ff">0x20003c00</span>
+.heap                   <span style="color:#ae81ff">0x400</span>   <span style="color:#ae81ff">0x20004c00</span>
+</code></pre></div><p>Note how <code>.bss</code>, <code>.data</code> and <code>.stack</code> have been pushed <em>down</em> (towards a lower address) by the
+<code>.heap</code>.</p>
+<h1 id="other-configurations">Other configurations?</h1>
+<p>Currently <code>cortex-m-rt-ld</code> doesn&rsquo;t support memory layouts that involve more than one RAM region but
+we don&rsquo;t have great support for that in <code>cortex-m-rt</code> either so there&rsquo;s no much point in supporting
+that in <code>cortex-m-rt-ld</code> at the moment.</p>
+<p>The approach described here doesn&rsquo;t help if you are using threads, where each one has its own stack.
+In that scenario the thread stacks are laid out contiguously in memory and no amount of shuffling
+around will prevent one from overflowing into the other. There pretty much your only choice is to
+use a MPU (Memory Protection Unit) &ndash; assuming your microcontroller has one &ndash; to create stack
+boundaries on demand. Using the MPU is not zero cost as there&rsquo;s some setup involved on each context
+switch.</p>
+<h1 id="conclusion">Conclusion</h1>
+<p>That&rsquo;s it. Protect your ARM Cortex-M program from stack overflows and make it truly memory safe by
+just swapping out the linker!</p>
+<hr>
+<p><strong>Thank you patrons! ❤️</strong></p>
+<p>I want to wholeheartedly thank:</p>
+<!-- raw HTML omitted -->
+<!-- raw HTML omitted -->
+<!-- raw HTML omitted -->
+<p><a href="https://github.com/Razican">Iban Eguia</a>,
+<a href="https://github.com/aturon">Aaron Turon</a>,
+<a href="https://github.com/archaelus">Geoff Cant</a>,
+<a href="http://www.harrisonchin.com/">Harrison Chin</a>,
+<a href="https://github.com/brandonedens">Brandon Edens</a>,
+<a href="https://github.com/whitequark">whitequark</a>,
+<a href="https://jamesmunns.com/">James Munns</a>,
+<a href="https://github.com/flundstrom2">Fredrik Lundström</a>,
+<a href="https://github.com/kjetilkjeka">Kjetil Kjeka</a>,
+Kor Nielsen,
+<a href="https://myrrlyn.net/">Alexander Payne</a>,
+<a href="https://metafluff.com/">Dietrich Ayala</a>,
+<a href="http://kenkeiter.com/">Kenneth Keiter</a>,
+<a href="https://github.com/HadrienG2">Hadrien Grasland</a>,
+<a href="https://github.com/vitiral">vitiral</a>
+and 48 more people for supporting my work on Patreon.</p>
+<!-- raw HTML omitted -->
+<hr>
+<p>Let&rsquo;s discuss on <a href="https://www.reddit.com/r/rust/comments/7y7y48/eir_zero_cost_stack_overflow_protection_for_arm/">reddit</a>.</p>
+
+    </div>
+
+    
+    
+    <div class="article-toc" >
+        <h3>Contents</h3>
+        <nav id="TableOfContents">
+  <ul>
+    <li><a href="#cortex-m-rt-ld"><code>cortex-m-rt-ld</code></a></li>
+    <li><a href="#in-practice">In practice</a></li>
+  </ul>
+</nav>
+    </div>
+    
+    
+
+    
+  </div>
+</section>
+
+
+<section class="section">
+  <div class="container has-text-centered">
+    <p><a rel="license" href="http://creativecommons.org/licenses/by/4.0/"><img alt="Creative Commons License" src="https://i.creativecommons.org/l/by/4.0/80x15.png" /></a><br/>Jorge Aparicio</p>
+  </div>
+</section>
+
+
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/styles/tomorrow-night.min.css" />
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/highlight.min.js" integrity="sha256-aYTdUrn6Ow1DDgh5JTc3aDGnnju48y/1c8s1dgkYPQ8=" crossorigin="anonymous"></script>
+
+<script type="text/javascript" src="//cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/languages/armasm.min.js"></script>
+
+<script type="text/javascript" src="//cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/languages/c.min.js"></script>
+
+<script type="text/javascript" src="//cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/languages/diff.min.js"></script>
+
+<script type="text/javascript" src="//cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/languages/llvm.min.js"></script>
+
+<script type="text/javascript" src="//cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/languages/rust.min.js"></script>
+
+<script type="text/javascript" src="//cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/languages/shell.min.js"></script>
+
+<script>hljs.initHighlightingOnLoad();</script>
+
+
+</body>

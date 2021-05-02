@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="utf-8" standalone="yes"?>
+<rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom">
+  <channel>
+    <title>analysis on Embedded in Rust</title>
+    <link>https://blog.japaric.io/tags/analysis/</link>
+    <description>Recent content in analysis on Embedded in Rust</description>
+    <generator>Hugo -- gohugo.io</generator>
+    <language>en-us</language>
+    <copyright>&lt;a rel=&#34;license&#34; href=&#34;http://creativecommons.org/licenses/by/4.0/&#34;&gt;&lt;img alt=&#34;Creative Commons License&#34; src=&#34;https://i.creativecommons.org/l/by/4.0/80x15.png&#34; /&gt;&lt;/a&gt;&lt;br/&gt;Jorge Aparicio</copyright>
+    <lastBuildDate>Wed, 31 May 2017 21:14:06 -0500</lastBuildDate><atom:link href="https://blog.japaric.io/tags/analysis/index.xml" rel="self" type="application/rss+xml" />
+    <item>
+      <title>The ITM and the quest for faster logging</title>
+      <link>https://blog.japaric.io/itm/</link>
+      <pubDate>Wed, 31 May 2017 21:14:06 -0500</pubDate>
+      
+      <guid>https://blog.japaric.io/itm/</guid>
+      <description>In this post we&amp;rsquo;ll explore the different alternatives one has to log data from a microcontroller to some host machine. Be it for printf style debugging or for logging sensor data.
+The Blue Pill This time I&amp;rsquo;ll use a different development board: the Blue Pill.
+On the center the Blue Pill development board. On the left side a UART to USB adapter based on the CH340G. On the right side an SWD programmer: a Chinese clone of the ST-LINK.</description>
+    </item>
+    
+    <item>
+      <title>Overhead analysis of the RTFM framework</title>
+      <link>https://blog.japaric.io/rtfm-overhead/</link>
+      <pubDate>Tue, 23 May 2017 09:33:23 -0500</pubDate>
+      
+      <guid>https://blog.japaric.io/rtfm-overhead/</guid>
+      <description>In the last post I introduced the RTFM framework, and made several claims about it being highly efficient both in memory usage and runtime overhead. In this post I&amp;rsquo;ll analyze all the RTFM concurrency primitives to back up those claims. To do that I&amp;rsquo;ll first introduce a non-invasive timing method that&amp;rsquo;s accurate to a single clock cycle, which is the time the processor spends to execute one of the simplest instructions.</description>
+    </item>
+    
+  </channel>
+</rss>

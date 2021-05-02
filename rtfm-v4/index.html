@@ -1,0 +1,528 @@
+<!DOCTYPE html>
+<html lang="en-us">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta content="Rust, embedded, development" name="keywords">
+<meta content="Jorge Aparicio" name="author">
+<meta property="og:title" content="RTFM v0.4: &#43;stable, software tasks, message passing and a timer queue - Embedded in Rust">
+<meta property="og:url" content="https://blog.japaric.io/rtfm-v4/">
+<meta property="og:description" content="A blog about Rust and embedded stuff">
+<meta property="og:type" content="website" />
+<title>RTFM v0.4: &#43;stable, software tasks, message passing and a timer queue | Embedded in Rust</title>
+<link rel="stylesheet" href="https://blog.japaric.io//css/style.css">
+<link rel="shortcut icon" href="https://blog.japaric.io//wave.ico">
+<link rel="alternate" type="application/atom+xml" title="Embedded in Rust Posts" href="https://blog.japaric.io//index.xml">
+<link href="//maxcdn.bootstrapcdn.com/font-awesome/4.7.0/css/font-awesome.min.css" rel="stylesheet" integrity="sha384-wvfXpqpZZVQGK6TAh5PVlGOfQNHSoD2xbE+QkPxCAFlNEevoEH3Sl0sibVcOQVnN" crossorigin="anonymous">
+
+<link rel="stylesheet" href="//cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/styles/github.min.css">
+
+</head>
+
+<body>
+<section class="section">
+  <div class="container">
+    <nav class="nav">
+      <div class="nav-left">
+        <a class="nav-item" href="https://blog.japaric.io/"><h1 class="title is-4">Embedded in Rust</h1></a>
+      </div>
+      <div class="nav-right">
+        <nav class="nav-item level is-mobile">
+          
+          <a class="level-item" href="https://github.com/japaric" target="_blank">
+            <span class="icon">
+              <i class="fa fa-github"></i>
+            </span>
+          </a>
+          
+          <a class="level-item" href="/index.xml" target="_blank">
+            <span class="icon">
+              <i class="fa fa-rss"></i>
+            </span>
+          </a>
+          
+        </nav>
+      </div>
+    </nav>
+  </div>
+</section>
+
+<section class="section">
+  <div class="container">
+    <h1 class="title">RTFM v0.4: &#43;stable, software tasks, message passing and a timer queue</h1>
+    <h2 class="subtitle is-5">December 19, 2018 by Jorge Aparicio</h2>
+    
+      <div class="tags">
+    
+        <a class="button is-link" href="/tags/arm-cortex-m">ARM Cortex-M</a>
+    
+        <a class="button is-link" href="/tags/concurrency">concurrency</a>
+    
+        <a class="button is-link" href="/tags/rtfm">RTFM</a>
+    
+</div>
+
+    
+    <div class="content">
+      <p>Hey there! It&rsquo;s been a long time since my last post.</p>
+<p>Today I&rsquo;m pleased to announce <a href="https://docs.rs/cortex-m-rtfm/0.4.0/rtfm/">v0.4.0</a> of the Real Time for The Masses framework
+(AKA RTFM), a concurrency framework for building real time applications.</p>
+<p>The greatest new feature, IMO, is that RTFM now works on stable Rust (<code>1.31+</code>)!
+🎉 🎉 🎉</p>
+<p>This release also packs quite a few new features which I&rsquo;ll briefly cover in
+this post. For a more throughout explanation of RTFM&rsquo;s task model and its
+capabilities check out <a href="https://japaric.github.io/cortex-m-rtfm/book/">the RTFM book</a>, which includes examples you can run on
+your laptop (yay for emulation), and the <a href="https://japaric.github.io/cortex-m-rtfm/api/rtfm/index.html">API documentation</a>.</p>
+<h1 id="new-syntax">New syntax</h1>
+<p>In previous releases you specified tasks and resources using a bang macro:
+<a href="https://github.com/japaric/cortex-m-rtfm/blob/v0.3.4/examples/preemption.rs#L11-L32"><code>app!</code></a>. This macro has been replaced by a bunch attributes: <code>#[app]</code>,
+<code>#[interrupt]</code>, <code>#[exception]</code>, etc.</p>
+<p>To give you an idea of the new syntax here&rsquo;s one example from the book:</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#75715e">// examples/interrupt.rs
+</span><span style="color:#75715e"></span>
+<span style="color:#75715e">#![deny(unsafe_code)]</span>
+<span style="color:#75715e">#![deny(warnings)]</span>
+<span style="color:#75715e">#![no_main]</span>
+<span style="color:#75715e">#![no_std]</span>
+
+<span style="color:#66d9ef">extern</span> <span style="color:#66d9ef">crate</span> panic_semihosting;
+
+<span style="color:#66d9ef">use</span> cortex_m_semihosting::{debug, hprintln};
+<span style="color:#66d9ef">use</span> lm3s6965::Interrupt;
+<span style="color:#66d9ef">use</span> rtfm::app;
+
+<span style="color:#75715e">#[app(device = lm3s6965)]</span>
+<span style="color:#66d9ef">const</span> APP: () <span style="color:#f92672">=</span> {
+    <span style="color:#75715e">#[init]</span>
+    <span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">init</span>() {
+        <span style="color:#75715e">// Pends the UART0 interrupt but its handler won&#39;t run until *after*
+</span><span style="color:#75715e"></span>        <span style="color:#75715e">// `init` returns because interrupts are disabled
+</span><span style="color:#75715e"></span>        rtfm::pend(Interrupt::UART0);
+
+        hprintln<span style="color:#f92672">!</span>(<span style="color:#e6db74">&#34;init&#34;</span>).unwrap();
+    }
+
+    <span style="color:#75715e">#[idle]</span>
+    <span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">idle</span>() -&gt; <span style="color:#f92672">!</span> {
+        <span style="color:#75715e">// interrupts are enabled again; the `UART0` handler runs at this point
+</span><span style="color:#75715e"></span>
+        hprintln<span style="color:#f92672">!</span>(<span style="color:#e6db74">&#34;idle&#34;</span>).unwrap();
+
+        rtfm::pend(Interrupt::UART0);
+
+        <span style="color:#75715e">// exit the emulator
+</span><span style="color:#75715e"></span>        debug::exit(debug::EXIT_SUCCESS);
+
+        <span style="color:#66d9ef">loop</span> {}
+    }
+
+    <span style="color:#75715e">// interrupt handler = hardware task
+</span><span style="color:#75715e"></span>    <span style="color:#75715e">#[interrupt]</span>
+    <span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">UART0</span>() {
+        <span style="color:#66d9ef">static</span> <span style="color:#66d9ef">mut</span> TIMES: <span style="color:#66d9ef">u32</span> <span style="color:#f92672">=</span> <span style="color:#ae81ff">0</span>;
+
+        <span style="color:#75715e">// Safe access to local `static mut` variable
+</span><span style="color:#75715e"></span>        <span style="color:#f92672">*</span>TIMES <span style="color:#f92672">+=</span> <span style="color:#ae81ff">1</span>;
+
+        hprintln<span style="color:#f92672">!</span>(
+            <span style="color:#e6db74">&#34;UART0 called {} time{}&#34;</span>,
+            <span style="color:#f92672">*</span>TIMES,
+            <span style="color:#66d9ef">if</span> <span style="color:#f92672">*</span>TIMES <span style="color:#f92672">&gt;</span> <span style="color:#ae81ff">1</span> { <span style="color:#e6db74">&#34;s&#34;</span> } <span style="color:#66d9ef">else</span> { <span style="color:#e6db74">&#34;&#34;</span> }
+        )
+        .unwrap();
+    }
+};
+</code></pre></div><pre><code class="language-console" data-lang="console">$ qemu-system-arm (..) interrupt
+init
+UART0 called 1 time
+idle
+UART0 called 2 times
+</code></pre><p>(The <code>const APP</code> that&rsquo;s used like a module must look a bit weird to you. I&rsquo;ll
+get to it in a minute.)</p>
+<p>The main motivation for this change is to allow composition with other
+attributes like the built-in <code>#[cfg]</code> attribute, which is used for conditional
+compilation, and an hypothetical <a href="https://github.com/rust-embedded/cortex-m-rt/pull/100"><code>#[ramfunc]</code></a> attribute, which places
+functions in RAM.</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#75715e">// NOTE: assuming some future release of cortex-m-rt
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">use</span> cortex_m_rt::ramfunc;
+
+<span style="color:#75715e">#[rtfm::app(device = lm3s6965)]</span>
+<span style="color:#66d9ef">const</span> APP: () <span style="color:#f92672">=</span> {
+    <span style="color:#75715e">// ..
+</span><span style="color:#75715e"></span>
+    <span style="color:#75715e">// gotta go fast: run this exception handler (task) from RAM!
+</span><span style="color:#75715e"></span>    <span style="color:#75715e">#[exception]</span>
+    <span style="color:#75715e">#[ramfunc]</span>
+    <span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">SysTick</span>() {
+        <span style="color:#75715e">// ..
+</span><span style="color:#75715e"></span>    }
+
+    <span style="color:#75715e">#[cfg(feature = </span><span style="color:#e6db74">&#34;heartbeat&#34;</span><span style="color:#75715e">)]</span>
+    <span style="color:#75715e">#[interrupt(resources = [LED]</span>)]
+    <span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">TIMER_0A</span>() {
+        resources.LED.toggle();
+    }
+
+    <span style="color:#75715e">// ..
+</span><span style="color:#75715e"></span>};
+</code></pre></div><p>The other motivation is to let you decentralize the declaration of tasks and
+resources. With the old <code>app!</code> macro everything had to be declared upfront in a
+single place; with attributes you&rsquo;ll be able to declare tasks and resources in
+different modules.</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#75715e">// NOTE: this is NOT a valid rtfm v0.4 application!
+</span><span style="color:#75715e"></span><span style="color:#75715e">#![rtfm::app]</span>
+
+<span style="color:#66d9ef">mod</span> resources {
+    <span style="color:#75715e">#[resource]</span>
+    <span style="color:#66d9ef">static</span> <span style="color:#66d9ef">mut</span> FOO: <span style="color:#66d9ef">u32</span> <span style="color:#f92672">=</span> <span style="color:#ae81ff">0</span>;
+}
+
+<span style="color:#66d9ef">mod</span> tasks {
+    <span style="color:#75715e">#[resource]</span>
+    <span style="color:#66d9ef">static</span> <span style="color:#66d9ef">mut</span> BAR: <span style="color:#66d9ef">u32</span> <span style="color:#f92672">=</span> <span style="color:#ae81ff">0</span>;
+
+    <span style="color:#75715e">#[interrupt(resources = [crate::resources::FOO, BAR]</span>)]
+    <span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">UART0</span>() {
+        <span style="color:#75715e">// ..
+</span><span style="color:#75715e"></span>    }
+}
+</code></pre></div><p>However, that&rsquo;s more of a long term goal as it&rsquo;s currently not possible to use
+crate level procedural macros or attributes on modules if you are using the
+stable channel. The lack of those features on stable is why we are using a
+<code>const</code> item as a module.</p>
+<p>Finally, it&rsquo;s nice that RTFM applications don&rsquo;t contain any special syntax
+(compared to v0.3&rsquo;s <code>app!</code>) so now <code>rustfmt</code> is able to format the whole
+crate.</p>
+<h1 id="software-tasks">Software tasks</h1>
+<p>Until RTFM v0.3, tasks could only be started by an <em>event</em> like the user
+pressing a button, receiving new data or a software event (see <a href="https://japaric.github.io/cortex-m-rtfm/api/rtfm/fn.pend.html"><code>rtfm::pend</code></a>).
+Also, each of those <em>hardware</em> tasks maps to a different interrupt handler
+so you can run out of interrupt handlers if you have many tasks.</p>
+<p>RTFM v0.4 introduces <em>software</em> tasks, tasks that can be <em>spawned</em> on-demand
+from any context. The runtime will dispatch all the software tasks that run at
+the same priority from the same interrupt handler so you won&rsquo;t run out of
+interrupt handlers even if you have dozens of tasks.</p>
+<p>Software tasks come in handy when you want to keep a hardware task responsive
+to events: you can defer non time critical bits to a software task that runs
+at lower priority.</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#75715e">// heapless = &#34;0.4.1&#34;
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">use</span> heapless::{consts::U16, Vec};
+
+<span style="color:#75715e">#[rtfm::app(device = lm3s6965)]</span>
+<span style="color:#66d9ef">const</span> APP: () <span style="color:#f92672">=</span> {
+    <span style="color:#75715e">// ..
+</span><span style="color:#75715e"></span>
+    <span style="color:#75715e">// high priority hardware task
+</span><span style="color:#75715e"></span>    <span style="color:#75715e">// started when a new byte of data is received
+</span><span style="color:#75715e"></span>    <span style="color:#75715e">// needs to finish relatively quickly or incoming data will be lost
+</span><span style="color:#75715e"></span>    <span style="color:#75715e">#[interrupt(priority = 2, spawn = [some_command]</span>)]
+    <span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">UART0</span>() {
+        <span style="color:#75715e">// Fixed capacity vector with inline storage (no heap memory is used)
+</span><span style="color:#75715e"></span>        <span style="color:#66d9ef">static</span> <span style="color:#66d9ef">mut</span> BUFFER: Vec<span style="color:#f92672">&lt;</span><span style="color:#66d9ef">u8</span>, U16<span style="color:#f92672">&gt;</span> <span style="color:#f92672">=</span> Vec::new();
+
+        <span style="color:#66d9ef">let</span> byte <span style="color:#f92672">=</span> read_byte_from_serial_port();
+
+        <span style="color:#66d9ef">if</span> byte <span style="color:#f92672">==</span> <span style="color:#e6db74">b&#39;\n&#39;</span> {
+            <span style="color:#66d9ef">match</span> <span style="color:#f92672">&amp;</span>BUFFER[..] {
+                <span style="color:#e6db74">b&#34;some-command&#34;</span> <span style="color:#f92672">=&gt;</span> spawn.some_command().unwrap(),
+                <span style="color:#75715e">// .. handle other cases ..
+</span><span style="color:#75715e"></span>            }
+
+            BUFFER.clear();
+        } <span style="color:#66d9ef">else</span> {
+            <span style="color:#66d9ef">if</span> BUFFER.push(byte).is_err() {
+                <span style="color:#75715e">// .. handle error (buffer is full) ..
+</span><span style="color:#75715e"></span>            }
+        }
+    }
+
+    <span style="color:#75715e">// lower priority software task
+</span><span style="color:#75715e"></span>    <span style="color:#75715e">// only runs when `UART0` is not running
+</span><span style="color:#75715e"></span>    <span style="color:#75715e">// this task can be preempted by `UART0`, which has higher priority
+</span><span style="color:#75715e"></span>    <span style="color:#75715e">#[task(priority = 1)]</span>
+    <span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">some_command</span>() {
+        <span style="color:#75715e">// .. do non time critical stuff that takes a while to execute ..
+</span><span style="color:#75715e"></span>    }
+
+    <span style="color:#75715e">// ..
+</span><span style="color:#75715e"></span>};
+</code></pre></div><h1 id="message-passing">Message passing</h1>
+<p>When you spawn a task you can also send a message which will become the input of
+the task. Message passing can remove the need for explicit memory sharing and
+locks (see <a href="https://japaric.github.io/cortex-m-rtfm/api/rtfm/trait.Mutex.html"><code>rtfm::Mutex</code></a>) .</p>
+<p>Using message passing we can change the previous example to handle all commands
+from a single task.</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#66d9ef">pub</span> <span style="color:#66d9ef">enum</span> <span style="color:#a6e22e">Command</span> {
+    Foo,
+    Bar(<span style="color:#66d9ef">u8</span>),
+    <span style="color:#75715e">// ..
+</span><span style="color:#75715e"></span>}
+
+<span style="color:#75715e">#[rtfm::app(device = lm3s6965)]</span>
+<span style="color:#66d9ef">const</span> APP: () <span style="color:#f92672">=</span> {
+    <span style="color:#75715e">// ..
+</span><span style="color:#75715e"></span>
+    <span style="color:#75715e">#[interrupt(priority = 2, spawn = [run_command]</span>)]
+    <span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">UART0</span>() {
+        <span style="color:#66d9ef">static</span> <span style="color:#66d9ef">mut</span> BUFFER: Vec<span style="color:#f92672">&lt;</span><span style="color:#66d9ef">u8</span>, U16<span style="color:#f92672">&gt;</span> <span style="color:#f92672">=</span> Vec::new();
+
+        <span style="color:#66d9ef">let</span> byte <span style="color:#f92672">=</span> read_byte_from_serial_port();
+
+        <span style="color:#66d9ef">if</span> byte <span style="color:#f92672">==</span> <span style="color:#e6db74">b&#39;\n&#39;</span> {
+            <span style="color:#66d9ef">match</span> <span style="color:#f92672">&amp;</span>BUFFER[..] {
+                <span style="color:#75715e">// NOTE: this changed!
+</span><span style="color:#75715e"></span>                <span style="color:#e6db74">b&#34;foo&#34;</span> <span style="color:#f92672">=&gt;</span> spawn.run_command(Command::Foo).ok().unwrap(),
+                <span style="color:#75715e">// .. handle other cases ..
+</span><span style="color:#75715e"></span>            }
+
+            BUFFER.clear();
+        } <span style="color:#66d9ef">else</span> {
+            <span style="color:#66d9ef">if</span> BUFFER.push(byte).is_err() {
+                <span style="color:#75715e">// .. handle error (buffer is full) ..
+</span><span style="color:#75715e"></span>            }
+        }
+    }
+
+    <span style="color:#75715e">// NOTE: NEW!
+</span><span style="color:#75715e"></span>    <span style="color:#75715e">// (the default priority for tasks is 1 so we can actually omit it here)
+</span><span style="color:#75715e"></span>    <span style="color:#75715e">#[task]</span>
+    <span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">run_command</span>(command: <span style="color:#a6e22e">Command</span>) {
+        <span style="color:#66d9ef">match</span> command {
+            Command::Foo <span style="color:#f92672">=&gt;</span> { <span style="color:#75715e">/* .. */</span> }
+            <span style="color:#75715e">// ..
+</span><span style="color:#75715e"></span>        }
+    }
+
+    <span style="color:#75715e">// ..
+</span><span style="color:#75715e"></span>};
+</code></pre></div><p>Furthermore, unlike hardware tasks, software tasks are buffered so you can spawn
+several instances of them: all the posted messages will be queued and executed
+in FIFO order.</p>
+<p>All the internal buffers used by the RTFM runtime are statically allocated so
+RTFM doesn&rsquo;t depend on a dynamic memory allocator. Instead, you specify the
+capacity of the message queue in the <code>#[task]</code> attribute &ndash; the capacity
+defaults to 1 if not explicitly stated.</p>
+<p>If in our running example we expect that some command will take long enough to
+execute that another command may arrive in the meanwhile then we can increase
+the capacity of the message queue.</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#75715e">#[rtfm::app(device = lm3s6965)]</span>
+<span style="color:#66d9ef">const</span> APP: () <span style="color:#f92672">=</span> {
+    <span style="color:#75715e">// ..
+</span><span style="color:#75715e"></span>
+    <span style="color:#75715e">// now we can receive up to 2 more commands while this runs
+</span><span style="color:#75715e"></span>    <span style="color:#75715e">#[task(capacity = 2)]</span>
+    <span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">run_command</span>(command: <span style="color:#a6e22e">Command</span>) {
+        <span style="color:#66d9ef">match</span> command {
+            Command::Foo <span style="color:#f92672">=&gt;</span> { <span style="color:#75715e">/* .. */</span> }
+            <span style="color:#75715e">// ..
+</span><span style="color:#75715e"></span>        }
+    }
+
+    <span style="color:#75715e">// ..
+</span><span style="color:#75715e"></span>};
+</code></pre></div><h1 id="timer-queue">Timer queue</h1>
+<p>The RTFM framework provides an opt-in <code>timer-queue</code> feature (NOTE: ARMv7-M only
+feature, for now). When enabled a global timer queue is added to the RTFM
+runtime. This timer queue can be used to <code>schedule</code> tasks to run at some time in
+the future.</p>
+<p>One of the main uses cases of the <code>schedule</code> API (also see <a href="https://japaric.github.io/cortex-m-rtfm/api/rtfm/struct.Instant.html"><code>rtfm::Instant</code></a> and
+<a href="https://japaric.github.io/cortex-m-rtfm/api/rtfm/struct.Duration.html"><code>rtfm::Duration</code></a>) is creating periodic tasks.</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#66d9ef">const</span> PERIOD: <span style="color:#66d9ef">u32</span> <span style="color:#f92672">=</span> <span style="color:#ae81ff">12_000_000</span>; <span style="color:#75715e">// clock cycles == one second
+</span><span style="color:#75715e"></span>
+<span style="color:#75715e">#[rtfm::app(device = lm3s6965)]</span>
+<span style="color:#66d9ef">const</span> APP: () <span style="color:#f92672">=</span> {
+    <span style="color:#75715e">#[init(spawn = [periodic]</span>)]
+    <span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">init</span>() {
+        <span style="color:#75715e">// bootstrap the `periodic` task
+</span><span style="color:#75715e"></span>        spawn.periodic().unwrap();
+    }
+
+    <span style="color:#75715e">#[task(schedule = [periodic]</span>)]
+    <span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">periodic</span>() {
+        <span style="color:#75715e">// .. do stuff ..
+</span><span style="color:#75715e"></span>
+        <span style="color:#75715e">// schedule this task to run at `PERIOD` clock cycles after
+</span><span style="color:#75715e"></span>        <span style="color:#75715e">// it was last `scheduled` to run
+</span><span style="color:#75715e"></span>        schedule.periodic(scheduled <span style="color:#f92672">+</span> PERIOD.cycles()).unwrap();
+    }
+
+    <span style="color:#75715e">// ..
+</span><span style="color:#75715e"></span>};
+</code></pre></div><h1 id="whats-next">What&rsquo;s next?</h1>
+<p>To compile on stable some sacrifices had to be made in terms of (static) memory
+usage and code size. As there&rsquo;s no way to have uninitialized memory in <code>static</code>
+variables I had to rely on <code>Option</code>s and late (runtime) initialization in
+several places. But once <code>MaybeUninit</code> and <code>const fn</code> with trait bounds make
+their way into stable I&rsquo;ll be able to remove all that unnecessary overhead.</p>
+<p>More importantly though, I&rsquo;ve been <a href="https://mobile.twitter.com/japaric_io/status/1071116410166935553">playing</a> with Cortex-R processors, multicore
+devices and asymmetric multiprocessing (AKA AMP)! And I&rsquo;m happy to report that
+not only have I got RTFM running on a Cortex-<strong>R</strong> core but I also have
+implemented a proof of concept for <em>multicore</em> RTFM!</p>
+<p>This is what my current multicore RTFM prototype looks like:</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#75715e">#![no_main]</span>
+<span style="color:#75715e">#![no_std]</span>
+
+<span style="color:#66d9ef">extern</span> <span style="color:#66d9ef">crate</span> panic_dcc;
+
+<span style="color:#66d9ef">use</span> dcc::dprintln;
+
+<span style="color:#66d9ef">const</span> LIMIT: <span style="color:#66d9ef">u32</span> <span style="color:#f92672">=</span> <span style="color:#ae81ff">5</span>;
+
+<span style="color:#75715e">#[rtfm::app(cores = 2)]</span> <span style="color:#75715e">// &lt;- TWO cores!
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">const</span> APP: () <span style="color:#f92672">=</span> {
+    <span style="color:#75715e">#[cfg(core = </span><span style="color:#e6db74">&#34;0&#34;</span><span style="color:#75715e">)]</span>
+    <span style="color:#75715e">#[init]</span>
+    <span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">init</span>() {
+        <span style="color:#75715e">// nothing to do here
+</span><span style="color:#75715e"></span>    }
+
+    <span style="color:#75715e">// this task runs on the first core
+</span><span style="color:#75715e"></span>    <span style="color:#75715e">#[cfg(core = </span><span style="color:#e6db74">&#34;0&#34;</span><span style="color:#75715e">)]</span>
+    <span style="color:#75715e">#[task(spawn = [pong]</span>)]
+    <span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">ping</span>(x: <span style="color:#66d9ef">u32</span>) {
+        dprintln<span style="color:#f92672">!</span>(<span style="color:#e6db74">&#34;ping({})&#34;</span>, x);
+
+        <span style="color:#66d9ef">if</span> x <span style="color:#f92672">&lt;</span> LIMIT {
+            <span style="color:#75715e">// here we send a mesasge to the other core!
+</span><span style="color:#75715e"></span>            spawn.pong(x <span style="color:#f92672">+</span> <span style="color:#ae81ff">1</span>).unwrap();
+        }
+    }
+
+    <span style="color:#75715e">#[cfg(core = </span><span style="color:#e6db74">&#34;1&#34;</span><span style="color:#75715e">)]</span>
+    <span style="color:#75715e">#[init(tasks = [pong]</span>)]
+    <span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">init</span>() {
+        <span style="color:#75715e">// spawn the local `pong` task
+</span><span style="color:#75715e"></span>        spawn.pong(<span style="color:#ae81ff">0</span>).unwrap();
+    }
+
+    <span style="color:#75715e">// this task runs on the second core
+</span><span style="color:#75715e"></span>    <span style="color:#75715e">#[cfg(core = </span><span style="color:#e6db74">&#34;1&#34;</span><span style="color:#75715e">)]</span>
+    <span style="color:#75715e">#[task(spawn = [ping]</span>)]
+    <span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">pong</span>(x: <span style="color:#66d9ef">u32</span>) {
+        dprintln<span style="color:#f92672">!</span>(<span style="color:#e6db74">&#34;pong({})&#34;</span>, x);
+
+        <span style="color:#66d9ef">if</span> x <span style="color:#f92672">&lt;</span> LIMIT {
+            <span style="color:#75715e">// another cross-core message!
+</span><span style="color:#75715e"></span>            spawn.ping(x <span style="color:#f92672">+</span> <span style="color:#ae81ff">1</span>).unwrap();
+        }
+    }
+};
+</code></pre></div><pre><code class="language-console" data-lang="console">$ # logs from the first core
+$ tail -f dcc0.log
+IRQ(ICCIAR { cpuid: 1, ackintid: 65 })
+ping(1)
+~IRQ(ICCIAR { cpuid: 1, ackintid: 65 })
+IRQ(ICCIAR { cpuid: 1, ackintid: 65 })
+ping(3)
+~IRQ(ICCIAR { cpuid: 1, ackintid: 65 })
+IRQ(ICCIAR { cpuid: 1, ackintid: 65 })
+ping(5)
+~IRQ(ICCIAR { cpuid: 1, ackintid: 65 })
+</code></pre><pre><code class="language-console" data-lang="console">$ # logs from the second core
+$ tail -f dcc1.log
+IRQ(ICCIAR { cpuid: 1, ackintid: 66 })
+pong(0)
+~IRQ(ICCIAR { cpuid: 1, ackintid: 66 })
+IRQ(ICCIAR { cpuid: 0, ackintid: 66 })
+pong(2)
+~IRQ(ICCIAR { cpuid: 0, ackintid: 66 })
+IRQ(ICCIAR { cpuid: 0, ackintid: 66 })
+pong(4)
+~IRQ(ICCIAR { cpuid: 0, ackintid: 66 })
+</code></pre><p>In this PoC, you write multicore applications in a single crate and you use
+<code>#[cfg(core = &quot;*&quot;)]</code> to assign tasks and resources to one core or the other.
+Also, you can send messages across cores in a lock-free, wait-free, alloc-free
+manner.</p>
+<p>I have tested this PoC on a dual core Cortex-R5 device but I&rsquo;m certain that the
+approach can be adapted to heterogeneous devices (e.g. Cortex-M4 + Cortex-M0+)
+which are more common in the microcontroller space.</p>
+<p>This sounds nice and all but, unfortunately, this PoC is not <em>completely</em> memory
+safe and thus not ready for show time. It has a few memory safety holes around
+its uses of <code>Send</code> and <code>Sync</code> that I&rsquo;m not sure how best to solve.</p>
+<p>To give you an example of the issues I&rsquo;m thinking about: something that&rsquo;s
+<em>single-core</em> <code>Sync</code>, like <a href="https://docs.rs/bare-metal/0.2.4/bare_metal/struct.Mutex.html"><code>bare_metal::Mutex</code></a>, is not necessarily
+<em>multi-core</em> <code>Sync</code> (e.g. <a href="https://docs.rs/spin/0.4.10/spin/struct.Mutex.html"><code>spin::Mutex</code></a> is multi-core <code>Sync</code>) but there&rsquo;s only
+one widely used <code>Sync</code> trait, which most people understand as multi-core <code>Sync</code>.
+I can create my own <code>SingleCoreSync</code> but will the community adopt it? More
+importantly, if we change <code>bare_metal::Mutex</code> to only implement <code>SingleCoreSync</code>
+(and make it sound to use in the multicore RTFM model) then you won&rsquo;t be able to
+use it in <code>static</code> variables (those require a <code>Sync</code> bound) which is a valid use
+case today.</p>
+<p>Another example: a <code>&amp;'static mut T</code> (or a <code>Box&lt;T&gt;</code>) is a safe thing to <code>Send</code>
+from one task to another <em>within a core</em> but across cores safety depends on
+where the reference points to. If it points to memory shared between the cores
+then all&rsquo;s good, but if it points to memory that&rsquo;s only visible to one of the
+cores (e.g. Tightly Coupled Memory) then the operation is UB. The problem is
+that you can&rsquo;t tell where the reference points to by just looking at the type
+because the location is specified using an attribute (<code>#[link_section]</code>).</p>
+<p>I plan to do a more detailed blog post about <code>no_std</code> AMP in Rust. Hopefully,
+the Rust community will give me some good ideas about how to deal with these
+problems!</p>
+<p>Until next time!</p>
+<hr>
+<p><strong>Thank you patrons! ❤️</strong></p>
+<p>I want to wholeheartedly thank:</p>
+<!-- raw HTML omitted -->
+<p><a href="https://github.com/Razican">Iban Eguia</a>,
+<a href="https://github.com/archaelus">Geoff Cant</a>,
+<a href="http://www.harrisonchin.com/">Harrison Chin</a>,
+<a href="https://github.com/brandonedens">Brandon Edens</a>,
+<a href="https://github.com/whitequark">whitequark</a>,
+<a href="https://jamesmunns.com/">James Munns</a>,
+<a href="https://github.com/flundstrom2">Fredrik Lundström</a>,
+<a href="https://github.com/kjetilkjeka">Kjetil Kjeka</a>,
+<a href="https://github.com/korran">Kor Nielsen</a>,
+<a href="https://myrrlyn.net/">Alexander Payne</a>,
+<a href="https://metafluff.com/">Dietrich Ayala</a>,
+<a href="https://github.com/HadrienG2">Hadrien Grasland</a>,
+<a href="https://github.com/vitiral">vitiral</a>,
+<a href="https://github.com/leenozara">Lee Smith</a>,
+<a href="https://github.com/FlorianUekermann">Florian Uekermann</a>,
+<a href="https://github.com/adamgreen">Adam Green</a>
+and 57 more people for supporting my work on Patreon.</p>
+<hr>
+<p>Let&rsquo;s discuss on <a href="https://www.reddit.com/r/rust/comments/a7opk8/eir_real_time_for_the_masses_v04_stable_software/">reddit</a>.</p>
+
+    </div>
+
+    
+    
+    <div class="article-toc" >
+        <h3>Contents</h3>
+        <nav id="TableOfContents"></nav>
+    </div>
+    
+    
+
+    
+  </div>
+</section>
+
+
+<section class="section">
+  <div class="container has-text-centered">
+    <p><a rel="license" href="http://creativecommons.org/licenses/by/4.0/"><img alt="Creative Commons License" src="https://i.creativecommons.org/l/by/4.0/80x15.png" /></a><br/>Jorge Aparicio</p>
+  </div>
+</section>
+
+
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/styles/tomorrow-night.min.css" />
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/highlight.min.js" integrity="sha256-aYTdUrn6Ow1DDgh5JTc3aDGnnju48y/1c8s1dgkYPQ8=" crossorigin="anonymous"></script>
+
+<script type="text/javascript" src="//cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/languages/armasm.min.js"></script>
+
+<script type="text/javascript" src="//cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/languages/c.min.js"></script>
+
+<script type="text/javascript" src="//cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/languages/diff.min.js"></script>
+
+<script type="text/javascript" src="//cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/languages/llvm.min.js"></script>
+
+<script type="text/javascript" src="//cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/languages/rust.min.js"></script>
+
+<script type="text/javascript" src="//cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/languages/shell.min.js"></script>
+
+<script>hljs.initHighlightingOnLoad();</script>
+
+
+</body>

@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8" standalone="yes"?>
+<rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom">
+  <channel>
+    <title>performance on Embedded in Rust</title>
+    <link>https://blog.japaric.io/tags/performance/</link>
+    <description>Recent content in performance on Embedded in Rust</description>
+    <generator>Hugo -- gohugo.io</generator>
+    <language>en-us</language>
+    <copyright>&lt;a rel=&#34;license&#34; href=&#34;http://creativecommons.org/licenses/by/4.0/&#34;&gt;&lt;img alt=&#34;Creative Commons License&#34; src=&#34;https://i.creativecommons.org/l/by/4.0/80x15.png&#34; /&gt;&lt;/a&gt;&lt;br/&gt;Jorge Aparicio</copyright>
+    <lastBuildDate>Sun, 04 Jun 2017 14:08:14 -0500</lastBuildDate><atom:link href="https://blog.japaric.io/tags/performance/index.xml" rel="self" type="application/rss+xml" />
+    <item>
+      <title>A CPU usage monitor for the RTFM framework</title>
+      <link>https://blog.japaric.io/cpu-monitor/</link>
+      <pubDate>Sun, 04 Jun 2017 14:08:14 -0500</pubDate>
+      
+      <guid>https://blog.japaric.io/cpu-monitor/</guid>
+      <description>We have used the RTFM framework in the previous posts but put most of the application logic in tasks, and always sent the processor to sleep in the idle function. In this post we&amp;rsquo;ll put the idle function to better use and build a CPU usage monitor there.
+Idle The main logic of the CPU usage monitor will be in the idle function. Let&amp;rsquo;s see how it works:
+// RESOURCES peripherals!</description>
+    </item>
+    
+  </channel>
+</rss>

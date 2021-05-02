@@ -1,0 +1,1014 @@
+<!DOCTYPE html>
+<html lang="en-us">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta content="Rust, embedded, development" name="keywords">
+<meta content="Jorge Aparicio" name="author">
+<meta property="og:title" content="The ITM and the quest for faster logging - Embedded in Rust">
+<meta property="og:url" content="https://blog.japaric.io/itm/">
+<meta property="og:description" content="A blog about Rust and embedded stuff">
+<meta property="og:type" content="website" />
+<title>The ITM and the quest for faster logging | Embedded in Rust</title>
+<link rel="stylesheet" href="https://blog.japaric.io//css/style.css">
+<link rel="shortcut icon" href="https://blog.japaric.io//wave.ico">
+<link rel="alternate" type="application/atom+xml" title="Embedded in Rust Posts" href="https://blog.japaric.io//index.xml">
+<link href="//maxcdn.bootstrapcdn.com/font-awesome/4.7.0/css/font-awesome.min.css" rel="stylesheet" integrity="sha384-wvfXpqpZZVQGK6TAh5PVlGOfQNHSoD2xbE+QkPxCAFlNEevoEH3Sl0sibVcOQVnN" crossorigin="anonymous">
+
+<link rel="stylesheet" href="//cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/styles/github.min.css">
+
+</head>
+
+<body>
+<section class="section">
+  <div class="container">
+    <nav class="nav">
+      <div class="nav-left">
+        <a class="nav-item" href="https://blog.japaric.io/"><h1 class="title is-4">Embedded in Rust</h1></a>
+      </div>
+      <div class="nav-right">
+        <nav class="nav-item level is-mobile">
+          
+          <a class="level-item" href="https://github.com/japaric" target="_blank">
+            <span class="icon">
+              <i class="fa fa-github"></i>
+            </span>
+          </a>
+          
+          <a class="level-item" href="/index.xml" target="_blank">
+            <span class="icon">
+              <i class="fa fa-rss"></i>
+            </span>
+          </a>
+          
+        </nav>
+      </div>
+    </nav>
+  </div>
+</section>
+
+<section class="section">
+  <div class="container">
+    <h1 class="title">The ITM and the quest for faster logging</h1>
+    <h2 class="subtitle is-5">May 31, 2017 by Jorge Aparicio</h2>
+    
+      <div class="tags">
+    
+        <a class="button is-link" href="/tags/arm-cortex-m">ARM Cortex-M</a>
+    
+        <a class="button is-link" href="/tags/analysis">analysis</a>
+    
+</div>
+
+    
+    <div class="content">
+      <p>In this post we&rsquo;ll explore the different alternatives one has to log data from a
+microcontroller to some host machine. Be it for printf style debugging or for
+logging sensor data.</p>
+<h1 id="the-blue-pill">The Blue Pill</h1>
+<p>This time I&rsquo;ll use a different development board: the <a href="http://wiki.stm32duino.com/index.php?title=Blue_Pill">Blue Pill</a>.</p>
+<p><img src="/itm/blue-pill.jpg" alt="Blue Pill"></p>
+<p>On the center the Blue Pill development board. On the left side a UART to USB
+adapter based on the CH340G. On the right side an SWD programmer: a Chinese
+clone of the ST-LINK.</p>
+<p>If so far you have been tagging along without getting your hands dirty then this
+a good starter kit. I bought these for around $5 <sup id="fnref:1"><a href="#fn:1" class="footnote-ref" role="doc-noteref">1</a></sup> <sup id="fnref:2"><a href="#fn:2" class="footnote-ref" role="doc-noteref">2</a></sup> <sup id="fnref:3"><a href="#fn:3" class="footnote-ref" role="doc-noteref">3</a></sup> with free
+shipping to Peru. I&rsquo;m quite fond of this board mainly because of its form
+factor; it can fit in [lots] of interesting [places] :-).</p>
+<p>These are the specifications of the Blue Pill:</p>
+<ul>
+<li>
+<p>STM32F103C8 microcontroller. 72 MHz, 64 KB (or 128 KB if you are lucky) of
+Flash memory, 20 KB of RAM, UART, I2C, SPI, ADC, PWM, timers, etc.</p>
+</li>
+<li>
+<p>Pretty much all the pins of the microcontroller are exposed. <a href="http://wiki.stm32duino.com/images/a/ae/Bluepillpinout.gif">Pinout diagram</a>.</p>
+</li>
+<li>
+<p>Micro USB port connected to the USB pins of the STM32F103.</p>
+</li>
+<li>
+<p>32.768 KHz crystal (for the Real Time Clock).</p>
+</li>
+<li>
+<p>8 MHz external crystal.</p>
+</li>
+<li>
+<p>Power LED and one user LED</p>
+</li>
+<li>
+<p>Reset button</p>
+</li>
+<li>
+<p>SWD header</p>
+</li>
+</ul>
+<p>And that&rsquo;s it. It&rsquo;s a pretty bare bones development board.</p>
+<p>Now on to the main topic.</p>
+<h1 id="semihosting-is-very-slow">Semihosting is very slow</h1>
+<p>In the first post I showed you a way to print messages to the console: <a href="/quickstart/#hello-world">the
+<code>hprintln!</code> macro</a>. This macro uses a technique called semihosting
+and requires that the program runs under a debugger like GDB.</p>
+<p>Let&rsquo;s see how slow this macro actually is with this program:</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">t1</span>(_task: <span style="color:#a6e22e">Exti0</span>, _prio: <span style="color:#a6e22e">P1</span>, _thr: <span style="color:#a6e22e">T1</span>) {
+    <span style="color:#75715e">// read CYCCNT
+</span><span style="color:#75715e"></span>
+    hprintln<span style="color:#f92672">!</span>(<span style="color:#e6db74">&#34;The quick brown fox jumps over the lazy dog.&#34;</span>);
+
+    rtfm::bkpt(); <span style="color:#75715e">// read CYCCNT
+</span><span style="color:#75715e"></span>}
+</code></pre></div><p>(You can find the full source code of this program in
+the <a href="#appendix">appendix</a>. We&rsquo;ll modify this program throughout this post).</p>
+<p>We&rsquo;ll use the timing method I showed you in <a href="/rtfm-overhead/">the last blog post</a>:</p>
+<pre><code class="language-console" data-lang="console">&gt; tbreak semihosting::main::INTERRUPTS::t1
+&gt; continue
+&gt; x 0xe0001004 # read CYCCNT
+0xe0001004:     0x02df1c0c
+
+&gt; x 0xe0001004 # read CYCCNT
+0xe0001004:     0x02df1c16
+
+&gt; print 0x02df1c16 - 0x02df1c0c
+$1 = 10
+</code></pre><p>10 cycles sounds very fast but that number doesn&rsquo;t reflect the real cost of
+using semihosting. Semihosting calls halt the processor so CYCCNT doesn&rsquo;t
+increase during those calls. In real time each call takes much longer.</p>
+<p>To measure the real time spent we&rsquo;ll use a timer that doesn&rsquo;t stop when the
+processor is halted. Most hardware timers have this property, unless they&rsquo;ve
+been configured to do otherwise. We&rsquo;ll use TIM1, a 16-bit timer, to measure the
+elapsed time:</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">init</span>(<span style="color:#66d9ef">ref</span> prio: <span style="color:#a6e22e">P0</span>, thr: <span style="color:#66d9ef">&amp;</span><span style="color:#a6e22e">TMax</span>) {
+    <span style="color:#66d9ef">let</span> rcc <span style="color:#f92672">=</span> <span style="color:#f92672">&amp;</span>RCC.access(prio, thr);
+    <span style="color:#66d9ef">let</span> tim1 <span style="color:#f92672">=</span> <span style="color:#f92672">&amp;</span>TIM1.access(prio, thr);
+
+    <span style="color:#75715e">// Configure TIM1 in continuous mode and to run at 100 KHz
+</span><span style="color:#75715e"></span>    rcc.apb2enr.modify(<span style="color:#f92672">|</span>_, w<span style="color:#f92672">|</span> <span style="color:#66d9ef">unsafe</span> { w.tim1en().bits(<span style="color:#ae81ff">1</span>) });
+    tim1.psc.write(<span style="color:#f92672">|</span>w<span style="color:#f92672">|</span> <span style="color:#66d9ef">unsafe</span> { w.psc().bits(<span style="color:#ae81ff">79</span>) });
+    tim1.arr.write(<span style="color:#f92672">|</span>w<span style="color:#f92672">|</span> <span style="color:#66d9ef">unsafe</span> { w.arr().bits(<span style="color:#ae81ff">0xffff</span>) });
+    tim1.cr1.write(<span style="color:#f92672">|</span>w<span style="color:#f92672">|</span> <span style="color:#66d9ef">unsafe</span> { w.opm().bits(<span style="color:#ae81ff">0</span>).cen().bits(<span style="color:#ae81ff">1</span>) });
+}
+
+<span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">t1</span>(_task: <span style="color:#a6e22e">Exti0</span>, <span style="color:#66d9ef">ref</span> prio: <span style="color:#a6e22e">P1</span>, <span style="color:#66d9ef">ref</span> thr: <span style="color:#a6e22e">T1</span>) {
+    <span style="color:#66d9ef">let</span> tim1 <span style="color:#f92672">=</span> TIM1.access(prio, thr);
+
+    <span style="color:#66d9ef">let</span> before <span style="color:#f92672">=</span> tim1.cnt.read().bits();
+    hprintln<span style="color:#f92672">!</span>(<span style="color:#e6db74">&#34;The quick brown fox jumps over the lazy dog&#34;</span>);
+    <span style="color:#66d9ef">let</span> after <span style="color:#f92672">=</span> tim1.cnt.read().bits();
+    <span style="color:#66d9ef">let</span> elapsed <span style="color:#f92672">=</span> after.wrapping_sub(before);
+
+    <span style="color:#75715e">// Volatile magic to make LLVM not throw away the result of the measurement
+</span><span style="color:#75715e"></span>    <span style="color:#66d9ef">unsafe</span> {
+        ptr::write_volatile(<span style="color:#ae81ff">0x2000_0000</span> <span style="color:#66d9ef">as</span> <span style="color:#f92672">*</span><span style="color:#66d9ef">mut</span> _, elapsed);
+    }
+
+    rtfm::bkpt();
+}
+</code></pre></div><p>We&rsquo;ll configure the TIM1 timer to run at 100 KHz. Since it&rsquo;s a 16-bit timer this
+should let us measure times of up to half a second without having to worry about
+keeping track of times the counter wraps around.</p>
+<pre><code class="language-console" data-lang="console">&gt; continue
+&gt; x 0x20000000
+0x20000000:     0x000029f1
+
+&gt; print 0x00002974
+$1 = 10737
+</code></pre><p>The measurement says 10737 <em>TIM1</em> clock cycles. At 100 KHz one cycle is 10
+microseconds, so the total time spent is about 107 milliseconds. That&rsquo;s an
+eternity in microcrontroller time! Unless you are debugging timing insensitive
+programs then you should not use semihosting for any kind of logging.</p>
+<p>What other alternatives do we have?</p>
+<h2 id="serial">Serial</h2>
+<p>I&rsquo;ve used a serial interface in the previous posts but didn&rsquo;t go into much
+detail about it back then so let&rsquo;s talk about it in this post.</p>
+<p>Pretty much all the microcontrollers out there come with a UART (Universal
+Asynchronous Receiver / Transmitter) peripheral that can be used for
+asynchronous serial communication. The UART is highly configurable but probably
+the most used configuration is the 8N1 configuration: 1 start bit, 8 data bits
+and 1 stop bit per data frame; 8N1 is probably what most people mean when they
+just say <em>serial</em> interface.</p>
+<p>The speed of the interface, referred to as <em>baud rate</em>, can go from tens of bits
+per second (bps) to millions of bit per second (Mbps). Both sides of the
+communication channel must agree on the baud rate <em>beforehand</em> as there&rsquo;s no
+clock signal shared between them &ndash; this is why it&rsquo;s called asynchronous
+communication. The UART supports independent transmission (TX) and reception
+(RX) between the two end points through two signals, one per wire. Because they
+are independent the TX and RX signal don&rsquo;t need to be in lockstep.</p>
+<p>The signals that come out of the UART peripheral can&rsquo;t be directly connected to
+a laptop or smartphone as none of those two usually has a serial port (much less
+one that operates at the 3.3V). However, one can use an adapter to convert the
+UART signal into a more common protocol. Possibly the two most common UART
+adapters are UART to USB adapters and UART to Bluetooth (RFCOMM) adapters.
+Putting an adapter in between enables communication between a microcontroller
+and a laptop.</p>
+<p>Below is shown the Blue Pill connected to my laptop using a UART to USB adapter,
+the one with the green and yellow wires.</p>
+<p><img src="/itm/blue-pill-serial.jpg" alt="Blue Pill + Serial connection"></p>
+<p>We are looking for a fast way to log data so how fast can a serial interface go?
+It depends on the hardware. On the STM32F103 the baud rate can reach one
+sixteenth of the core clock (HCLK) frequency. HCLK defaults to 8 MHz on the
+STM32F103; that gives you a baud rate of 500 Kbps. The maximum HCLK frequency
+on the STM32F103 is 72 MHz; that would result in a baud rate of 6 Mbps. However,
+that&rsquo;s not the only variable; you need take into account the adapter as well.
+The adapter I&rsquo;ve shown above supports a maximum baud rate of 2 Mbps.</p>
+<p>Let&rsquo;s now do some measurements:</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#66d9ef">const</span> BAUD_RATE: <span style="color:#66d9ef">u32</span> <span style="color:#f92672">=</span> <span style="color:#ae81ff">500_000</span>;
+
+<span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">t1</span>(_task: <span style="color:#a6e22e">Exti0</span>, <span style="color:#66d9ef">ref</span> prio: <span style="color:#a6e22e">P1</span>, <span style="color:#66d9ef">ref</span> thr: <span style="color:#a6e22e">T1</span>) {
+    <span style="color:#75715e">// read CYCCNT
+</span><span style="color:#75715e"></span>
+    <span style="color:#66d9ef">let</span> usart1 <span style="color:#f92672">=</span> USART1.access(prio, thr);
+
+    <span style="color:#66d9ef">let</span> serial <span style="color:#f92672">=</span> Serial(<span style="color:#f92672">&amp;</span>usart1);
+
+    <span style="color:#66d9ef">for</span> byte <span style="color:#66d9ef">in</span> <span style="color:#e6db74">b&#34;The quick brown fox jumps over the lazy dog</span><span style="color:#ae81ff">\n</span><span style="color:#e6db74">&#34;</span>.iter() {
+        <span style="color:#75715e">// `write` returns an error if the byte couldn&#39;t be sent due to the
+</span><span style="color:#75715e"></span>        <span style="color:#75715e">// hardware being busy. This loop retries the write until it succeeds.
+</span><span style="color:#75715e"></span>        <span style="color:#66d9ef">while</span> serial.write(<span style="color:#f92672">*</span>byte).is_err() {}
+    }
+
+    rtfm::bkpt(); <span style="color:#75715e">// read CYCCNT
+</span><span style="color:#75715e"></span>}
+</code></pre></div><p>We&rsquo;ll transmit the same message as in the previous measurement.</p>
+<pre><code class="language-console" data-lang="console">&gt; tbreak serial::main::INTERRUPTS::t1
+&gt; continue
+&gt; x 0xe0001004 # read CYCCNT
+0xe0001004:     0x0028b969
+
+&gt; continue
+&gt; x 0xe0001004 # read CYCCNT
+0xe0001004:     0x0028d3d4
+
+&gt; print 0x0028d3d4 - 0x0028b969
+$1 = 6763
+</code></pre><p>6763 cycles at 125 nanoseconds per cycle is 795 microseconds. That&rsquo;s much better
+than semihosting, at least two orders of magnitude better. Translating that to
+bytes per second would be <code>44 B / 795 μs = 55 KB/s</code>.</p>
+<p>Can we do better? Yes, there&rsquo;s a faster peripheral specifically designed for
+logging and tracing: the ITM (Instrumentation Trace Macrocell). Let&rsquo;s try it.</p>
+<h2 id="itm">ITM</h2>
+<p>Unlike the UART peripheral, which although ubiquitous varies per device, the ITM
+is a core peripheral and works the same &ndash; it has the same set of registers &ndash;
+on all the microcontrollers that have it (Cortex-M3+). Like the UART the ITM
+exposes an asynchronous serial interface but only allows one way transmission
+through the SWO pin (the PB3 pin on the STM32F103).</p>
+<p>Some SWD programmers support reading the SWO pin. In that case the SWO pin can
+be connected to the SWD programmer and have the programmer take care of
+receiving the data. Some boards which have on-board programmers, like the
+STM32F3DISCOVERY (shown below), even come with the SWO pin already connected to
+the programmer so ITM will work by just connecting a USB cable to the board.</p>
+<p><img src="/itm/f3.jpg" alt="F3DISCOVERY"></p>
+<p>The ITM needs to be configured before you can use it but if you are using
+OpenOCD then using the <code>tpiu</code> command from OpenCD will perform all the required
+configuration. You can put that command in the <code>.gdbinit</code> file to have it run on
+every GDB session.</p>
+<pre><code class="language-console" data-lang="console">$ cat .gdbinit
+(..)
+monitor tpiu config internal itm.fifo uart off 8000000
+(..)
+</code></pre><p>(This command is included, but commented out, in the <a href="https://github.com/japaric/cortex-m-quickstart/blob/v0.1.8/.gdbinit">.gdbinit</a> file that ships
+with recent versions of the <a href="https://crates.io/crates/cortex-m-quickstart/0.1.8">cortex-m-quickstart</a> template.)</p>
+<p>The above command will configure OpenOCD to capture the SWO output and write it
+to the <code>itm.fifo</code>  file (the <code>internal itm.fifo</code> part). The command will also
+configure the ITM to use NRZ <sup id="fnref:4"><a href="#fn:4" class="footnote-ref" role="doc-noteref">4</a></sup> encoding (the <code>uart</code> part). The final
+argument, <code>8000000</code> in this case, must match the TRACECLKIN clock, which is
+usually the same as the core clock frequency (HCLK). One can pass an extra
+argument to the <code>tpiu</code> command that will set the frequency of the SWO pin. If
+that argument is omitted OpenOCD will select the frequency of the SWO pin
+automatically and try to use the highest frequency possible. In the case of the
+STM32F103 OpenOCD will pick an SWO frequency of 2 MHz.</p>
+<p>How do we receive the ITM message? Let&rsquo;s find out with the following program:</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">t1</span>(_task: <span style="color:#a6e22e">Exti0</span>, <span style="color:#66d9ef">ref</span> prio: <span style="color:#a6e22e">P1</span>, <span style="color:#66d9ef">ref</span> thr: <span style="color:#a6e22e">T1</span>) {
+    <span style="color:#75715e">// read CYCCNT
+</span><span style="color:#75715e"></span>
+    <span style="color:#66d9ef">let</span> itm <span style="color:#f92672">=</span> ITM.access(prio, thr);
+
+    <span style="color:#75715e">// This sends the string over the ITM stimulus port 0
+</span><span style="color:#75715e"></span>    iprintln<span style="color:#f92672">!</span>(<span style="color:#f92672">&amp;</span>itm.stim[<span style="color:#ae81ff">0</span>], <span style="color:#e6db74">&#34;The quick brown fox jumps over the lazy dog&#34;</span>);
+
+    rtfm::bkpt(); <span style="color:#75715e">// read CYCCNT
+</span><span style="color:#75715e"></span>}
+</code></pre></div><p>If you run this program you&rsquo;ll notice that an <code>itm.fifo</code> file will be created in
+the same directory where you called the <code>openocd</code> command. Let&rsquo;s check the
+contents of that file:</p>
+<pre><code class="language-console" data-lang="console">$ cat itm.fifo
+The quick brown fox jumps over the lazy dog
+</code></pre><p>The message is there but is that all there is?</p>
+<pre><code class="language-console" data-lang="console">$ stat --printf=%s itm.fifo
+55
+
+$ python -c 'print(len(&quot;The quick brown fox jumps over the lazy dog\n&quot;))'
+44
+</code></pre><p>The file appears to have 11 extra bytes in there. This is actually expected: the
+ITM works with <em>frames</em>, and each frame has a 1-byte header. The header contains
+the size of the frame which can be 1, 2 or 4 bytes in size.</p>
+<p>These headers are easier to spot if you print the contents of the file in
+hexadecimal format:</p>
+<pre><code class="language-console" data-lang="console">$ xxd -p itm.fifo
+03546865200371756963036b206272036f776e2003666f7820036a756d70
+0373206f760365722074036865206c03617a792003646f670a
+</code></pre><p>There&rsquo;s a bunch of <code>0x03</code> values in there; those are the headers of the frames.
+After each header comes the payload of the frame, which is 4 bytes for every
+frame in the previous case.</p>
+<p>In this case the header didn&rsquo;t cause problem when printing the contents of the
+file, but this may not always be the case. It&rsquo;s better to parse the frames and
+only extract the payloads. That&rsquo;s why the <a href="https://docs.rs/itm/0.1.1/itm/"><code>itmdump</code></a> tool was created.</p>
+<p><code>itmdump</code> takes a path as its only argument; <code>itmdump</code> will create a named pipe
+at that path. <code>itmdump</code> must be called <em>before</em> the GDB session begins. Once the
+GDB session begins OpenOCD will start writing to the named pipe and <code>itmdump</code>
+will parse the frames that come from the pipe and print the payloads to stdout:</p>
+<pre><code class="language-console" data-lang="console">$ cargo install itm --vers 0.1.1
+
+$ itmdump itm.fifo | tee clean
+The quick brown fox jumps over the lazy dog
+
+$ stat --printf=%s clean
+44
+</code></pre><p>Now let&rsquo;s time the ITM operation:</p>
+<pre><code class="language-console" data-lang="console">&gt; tbreak itm::main::INTERRUPTS::t1
+&gt; continue
+&gt; x 0xe0001004 # read CYCCNT
+0xe0001004:     0x007b3dd2
+
+&gt; continue
+&gt; x 0xe0001004 # read CYCCNT
+0xe0001004:     0x007b4367
+
+&gt; print 0x007b4367 - 0x007b3dd2
+$1 = 1429
+</code></pre><p>1429 cycles at 125 nanoseconds per cycle is about 178 microseconds. 44 bytes in
+178 microseconds is 246 KB/s.</p>
+<p>The ITM version takes less that one fourth of the time the UART version took.
+This makes sense as the ITM stimulus ports are working at 2 Mbps, which is four
+times the UART speed.</p>
+<h3 id="aligned-buffers">Aligned buffers</h3>
+<p>Not only is the ITM wire speed is higher than the UART wire speed but the ITM
+also has a hardware FIFO buffer so the processor doesn&rsquo;t have to wait until the
+data has been transmitted; it can push data into the buffer without waiting at
+least while the buffer is not full.</p>
+<p>Also because the size of ITM frames can be 1, 2 or 4 bytes, for example, a 16
+byte buffer can be transmitted in 4 32-bit frames whereas with the UART 16 8-bit
+frames would be required. This results in less register writes which means less
+processor work.</p>
+<p>These two features don&rsquo;t affect data throughput, but they reduce blocking /
+waiting time. For maximum effect, though, the buffer to transmit must be 4 byte
+aligned. The <a href="https://crates.io/crates/cortex-m/0.2.9"><code>cortex-m</code></a> crate provides a <a href="https://docs.rs/cortex-m/0.2.9/cortex_m/itm/fn.write_aligned.html"><code>write_aligned</code></a> function optimized
+to send 4 byte aligned buffers and a general <a href="https://docs.rs/cortex-m/0.2.9/cortex_m/itm/fn.write_all.html"><code>write_all</code></a> function to send
+buffers with unknown alignment at compile time.</p>
+<p>Let&rsquo;s compare those two functions:</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">t1</span>(_task: <span style="color:#a6e22e">Exti0</span>, <span style="color:#66d9ef">ref</span> prio: <span style="color:#a6e22e">P1</span>, <span style="color:#66d9ef">ref</span> thr: <span style="color:#a6e22e">T1</span>) {
+    <span style="color:#75715e">// Buffer with unknown alignment
+</span><span style="color:#75715e"></span>    <span style="color:#66d9ef">static</span> MSG: [<span style="color:#66d9ef">u8</span>; <span style="color:#ae81ff">7</span>] <span style="color:#f92672">=</span> <span style="color:#f92672">*</span><span style="color:#e6db74">b&#34;Hello!</span><span style="color:#ae81ff">\n</span><span style="color:#e6db74">&#34;</span>;
+
+    <span style="color:#75715e">// read CYCCNT
+</span><span style="color:#75715e"></span>
+    <span style="color:#66d9ef">let</span> itm <span style="color:#f92672">=</span> <span style="color:#f92672">&amp;</span>ITM.access(prio, thr);
+
+    itm::write_all(<span style="color:#f92672">&amp;</span>itm.stim[<span style="color:#ae81ff">0</span>], <span style="color:#f92672">&amp;</span>MSG);
+
+    rtfm::bkpt(); <span style="color:#75715e">// read CYCCNT
+</span><span style="color:#75715e"></span>}
+</code></pre></div><pre><code class="language-console" data-lang="console">&gt; tbreak unaligned::main::INTERRUPTS::t1
+&gt; continue
+&gt; x 0xe0001004 # read CYCCNT
+0xe0001004:     0x0088e5b1
+
+&gt; continue
+&gt; x 0xe0001004 # read CYCCNT
+0xe0001004:     0x0088e5ed
+
+&gt; print 0x0088e5ed - 0x0088e5b1
+$2 = 60
+</code></pre><p>60 cycles for the buffer with unknown alignment.</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#75715e">// version = &#34;0.1.1&#34;
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">extern</span> <span style="color:#66d9ef">crate</span> aligned;
+
+<span style="color:#66d9ef">use</span> aligned::Aligned;
+
+<span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">t1</span>(_task: <span style="color:#a6e22e">Exti0</span>, <span style="color:#66d9ef">ref</span> prio: <span style="color:#a6e22e">P1</span>, <span style="color:#66d9ef">ref</span> thr: <span style="color:#a6e22e">T1</span>) {
+    <span style="color:#75715e">// Buffer aligned to a 4 byte boundary
+</span><span style="color:#75715e"></span>    <span style="color:#75715e">// The first type parameter specifies the alignment. `u32` equals 4 byte
+</span><span style="color:#75715e"></span>    <span style="color:#75715e">// aligment, `u16` equals 2 byte alignment, and so on.
+</span><span style="color:#75715e"></span>    <span style="color:#75715e">// The second type parameter is the type of the array
+</span><span style="color:#75715e"></span>    <span style="color:#66d9ef">static</span> MSG: <span style="color:#a6e22e">Aligned</span><span style="color:#f92672">&lt;</span><span style="color:#66d9ef">u32</span>, [<span style="color:#66d9ef">u8</span>; <span style="color:#ae81ff">7</span>]<span style="color:#f92672">&gt;</span> <span style="color:#f92672">=</span> Aligned(<span style="color:#f92672">*</span><span style="color:#e6db74">b&#34;Hello!</span><span style="color:#ae81ff">\n</span><span style="color:#e6db74">&#34;</span>);
+
+    <span style="color:#75715e">// read CYCCNT
+</span><span style="color:#75715e"></span>
+    <span style="color:#66d9ef">let</span> itm <span style="color:#f92672">=</span> <span style="color:#f92672">&amp;</span>ITM.access(prio, thr);
+
+    itm::write_aligned(<span style="color:#f92672">&amp;</span>itm.stim[<span style="color:#ae81ff">0</span>], <span style="color:#f92672">&amp;</span>MSG);
+
+    rtfm::bkpt(); <span style="color:#75715e">// read CYCCNT
+</span><span style="color:#75715e"></span>}
+</code></pre></div><pre><code class="language-console" data-lang="console">&gt; tbreak aligned::main::INTERRUPTS::t1
+&gt; continue
+&gt; x 0xe0001004 # read CYCCNT
+0xe0001004:     0x0095a1f9
+
+&gt; continue
+&gt; x 0xe0001004 # read CYCCNT
+0xe0001004:     0x0095a21a
+
+&gt; print 0x0095a21a - 0x0095a1f9
+$2 = 33
+</code></pre><p>33 cycles for the 4 byte aligned buffer. About half the time of the unaligned
+version!</p>
+<p>If you look at the disassembly of this second version:</p>
+<pre><code class="language-armasm" data-lang="armasm">080006d6 &lt;itm::main::INTERRUPTS::t1&gt;:
+ 80006d6:	f04f 4060 	mov.w	r0, #3758096384	; 0xe0000000
+ 80006da:	6801      	ldr	r1, [r0, #0]
+ 80006dc:	2901      	cmp	r1, #1
+ 80006de:	d1fc      	bne.n	80006da &lt;itm::main::INTERRUPTS::t1+0x4&gt;
+ 80006e0:	f246 5148 	movw	r1, #25928	; 0x6548
+ 80006e4:	f04f 4060 	mov.w	r0, #3758096384	; 0xe0000000
+ 80006e8:	f6c6 416c 	movt	r1, #27756	; 0x6c6c
+ 80006ec:	6001      	str	r1, [r0, #0]	; 32 bit write
+ 80006ee:	6801      	ldr	r1, [r0, #0]
+ 80006f0:	2901      	cmp	r1, #1
+ 80006f2:	d1fc      	bne.n	80006ee &lt;itm::main::INTERRUPTS::t1+0x18&gt;
+ 80006f4:	f04f 4060 	mov.w	r0, #3758096384	; 0xe0000000
+ 80006f8:	f242 116f 	movw	r1, #8559	; 0x216f
+ 80006fc:	8001      	strh	r1, [r0, #0]	; 16 bit write
+ 80006fe:	6801      	ldr	r1, [r0, #0]
+ 8000700:	2901      	cmp	r1, #1
+ 8000702:	d1fc      	bne.n	80006fe &lt;itm::main::INTERRUPTS::t1+0x28&gt;
+ 8000704:	f04f 4060 	mov.w	r0, #3758096384	; 0xe0000000
+ 8000708:	210a      	movs	r1, #10
+ 800070a:	7001      	strb	r1, [r0, #0]	; 8 bit write
+ 800070c:	be00      	bkpt	0x0000
+ 800070e:	4770      	bx	lr
+</code></pre><p>You can see that sending the 7 byte buffer translates to one 32 bit write,
+one 16 bit write and one 8 bit write to the ITM register. There are no loops;
+the operation has been unrolled by LLVM.</p>
+<h3 id="standalone-swo">Standalone SWO</h3>
+<p>AFAIS most SWD programmers <em>don&rsquo;t</em> support reading the SWO pin. For instance the
+ST-LINK I&rsquo;m using doesn&rsquo;t. However, you can still make use the SWO pin, and of
+the ITM, if you connect the SWO pin to a UART to USB adapter or similar. The ITM
+can be configured to output a NRZ signal, which is what we have been doing so
+far, and this signal is compatible with UART adapters.</p>
+<p>Below is shown the SWO pin of the Blue Pill, the PB3 pin, connected to a UART
+adapter.</p>
+<p><img src="/itm/blue-pill-itm.jpg" alt="Blue Pill + ITM connection"></p>
+<p>To use this different configuration the <code>tpiu</code> command needs to be changed:</p>
+<pre><code class="language-console" data-lang="console">$ cat .gdbinit
+(..)
+monitor tpiu config external uart off 8000000 2000000
+(..)
+</code></pre><p><code>external</code> means &ldquo;don&rsquo;t capture SWO output into a file&rdquo;, as the SWO pin may not
+be connected. The final argument <code>2000000</code>, which is now mandatory, indicates
+the SWO frequency.</p>
+<p>With those changes you can directly read, for example, the <code>/dev/ttyUSB0</code> file
+as if it were the <code>itm.fifo</code> file.</p>
+<h2 id="itm-vs-serial">ITM vs Serial</h2>
+<p>Or why you should be using the ITM:</p>
+<p>The advantages:</p>
+<ul>
+<li>
+<p>ITM&rsquo;s transmission speed is faster than Serial&rsquo;s. 2 Mbps vs 500 Kbps when the
+core clock frequency is 8 MHz, at least on the STM32F103.</p>
+</li>
+<li>
+<p>ITM doesn&rsquo;t need an extra connection or extra hardware but only if a SWD
+programmer is already connected to the device <em>and</em> the SWD programmer
+supports reading the SWO pin.</p>
+</li>
+<li>
+<p>ITM supports all sort of other functions like sampling the Program
+Counter and tracking memory accesses.</p>
+</li>
+</ul>
+<p>Neither an advantage or a disadvantage:</p>
+<ul>
+<li>
+<p>If the SWD programmer doesn&rsquo;t support reading the SWO pin then you need a
+UART adapter and one extra connection. This is also the case for Serial so
+neither is at a disadvantage here.</p>
+</li>
+<li>
+<p>Both can be used without having the microcontroller connected to a SWD
+programmer. So they can be used in both development mode and in production.</p>
+</li>
+</ul>
+<p>The disadvantages:</p>
+<ul>
+<li>
+<p>ITM doesn&rsquo;t work with the DMA (Direct Memory Access) peripheral.</p>
+</li>
+<li>
+<p>ITM doesn&rsquo;t support receiving data from the host whereas Serial does.</p>
+</li>
+<li>
+<p>Cortex-M0 and Cortex-M0+ microcontrollers don&rsquo;t seem to have ITM hardware,
+AFAIS.</p>
+</li>
+</ul>
+<h1 id="formatting-is-slow">Formatting is slow</h1>
+<p>Another thing you will probably want to do is format numbers into strings for
+human consumption rather than transmitting predefined strings. Let&rsquo;s explore our
+options:</p>
+<h2 id="the-baseline">The baseline</h2>
+<p>For comparison we&rsquo;ll measure the time it takes to format and print two <code>i16</code>
+integers using the format string <code>&quot;{}, {}\n&quot;</code>.</p>
+<p>To get a better idea of how much time is spent transmitting the formatted string
+and how much time is spent doing the formatting itself let&rsquo;s first measure the
+operation of sending the string <code>&quot;-32768, 32767\n&quot;</code>, which is the largest string
+that the formatting operation can produce.</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">t1</span>(_task: <span style="color:#a6e22e">Exti0</span>, <span style="color:#66d9ef">ref</span> prio: <span style="color:#a6e22e">P1</span>, <span style="color:#66d9ef">ref</span> thr: <span style="color:#a6e22e">T1</span>) {
+    <span style="color:#75715e">// read CYCCNT
+</span><span style="color:#75715e"></span>
+    <span style="color:#66d9ef">let</span> itm <span style="color:#f92672">=</span> <span style="color:#f92672">&amp;</span>ITM.access(prio, thr);
+
+    iprintln<span style="color:#f92672">!</span>(<span style="color:#f92672">&amp;</span>itm.stim[<span style="color:#ae81ff">0</span>], <span style="color:#e6db74">&#34;-32768, 32767&#34;</span>);
+
+    rtfm::bkpt(); <span style="color:#75715e">// read CYCCNT
+</span><span style="color:#75715e"></span>}
+</code></pre></div><pre><code class="language-console" data-lang="console">&gt; tbreak baseline::main::INTERRUPTS::t1
+&gt; continue
+&gt; x 0xe0001004 # read CYCCNT
+0xe0001004:     0x000da167
+
+&gt; continue
+&gt; x 0xe0001004 # read CYCCNT
+0xe0001004:     0x000da1b0
+
+&gt; print 0x000da1b0 - 0x000da167
+$1 = 73
+</code></pre><p>73 clock cycles spent transmitting 14 bytes. Let&rsquo;s also keep an eye on the size
+of the program.</p>
+<pre><code class="language-console" data-lang="console">$ arm-none-eabi-size baseline
+   text    data     bss     dec     hex filename
+   1356       0       0    1356     54c baseline
+
+$ arm-none-eabi-size -A baseline
+baseline  :
+section                size        addr
+.vector_table           304   134217728
+.text                  1038   134218752
+.rodata                  14   134219792
+</code></pre><p>1038 bytes of instructions (<code>.text</code>) and 14 bytes of constants / strings
+(<code>.rodata</code>).</p>
+<h2 id="corefmt"><code>core::fmt</code></h2>
+<p>You first choice for formatting is probably going to be the <code>core::fmt</code>
+machinery provided by the standard library. Let&rsquo;s see how it fares.</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#66d9ef">static</span> <span style="color:#66d9ef">mut</span> R1: <span style="color:#66d9ef">i16</span> <span style="color:#f92672">=</span> <span style="color:#f92672">-</span><span style="color:#ae81ff">32_768</span>;
+<span style="color:#66d9ef">static</span> <span style="color:#66d9ef">mut</span> R2: <span style="color:#66d9ef">i16</span> <span style="color:#f92672">=</span> <span style="color:#ae81ff">32_767</span>;
+
+<span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">t1</span>(_task: <span style="color:#a6e22e">Exti0</span>, <span style="color:#66d9ef">ref</span> prio: <span style="color:#a6e22e">P1</span>, <span style="color:#66d9ef">ref</span> thr: <span style="color:#a6e22e">T1</span>) {
+    <span style="color:#75715e">// read CYCCNT
+</span><span style="color:#75715e"></span>
+    <span style="color:#75715e">// Volatile magic to prevent LLVM from inlining the values of R1 and R2 into
+</span><span style="color:#75715e"></span>    <span style="color:#75715e">// this function
+</span><span style="color:#75715e"></span>    <span style="color:#66d9ef">let</span> r1 <span style="color:#f92672">=</span> <span style="color:#66d9ef">unsafe</span> { ptr::read_volatile(<span style="color:#f92672">&amp;</span>R1) };
+    <span style="color:#66d9ef">let</span> r2 <span style="color:#f92672">=</span> <span style="color:#66d9ef">unsafe</span> { ptr::read_volatile(<span style="color:#f92672">&amp;</span>R2) };
+
+    <span style="color:#66d9ef">let</span> itm <span style="color:#f92672">=</span> <span style="color:#f92672">&amp;</span>ITM.access(prio, thr);
+
+    <span style="color:#75715e">// This macro uses the core::fmt::Write trait
+</span><span style="color:#75715e"></span>    iprintln<span style="color:#f92672">!</span>(<span style="color:#f92672">&amp;</span>itm.stim[<span style="color:#ae81ff">0</span>], <span style="color:#e6db74">&#34;{}, {}&#34;</span>, r1, r2);
+
+    rtfm::bkpt(); <span style="color:#75715e">// read CYCCNT
+</span><span style="color:#75715e"></span>}
+</code></pre></div><pre><code class="language-console" data-lang="console">&gt; break format::main::INTERRUPTS::t1
+&gt; continue
+&gt; x 0xe0001004 # read CYCCNT
+0xe0001004:     0x0167b40d
+
+&gt; continue
+&gt; x 0xe0001004 # read CYCCNT
+0xe0001004:     0x0167b745
+
+&gt; print 0x0167b745 - 0x0167b40d
+$1 = 824
+</code></pre><p>824 cycles compared to the baseline of 137 cycles is <code>824 / 73 = 1128.77%</code>, or
+almost eleven times the baseline number.</p>
+<p>Program size wise:</p>
+<pre><code class="language-console" data-lang="console">$ arm-none-eabi-size -A format
+   text    data     bss     dec     hex filename
+   4114       4       0    4118    1016 format
+
+$ arm-none-eabi-size -A format
+format  :
+section                size        addr
+.vector_table           304   134217728
+.text                  3558   134218752
+.rodata                 252   134222312
+.data                     4   536870912
+</code></pre><p>Compared to the baseline program the <code>.text</code> section increased by 2520 bytes,
+and the <code>.rodata</code> section increased by 238 bytes.</p>
+<h2 id="numtoa"><code>numtoa</code></h2>
+<p>Another option is the <a href="https://crates.io/crates/numtoa/0.0.7"><code>numtoa</code></a> crate. This crate provides an API for
+formatting numbers into byte buffers (<code>[u8]</code>). We can use this crate to format
+each number independently and then piece them together into a larger buffer.
+Once that&rsquo;s done we can transmit the whole thing.</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#75715e">// version = &#34;0.0.7&#34;
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">extern</span> <span style="color:#66d9ef">crate</span> numtoa;
+
+<span style="color:#66d9ef">use</span> numtoa::NumToA;
+
+<span style="color:#66d9ef">static</span> <span style="color:#66d9ef">mut</span> R1: <span style="color:#66d9ef">i16</span> <span style="color:#f92672">=</span> <span style="color:#f92672">-</span><span style="color:#ae81ff">32_768</span>;
+<span style="color:#66d9ef">static</span> <span style="color:#66d9ef">mut</span> R2: <span style="color:#66d9ef">i16</span> <span style="color:#f92672">=</span> <span style="color:#ae81ff">32_767</span>;
+
+<span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">t1</span>(_task: <span style="color:#a6e22e">Exti0</span>, <span style="color:#66d9ef">ref</span> prio: <span style="color:#a6e22e">P1</span>, <span style="color:#66d9ef">ref</span> thr: <span style="color:#a6e22e">T1</span>) {
+    <span style="color:#75715e">// read CYCCNT
+</span><span style="color:#75715e"></span>
+    <span style="color:#75715e">// Volatile magic to prevent LLVM from inlining the values of R1 and R2 into
+</span><span style="color:#75715e"></span>    <span style="color:#75715e">// this function
+</span><span style="color:#75715e"></span>    <span style="color:#66d9ef">let</span> r1 <span style="color:#f92672">=</span> <span style="color:#66d9ef">unsafe</span> { ptr::read_volatile(<span style="color:#f92672">&amp;</span>R1) };
+    <span style="color:#66d9ef">let</span> r2 <span style="color:#f92672">=</span> <span style="color:#66d9ef">unsafe</span> { ptr::read_volatile(<span style="color:#f92672">&amp;</span>R2) };
+
+    <span style="color:#66d9ef">let</span> itm <span style="color:#f92672">=</span> <span style="color:#f92672">&amp;</span>ITM.access(prio, thr);
+
+    <span style="color:#66d9ef">let</span> <span style="color:#66d9ef">mut</span> buffer <span style="color:#f92672">=</span> [<span style="color:#ae81ff">0</span>, <span style="color:#ae81ff">0</span>, <span style="color:#ae81ff">0</span>, <span style="color:#ae81ff">0</span>, <span style="color:#ae81ff">0</span>, <span style="color:#ae81ff">0</span>, <span style="color:#ae81ff">0</span>, <span style="color:#ae81ff">0</span>, <span style="color:#ae81ff">0</span>, <span style="color:#ae81ff">0</span>, <span style="color:#ae81ff">0</span>, <span style="color:#ae81ff">0</span>, <span style="color:#ae81ff">0</span>, <span style="color:#ae81ff">0</span>, <span style="color:#ae81ff">0</span>, <span style="color:#e6db74">b&#39;\n&#39;</span>];
+    <span style="color:#66d9ef">let</span> n <span style="color:#f92672">=</span> buffer.len();
+
+    <span style="color:#75715e">// format the first number
+</span><span style="color:#75715e"></span>    <span style="color:#66d9ef">let</span> start <span style="color:#f92672">=</span> r2.numtoa(<span style="color:#ae81ff">10</span>, <span style="color:#f92672">&amp;</span><span style="color:#66d9ef">mut</span> buffer[..n <span style="color:#f92672">-</span> <span style="color:#ae81ff">1</span>]);
+
+    <span style="color:#75715e">// add the comma
+</span><span style="color:#75715e"></span>    buffer[start <span style="color:#f92672">-</span> <span style="color:#ae81ff">2</span>..start].copy_from_slice(<span style="color:#e6db74">b&#34;, &#34;</span>);
+
+    <span style="color:#75715e">// format the second number
+</span><span style="color:#75715e"></span>    <span style="color:#66d9ef">let</span> start <span style="color:#f92672">=</span> r1.numtoa(<span style="color:#ae81ff">10</span>, <span style="color:#f92672">&amp;</span><span style="color:#66d9ef">mut</span> buffer[..start <span style="color:#f92672">-</span> <span style="color:#ae81ff">2</span>]);
+
+    <span style="color:#75715e">// send the whole buffer
+</span><span style="color:#75715e"></span>    itm::write_all(<span style="color:#f92672">&amp;</span>itm.stim[<span style="color:#ae81ff">0</span>], <span style="color:#f92672">&amp;</span>buffer[start..]);
+
+    rtfm::bkpt(); <span style="color:#75715e">// read CYCCNT
+</span><span style="color:#75715e"></span>}
+</code></pre></div><p>Needless to say formatting the numbers manually is nowhere as ergonomic as using
+the <code>iprintln!</code> macro.</p>
+<pre><code class="language-console" data-lang="console">&gt; break numtoa::main::INTERRUPTS::t1
+&gt; continue
+&gt; x 0xe0001004 # read CYCCNT
+0xe0001004:     0x01503027
+
+&gt; continue
+&gt; x 0xe0001004 # read CYCCNT
+0xe0001004:     0x01503116
+
+&gt; continue
+&gt; x 0xe0001004 # read CYCCNT
+0xe0001004:     0x01503163
+
+&gt; # Total
+&gt; print 0x01503163 - 0x01503027
+$1 = 316
+
+&gt; # Formatting
+&gt; print 0x01503116 - 0x01503027
+$2 = 239
+
+&gt; # Sending the buffer
+&gt; print 0x01503163 - 0x01503116
+$3 = 77
+</code></pre><p>314 cycles is less than half the <code>core::fmt</code> number. Nice! 77 cycles, which is
+the time spent sending the buffer, is pretty close to the baseline number. The
+difference, 239 cycles, is the time spent doing the formatting itself.</p>
+<p>Program size wise:</p>
+<pre><code class="language-console" data-lang="console">$ arm-none-eabi-size numtoa
+   text    data     bss     dec     hex filename
+   2318       4       0    2322     912 numtoa
+
+$ arm-none-eabi-size -A numtoa
+section                size        addr
+.vector_table           304   134217728
+.text                  1814   134218752
+.rodata                 200   134220568
+.data                     4   536870912
+</code></pre><p>Compared to the baseline program the <code>.text</code> section increased by 776 bytes, and
+the <code>.rodata</code> section increased by 186 bytes. So <code>numtoa</code> saves around 1800
+bytes of Flash memory compared to the <code>core::fmt</code> version.</p>
+<h2 id="fast_fmt"><code>fast_fmt</code></h2>
+<p>A new challenger to <code>core::fmt</code> popped up <a href="https://www.reddit.com/r/rust/comments/6e2ce6/announcing_wip_fast_fmt_crate_faster_than_corefmt/">this week</a>. It addresses one of the
+main reasons of the <code>core::fmt</code> bloat: it doesn&rsquo;t use trait objects in its
+implementation; this improves inlining and results in smaller and faster code.</p>
+<p>Let&rsquo;s give it a try.</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#75715e">// git = &#34;https://github.com/japaric/fast_fmt&#34;,
+</span><span style="color:#75715e">// branch = &#34;do-not-delete-int-formatting&#34;
+</span><span style="color:#75715e"></span><span style="color:#75715e">#[macro_use]</span>
+<span style="color:#66d9ef">extern</span> <span style="color:#66d9ef">crate</span> fast_fmt;
+
+<span style="color:#66d9ef">use</span> fast_fmt::Write;
+
+<span style="color:#66d9ef">struct</span> <span style="color:#a6e22e">Port</span><span style="color:#f92672">&lt;</span><span style="color:#a6e22e">&#39;a</span><span style="color:#f92672">&gt;</span>(<span style="color:#f92672">&amp;</span><span style="color:#a6e22e">&#39;a</span> Stim);
+
+<span style="color:#66d9ef">impl</span><span style="color:#f92672">&lt;</span><span style="color:#a6e22e">&#39;a</span><span style="color:#f92672">&gt;</span> Write <span style="color:#66d9ef">for</span> Port<span style="color:#f92672">&lt;</span><span style="color:#a6e22e">&#39;a</span><span style="color:#f92672">&gt;</span> {
+    <span style="color:#66d9ef">type</span> <span style="color:#a6e22e">Error</span> <span style="color:#f92672">=</span> <span style="color:#f92672">!</span>;
+
+    <span style="color:#75715e">// ...
+</span><span style="color:#75715e"></span>}
+
+<span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">t1</span>(_task: <span style="color:#a6e22e">Exti0</span>, <span style="color:#66d9ef">ref</span> prio: <span style="color:#a6e22e">P1</span>, <span style="color:#66d9ef">ref</span> thr: <span style="color:#a6e22e">T1</span>) {
+    <span style="color:#75715e">// read CYCCNT
+</span><span style="color:#75715e"></span>
+    <span style="color:#75715e">// Volatile magic to prevent LLVM from inlining the values of R1 and R2 into
+</span><span style="color:#75715e"></span>    <span style="color:#75715e">// this function
+</span><span style="color:#75715e"></span>    <span style="color:#66d9ef">let</span> r1 <span style="color:#f92672">=</span> <span style="color:#66d9ef">unsafe</span> { ptr::read_volatile(<span style="color:#f92672">&amp;</span>R1) };
+    <span style="color:#66d9ef">let</span> r2 <span style="color:#f92672">=</span> <span style="color:#66d9ef">unsafe</span> { ptr::read_volatile(<span style="color:#f92672">&amp;</span>R2) };
+
+    <span style="color:#66d9ef">let</span> itm <span style="color:#f92672">=</span> <span style="color:#f92672">&amp;</span>ITM.access(prio, thr);
+
+    <span style="color:#75715e">// Equivalent to &#34;{r1}, {r2}\n&#34;
+</span><span style="color:#75715e"></span>    fwrite<span style="color:#f92672">!</span>(<span style="color:#f92672">&amp;</span><span style="color:#66d9ef">mut</span> Port(<span style="color:#f92672">&amp;</span>itm.stim[<span style="color:#ae81ff">0</span>]), r1, <span style="color:#e6db74">&#34;, &#34;</span>, r2, <span style="color:#e6db74">&#34;\n&#34;</span>);
+
+    rtfm::bkpt(); <span style="color:#75715e">// read CYCCNT
+</span><span style="color:#75715e"></span>}
+</code></pre></div><p>This program requires a bit more of boilerplate because the ITM structs in the
+cortex-m crate don&rsquo;t implement the <code>fast_fmt::Write</code> trait so a newtype is
+required to implement the <code>Write</code> trait. The <code>fwrite!</code> macro provides ergonomic
+formatting</p>
+<pre><code class="language-console" data-lang="console">&gt; break fwrite::main::INTERRUPTS::t1
+&gt; continue
+&gt; x 0xe0001004 # read CYCCNT
+0xe0001004:     0x01988932
+
+&gt; continue
+&gt; x 0xe0001004 # read CYCCNT
+0xe0001004:     0x01988a98
+
+&gt; print 0x01988a98 - 0x01988932
+$1 = 358
+</code></pre><p>358 cycles is close to the 314 cycles of the <code>numtoa</code> version, and it still is
+much better than the <code>core::fmt</code> version. It&rsquo;s reasonable to lose some
+performance in exchange for improved ergonomics.</p>
+<p>Let&rsquo;s check the program size:</p>
+<pre><code class="language-console" data-lang="console">$ arm-none-eabi-size fwrite
+   text    data     bss     dec     hex filename
+   2605       4       0    2609     a31 fwrite
+
+$ arm-none-eabi-size -A fwrite
+fwrite  :
+section                size        addr
+.vector_table           304   134217728
+.text                  2098   134218752
+.rodata                 203   134220852
+.data                     4   536870912
+</code></pre><p>Compared to the baseline program the <code>.text</code> section increased by 1060 bytes,
+and the <code>.rodata</code> section increased by 189 bytes. This uses around 300 more
+bytes than the numtoa version but it&rsquo;s still far from the bloat of <code>core::fmt</code>:
+around 1500 bytes smaller.</p>
+<h1 id="strings-are-slow">Strings are slow</h1>
+<p>Sometimes you have to log data at a much faster rate. For example, if you are
+measuring the performance of a PID controller you may want to log the state of
+the system and the controller at 1 KHz or 10 KHz or even faster. In those cases
+logging data using strings is too onerous; you have no choice but to log data in
+binary format.</p>
+<h2 id="byteorder"><code>byteorder</code></h2>
+<p><a href="https://crates.io/crates/byteorder"><code>byteorder</code></a> is what I use for binary serialization these days. Let&rsquo;s port our
+running program about the 2 <code>i16</code> integers to <code>byteorder</code> and measure:</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#66d9ef">static</span> <span style="color:#66d9ef">mut</span> R1: <span style="color:#66d9ef">i16</span> <span style="color:#f92672">=</span> <span style="color:#f92672">-</span><span style="color:#ae81ff">32_768</span>;
+<span style="color:#66d9ef">static</span> <span style="color:#66d9ef">mut</span> R2: <span style="color:#66d9ef">i16</span> <span style="color:#f92672">=</span> <span style="color:#ae81ff">32_767</span>;
+
+<span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">t1</span>(_task: <span style="color:#a6e22e">Exti0</span>, <span style="color:#66d9ef">ref</span> prio: <span style="color:#a6e22e">P1</span>, <span style="color:#66d9ef">ref</span> thr: <span style="color:#a6e22e">T1</span>) {
+    <span style="color:#75715e">// Volatile magic to prevent LLVM from inlining the values of R1 and R2 into
+</span><span style="color:#75715e"></span>    <span style="color:#75715e">// this function
+</span><span style="color:#75715e"></span>    <span style="color:#66d9ef">let</span> r1 <span style="color:#f92672">=</span> <span style="color:#66d9ef">unsafe</span> { ptr::read_volatile(<span style="color:#f92672">&amp;</span>R1) };
+    <span style="color:#66d9ef">let</span> r2 <span style="color:#f92672">=</span> <span style="color:#66d9ef">unsafe</span> { ptr::read_volatile(<span style="color:#f92672">&amp;</span>R2) };
+
+    <span style="color:#75715e">// read CYCCNT
+</span><span style="color:#75715e"></span>    rtfm::bkpt();
+
+    <span style="color:#66d9ef">let</span> itm <span style="color:#f92672">=</span> <span style="color:#f92672">&amp;</span>ITM.access(prio, thr);
+
+    <span style="color:#75715e">// 4 byte aligned buffer
+</span><span style="color:#75715e"></span>    <span style="color:#66d9ef">let</span> <span style="color:#66d9ef">mut</span> buffer <span style="color:#f92672">=</span> Aligned([<span style="color:#ae81ff">0</span>; <span style="color:#ae81ff">4</span>]);
+
+    <span style="color:#75715e">// binary serialization
+</span><span style="color:#75715e"></span>    LittleEndian::write_i16(<span style="color:#f92672">&amp;</span><span style="color:#66d9ef">mut</span> buffer.array[..<span style="color:#ae81ff">2</span>], r1);
+    LittleEndian::write_i16(<span style="color:#f92672">&amp;</span><span style="color:#66d9ef">mut</span> buffer.array[<span style="color:#ae81ff">2</span>..<span style="color:#ae81ff">4</span>], r2);
+
+    <span style="color:#75715e">// send the buffer through the ITM port 0
+</span><span style="color:#75715e"></span>    itm::write_aligned(<span style="color:#f92672">&amp;</span>itm.stim[<span style="color:#ae81ff">0</span>], <span style="color:#f92672">&amp;</span>buffer);
+
+    <span style="color:#75715e">// read CYCCNT
+</span><span style="color:#75715e"></span>    rtfm::bkpt();
+}
+</code></pre></div><p>The annoying part is having to manually encode the data into the buffer but it&rsquo;s
+actually not as bad as manually formatting them as strings. Let&rsquo;s time this:</p>
+<pre><code class="language-console" data-lang="console">&gt; continue
+&gt; x 0xe0001004 # read CYCCNT
+0xe0001004:     0x00000023
+
+&gt; continue
+&gt; x 0xe0001004 # read CYCCNT
+0xe0001004:     0x0000002d
+
+&gt; print 0x0000002d - 0x00000023
+$1 = 10
+</code></pre><p>10 cycles! That&rsquo;s about 30 times faster than the numtoa version we timed before.
+Here&rsquo;s the disassembly of the program:</p>
+<pre><code class="language-armasm" data-lang="armasm">080006d6 &lt;itm::main::INTERRUPTS::t1&gt;:
+ 80006d6:	f240 0100 	movw	r1, #0
+ 80006da:	f04f 4260 	mov.w	r2, #3758096384	; 0xe0000000
+ 80006de:	f2c2 0100 	movt	r1, #8192	; 0x2000
+ 80006e2:	8808      	ldrh	r0, [r1, #0]
+ 80006e4:	8849      	ldrh	r1, [r1, #2]
+ 80006e6:	be00      	bkpt	0x0000
+ 80006e8:	6813      	ldr	r3, [r2, #0]
+ 80006ea:	2b01      	cmp	r3, #1
+ 80006ec:	d1fc      	bne.n	80006e8 &lt;itm::main::INTERRUPTS::t1+0x12&gt;
+ 80006ee:	ea40 4001 	orr.w	r0, r0, r1, lsl #16
+ 80006f2:	f04f 4160 	mov.w	r1, #3758096384	; 0xe0000000
+ 80006f6:	6008      	str	r0, [r1, #0]	; 32 bit write
+ 80006f8:	be00      	bkpt	0x0000
+ 80006fa:	4770      	bx	lr
+</code></pre><p>Only a single 32 bit write to the ITM register. The code doesn&rsquo;t even place the
+buffer on the stack; it only makes uses of registers.</p>
+<p>Unlike with strings you can&rsquo;t directly visualize this binary output in a
+serial terminal like <code>minicom</code>. Instead you&rsquo;ll have to write some program to
+decode the binary data and then print it or process it some other way before
+presenting it. So this approach involves extra work on the host side.</p>
+<p>&hellip; Unless you are good / fast at reading numbers in hexadecimal format. If that
+the case then you can just use <code>xxd</code> :-)</p>
+<pre><code class="language-console" data-lang="console">$ xxd -p /dev/ttyUSB0
+030080ff7f
+</code></pre><hr>
+<p>Some of you may be wondering why I&rsquo;m not using a proper serialization framework
+like <a href="https://crates.io/crates/serde">serde</a> or <a href="https://crates.io/crates/bincode">bincode</a>. The main reason is that I haven&rsquo;t found one that
+fits my need. I need serialization that doesn&rsquo;t involve dynamic allocation,
+and that doesn&rsquo;t return a <code>Result</code> <em>if the operation can&rsquo;t fail</em>.</p>
+<p>About the second requirement: In interactive <code>std</code> programs you can just <em>bubble
+up</em> the errors and report them as messages to the users. You can&rsquo;t always do
+that on a microcontroller. In some cases errors have to be dealt with very
+locally, within the function where they occurred. Thus it&rsquo;s better if you have
+to dealt with less <code>Result</code>s in your program.</p>
+<p>So my ideal serialization framework would be just some <code>#[derive]</code> stuff on top
+of <code>byteorder</code>. Something like this:</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#75715e">// This derive attribute
+</span><span style="color:#75715e"></span><span style="color:#75715e">#[derive(BinarySerialization)]</span>
+<span style="color:#66d9ef">struct</span> <span style="color:#a6e22e">Acceleration</span> {
+    x: <span style="color:#66d9ef">i16</span>,
+    y: <span style="color:#66d9ef">i16</span>,
+    z: <span style="color:#66d9ef">i16</span>,
+}
+
+<span style="color:#75715e">// expands into to this
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">impl</span> Acceleration {
+    <span style="color:#75715e">// Neither operation can fail
+</span><span style="color:#75715e"></span>    <span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">deserialize</span>(buffer: <span style="color:#66d9ef">&amp;</span>[<span style="color:#66d9ef">u8</span>; <span style="color:#ae81ff">6</span>]) -&gt; <span style="color:#a6e22e">Self</span> { .. }
+    <span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">serialize</span>(<span style="color:#f92672">&amp;</span>self, buffer: <span style="color:#66d9ef">&amp;</span><span style="color:#a6e22e">mut</span> [<span style="color:#66d9ef">u8</span>; <span style="color:#ae81ff">6</span>]) { .. }
+}
+</code></pre></div><p>With perhaps some option to pick the endianness either at the <code>#[derive]</code> or at
+every function call. This is what I write manually today.</p>
+<h1 id="conclusions">Conclusions</h1>
+<ul>
+<li>
+<p>Never, ever use semihosting to log data. Unless you can afford delays in the
+order of tens of milliseconds in your application.</p>
+</li>
+<li>
+<p>If you can, use the ITM instead of the UART. The former has a faster
+transmission speed and uses less CPU time.</p>
+</li>
+<li>
+<p><code>core::fmt</code> is bloated. Luckily there are alternatives for formatting in the
+no-std ecosystem like <code>fast_fmt</code> and <code>numtoa</code>.</p>
+</li>
+<li>
+<p>For the ultimate logging speed use binary serialization instead of formatting
+to strings. Until I see something better I recommend using <code>byteorder</code> for
+this purpose.</p>
+</li>
+</ul>
+<hr>
+<p><strong>Thank you patrons! ❤️</strong></p>
+<p>I want to wholeheartedly thank <a href="https://github.com/Razican">Iban Eguia</a>, <a href="https://github.com/aturon">Aaron Turon</a>, <a href="https://github.com/archaelus">Geoff Cant</a>,
+<a href="http://www.harrisonchin.com/">Harrison Chin</a>, <a href="https://github.com/brandonedens">Brandon Edens</a>, <a href="https://github.com/whitequark">whitequark</a>, <a href="https://convolv.es/">J. Ryan Stinnett</a>, <a href="https://jamesmunns.com/">James
+Munns</a> and 20 more people for supporting my work on Patreon.</p>
+<hr>
+<p>Let&rsquo;s discuss on <a href="https://www.reddit.com/r/rust/comments/6ejshd/eir_the_itm_and_the_quest_for_faster_logging/">reddit</a>. How do <em>you</em> do data logging on embedded systems?</p>
+<hr>
+<h1 id="appendix">Appendix</h1>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#75715e">#![feature(const_fn)]</span>
+<span style="color:#75715e">#![feature(used)]</span>
+<span style="color:#75715e">#![no_std]</span>
+
+<span style="color:#75715e">// version = &#34;0.2.9&#34;
+</span><span style="color:#75715e"></span><span style="color:#75715e">#[macro_use]</span>
+<span style="color:#66d9ef">extern</span> <span style="color:#66d9ef">crate</span> cortex_m;
+
+<span style="color:#75715e">// version = &#34;0.2.3&#34;
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">extern</span> <span style="color:#66d9ef">crate</span> cortex_m_rt;
+
+<span style="color:#75715e">// version = &#34;0.1.0&#34;
+</span><span style="color:#75715e"></span><span style="color:#75715e">#[macro_use]</span>
+<span style="color:#66d9ef">extern</span> <span style="color:#66d9ef">crate</span> cortex_m_rtfm <span style="color:#66d9ef">as</span> rtfm;
+
+<span style="color:#75715e">// git = &#34;https://github.com/japaric/blue-pill&#34;,
+</span><span style="color:#75715e">// rev = &#34;9cb1629b771e63fee85717b23f59b7c0dbd08014&#34;
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">extern</span> <span style="color:#66d9ef">crate</span> blue_pill;
+
+<span style="color:#66d9ef">use</span> blue_pill::stm32f103xx;
+<span style="color:#66d9ef">use</span> rtfm::{P0, P1, T0, T1, TMax};
+<span style="color:#66d9ef">use</span> stm32f103xx::interrupt::Exti0;
+
+<span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">init</span>(_prio: <span style="color:#a6e22e">P0</span>, _thr: <span style="color:#66d9ef">&amp;</span><span style="color:#a6e22e">TMax</span>) {}
+
+<span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">idle</span>(_prio: <span style="color:#a6e22e">P0</span>, _thr: <span style="color:#a6e22e">T0</span>) -&gt; <span style="color:#f92672">!</span> {
+    rtfm::request(t1);
+
+    <span style="color:#75715e">// Sleep
+</span><span style="color:#75715e"></span>    <span style="color:#66d9ef">loop</span> {
+        rtfm::wfi();
+    }
+}
+
+tasks<span style="color:#f92672">!</span>(stm32f103xx, {
+    t1: <span style="color:#a6e22e">Task</span> {
+        interrupt: <span style="color:#a6e22e">Exti0</span>,
+        priority: <span style="color:#a6e22e">P1</span>,
+        enabled: <span style="color:#a6e22e">true</span>,
+    },
+});
+
+<span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">t1</span>(_task: <span style="color:#a6e22e">Exti0</span>, _prio: <span style="color:#a6e22e">P1</span>, _thr: <span style="color:#a6e22e">T1</span>) {
+    rtfm::bkpt();
+
+    hprintln<span style="color:#f92672">!</span>(<span style="color:#e6db74">&#34;The quick brown fox jumps over the lazy dog.&#34;</span>);
+
+    rtfm::bkpt();
+}
+</code></pre></div><section class="footnotes" role="doc-endnotes">
+<hr>
+<ol>
+<li id="fn:1" role="doc-endnote">
+<p><a href="https://www.aliexpress.com/wholesale?SearchText=stm32&amp;SortType=total_tranpro_desc&amp;isFreeShip=y">Blue Pill purchase link</a> <a href="#fnref:1" class="footnote-backref" role="doc-backlink">&#x21a9;&#xfe0e;</a></p>
+</li>
+<li id="fn:2" role="doc-endnote">
+<p><a href="https://www.aliexpress.com/wholesale?SearchText=st-link&amp;SortType=total_tranpro_desc&amp;isFreeShip=y">ST Link clone purchase link</a> <a href="#fnref:2" class="footnote-backref" role="doc-backlink">&#x21a9;&#xfe0e;</a></p>
+</li>
+<li id="fn:3" role="doc-endnote">
+<p><a href="https://www.aliexpress.com/wholesale?SearchText=serial+usb&amp;SortType=total_tranpro_desc&amp;isFreeShip=y">UART USB adapter purchase link</a>
+[lots]: <a href="https://mobile.twitter.com/japaric_io/status/845697935572656128">https://mobile.twitter.com/japaric_io/status/845697935572656128</a>
+[places]: <a href="https://mobile.twitter.com/japaric_io/status/843971417083432961">https://mobile.twitter.com/japaric_io/status/843971417083432961</a> <a href="#fnref:3" class="footnote-backref" role="doc-backlink">&#x21a9;&#xfe0e;</a></p>
+</li>
+<li id="fn:4" role="doc-endnote">
+<p><a href="https://en.wikipedia.org/wiki/Non-return-to-zero">Non Return to Zero</a> <a href="#fnref:4" class="footnote-backref" role="doc-backlink">&#x21a9;&#xfe0e;</a></p>
+</li>
+</ol>
+</section>
+
+    </div>
+
+    
+    
+    <div class="article-toc" >
+        <h3>Contents</h3>
+        <nav id="TableOfContents">
+  <ul>
+    <li><a href="#serial">Serial</a></li>
+    <li><a href="#itm">ITM</a>
+      <ul>
+        <li><a href="#aligned-buffers">Aligned buffers</a></li>
+        <li><a href="#standalone-swo">Standalone SWO</a></li>
+      </ul>
+    </li>
+    <li><a href="#itm-vs-serial">ITM vs Serial</a></li>
+  </ul>
+
+  <ul>
+    <li><a href="#the-baseline">The baseline</a></li>
+    <li><a href="#corefmt"><code>core::fmt</code></a></li>
+    <li><a href="#numtoa"><code>numtoa</code></a></li>
+    <li><a href="#fast_fmt"><code>fast_fmt</code></a></li>
+  </ul>
+
+  <ul>
+    <li><a href="#byteorder"><code>byteorder</code></a></li>
+  </ul>
+</nav>
+    </div>
+    
+    
+
+    
+  </div>
+</section>
+
+
+<section class="section">
+  <div class="container has-text-centered">
+    <p><a rel="license" href="http://creativecommons.org/licenses/by/4.0/"><img alt="Creative Commons License" src="https://i.creativecommons.org/l/by/4.0/80x15.png" /></a><br/>Jorge Aparicio</p>
+  </div>
+</section>
+
+
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/styles/tomorrow-night.min.css" />
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/highlight.min.js" integrity="sha256-aYTdUrn6Ow1DDgh5JTc3aDGnnju48y/1c8s1dgkYPQ8=" crossorigin="anonymous"></script>
+
+<script type="text/javascript" src="//cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/languages/armasm.min.js"></script>
+
+<script type="text/javascript" src="//cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/languages/c.min.js"></script>
+
+<script type="text/javascript" src="//cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/languages/diff.min.js"></script>
+
+<script type="text/javascript" src="//cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/languages/llvm.min.js"></script>
+
+<script type="text/javascript" src="//cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/languages/rust.min.js"></script>
+
+<script type="text/javascript" src="//cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/languages/shell.min.js"></script>
+
+<script>hljs.initHighlightingOnLoad();</script>
+
+
+</body>

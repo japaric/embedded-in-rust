@@ -1,0 +1,1000 @@
+<!DOCTYPE html>
+<html lang="en-us">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta content="Rust, embedded, development" name="keywords">
+<meta content="Jorge Aparicio" name="author">
+<meta property="og:title" content="Rust your ARM microcontroller! - Embedded in Rust">
+<meta property="og:url" content="https://blog.japaric.io/quickstart/">
+<meta property="og:description" content="A blog about Rust and embedded stuff">
+<meta property="og:type" content="website" />
+<title>Rust your ARM microcontroller! | Embedded in Rust</title>
+<link rel="stylesheet" href="https://blog.japaric.io//css/style.css">
+<link rel="shortcut icon" href="https://blog.japaric.io//wave.ico">
+<link rel="alternate" type="application/atom+xml" title="Embedded in Rust Posts" href="https://blog.japaric.io//index.xml">
+<link href="//maxcdn.bootstrapcdn.com/font-awesome/4.7.0/css/font-awesome.min.css" rel="stylesheet" integrity="sha384-wvfXpqpZZVQGK6TAh5PVlGOfQNHSoD2xbE+QkPxCAFlNEevoEH3Sl0sibVcOQVnN" crossorigin="anonymous">
+
+<link rel="stylesheet" href="//cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/styles/github.min.css">
+
+</head>
+
+<body>
+<section class="section">
+  <div class="container">
+    <nav class="nav">
+      <div class="nav-left">
+        <a class="nav-item" href="https://blog.japaric.io/"><h1 class="title is-4">Embedded in Rust</h1></a>
+      </div>
+      <div class="nav-right">
+        <nav class="nav-item level is-mobile">
+          
+          <a class="level-item" href="https://github.com/japaric" target="_blank">
+            <span class="icon">
+              <i class="fa fa-github"></i>
+            </span>
+          </a>
+          
+          <a class="level-item" href="/index.xml" target="_blank">
+            <span class="icon">
+              <i class="fa fa-rss"></i>
+            </span>
+          </a>
+          
+        </nav>
+      </div>
+    </nav>
+  </div>
+</section>
+
+<section class="section">
+  <div class="container">
+    <h1 class="title">Rust your ARM microcontroller!</h1>
+    <h2 class="subtitle is-5">April 28, 2017 by Jorge Aparicio</h2>
+    
+      <div class="tags">
+    
+        <a class="button is-link" href="/tags/arm-cortex-m">ARM Cortex-M</a>
+    
+        <a class="button is-link" href="/tags/template">template</a>
+    
+        <a class="button is-link" href="/tags/tooling">tooling</a>
+    
+        <a class="button is-link" href="/tags/tutorial">tutorial</a>
+    
+</div>
+
+    
+    <div class="content">
+      <blockquote>
+<p><strong>IMPORTANT! READ THIS!</strong></p>
+<p>Hello there! This article is outdated and following it will only confuse you.
+Check out <a href="https://rust-embedded.github.io/book/">the embedded Rust book</a> and the rest of the <a href="https://github.com/rust-embedded/wg">embedded WG</a>
+<a href="https://docs.rust-embedded.org/">bookshelf</a> for up to date and maintained documentation on embedded Rust
+development.</p>
+<p>If you still want to read this post, for historical reasons and what now,
+scroll down.</p>
+</blockquote>
+<!-- raw HTML omitted -->
+<p>Want to program your microcontroller in Rust but your microcontroller vendor
+doesn&rsquo;t provide a Rust HAL / SDK? No wonder. AFAIK, no vendor is betting for
+Rust &hellip; yet. How about binding to a C HAL? No? Don&rsquo;t feel like wrestling with
+<code>bindgen</code> and the HAL build system and then having a bunch of <code>unsafe</code> FFI calls
+in your application? OK, how&rsquo;s this alternative: A method to easily build 100%
+Rust applications that can use all the device hardware through a memory safe
+API? Sounds good? Excellent because that&rsquo;s today menu.</p>
+<p>In this post, I&rsquo;ll cover how to build an application for a Cortex-M
+microcontroller <em>from scratch</em>. However, I&rsquo;m going to take a practical approach
+here and omit explaining low level details like linker scripts and the boot
+sequence. There are crates published on <a href="https://crates.io/">crates.io</a> that deal with those low
+level details so we&rsquo;ll leverage those instead of reinventing the wheel.</p>
+<h1 id="the-test-subject">The test subject</h1>
+<p><img src="/quickstart/f3.jpg" alt="STM32F3DISCOVERY"></p>
+<p>For this demo, I&rsquo;m going to use the <a href="http://www.st.com/en/evaluation-tools/stm32f3discovery.html">STM32F3DISCOVERY</a> development board but the
+steps here can be adapted to any other development board. Here are the
+specifications of the DISCOVERY board:</p>
+<ul>
+<li>Microcontroller: STM32F303VCT6</li>
+<li>Core: ARM Cortex-M4 + FPU</li>
+<li>RAM: 40+8 <sup id="fnref:1"><a href="#fn:1" class="footnote-ref" role="doc-noteref">1</a></sup> KiB <sup id="fnref:2"><a href="#fn:2" class="footnote-ref" role="doc-noteref">2</a></sup></li>
+<li>Flash: 256 KiB</li>
+<li>Peripherals: Timers, Serial, I2C, SPI, PWM, etc.</li>
+</ul>
+<h1 id="the-tools">The tools</h1>
+<p>We&rsquo;ll need these tools on the host system:</p>
+<ul>
+<li>A nightly Rust toolchain.</li>
+<li><a href="https://github.com/japaric/xargo">Xargo</a>, to build the <code>core</code> crate on the
+fly.</li>
+<li>A linker: GNU ld <sup id="fnref:3"><a href="#fn:3" class="footnote-ref" role="doc-noteref">3</a></sup>.</li>
+<li>A debugger: GDB <sup id="fnref:4"><a href="#fn:4" class="footnote-ref" role="doc-noteref">4</a></sup>.</li>
+<li>OpenOCD, to communicate with the in-circuit / external programmer. (The
+DISCOVERY board has a built-in SWD based programmer)</li>
+</ul>
+<p>Installation instructions for Arch Linux:</p>
+<pre><code class="language-console" data-lang="console">$ # Switch to the nightly channel
+$ rustup default nightly-2017-04-24
+
+$ rustc -V
+rustc 1.18.0-nightly (2bd4b5c6d 2017-04-23)
+
+$ sudo pacman -S arm-none-eabi-binutils arm-none-eabi-gdb openocd
+
+$ arm-none-eabi-ld -V | head -n1
+GNU ld (GNU Binutils) 2.28
+
+$ arm-none-eabi-gdb -v | head -n1
+GNU gdb (GDB) 7.12.1
+
+$ openocd -v 2&gt;&amp;1 | head -n1
+Open On-Chip Debugger 0.10.0
+
+$ cargo install xargo
+
+$ xargo -V
+xargo 0.3.6
+cargo 0.19.0-nightly (8326a3683 2017-04-19)
+
+$ # for Xargo
+$ rustup component add rust-src
+</code></pre><p>You can find installation instructions for Windows and macOS <a href="https://japaric.github.io/discovery/03-setup/README.html#OS%20specific%20instructions">here</a>.</p>
+<h1 id="the-cargo-project-template">The Cargo project template</h1>
+<p>We&rsquo;ll use the <a href="https://docs.rs/cortex-m-quickstart/0.1.1/cortex_m_quickstart/"><code>cortex-m-quickstart</code></a> crate as a template <sup id="fnref:5"><a href="#fn:5" class="footnote-ref" role="doc-noteref">5</a></sup>; it
+contains all the pieces needed to build a microcontroller application. This
+template should work for any microcontroller that lets you override the boot
+sequence <sup id="fnref:6"><a href="#fn:6" class="footnote-ref" role="doc-noteref">6</a></sup>. I have tested this template with 6 different
+microcontrollers / development boards from 3 different vendors <sup id="fnref:7"><a href="#fn:7" class="footnote-ref" role="doc-noteref">7</a></sup> without
+a hitch.</p>
+<pre><code class="language-console" data-lang="console">$ # if you don't have the `clone` subcommand
+$ cargo install cargo-clone
+
+$ cargo clone cortex-m-quickstart --vers 0.1.1
+
+$ mv cortex-m-quickstart demo &amp;&amp; cd $_
+
+$ # change project name and author
+$ edit Cargo.toml &amp;&amp; head $_
+[package]
+authors = [&quot;Jorge Aparicio &lt;jorge@japaric.io&gt;&quot;]
+name = &quot;demo&quot;
+version = &quot;0.1.0&quot;
+</code></pre><p>Each microcontroller has different amounts of RAM and Flash memory, and the
+location of these memory regions in the address space can vary from vendor to
+vendor. We have to specify this information in the <code>memory.x</code> file to produce a
+binary that&rsquo;s valid for the target device. For this demo, I&rsquo;ll use this
+file <sup id="fnref:8"><a href="#fn:8" class="footnote-ref" role="doc-noteref">8</a></sup>:</p>
+<pre><code class="language-console" data-lang="console">$ edit memory.x &amp;&amp; cat $_
+MEMORY
+{
+  /* NOTE K = KiBi = 1024 bytes */
+  FLASH : ORIGIN = 0x08000000, LENGTH = 256K
+  RAM : ORIGIN = 0x20000000, LENGTH = 40K
+}
+
+/* NOTE Do NOT modify `_stack_start` unless you know what you are doing */
+_stack_start = ORIGIN(RAM) + LENGTH(RAM);
+</code></pre><p>The memory layout of the program will look like this:</p>
+<p><img src="/quickstart/memory.svg" alt="Memory layout"></p>
+<p>The <code>.bss + .data</code> region is where <code>static</code> variables are stored. The size of
+this region is known at compile time and doesn&rsquo;t change at runtime. The call
+stack region can grow or shrink at runtime due to function calls. There&rsquo;s no
+heap <sup id="fnref:9"><a href="#fn:9" class="footnote-ref" role="doc-noteref">9</a></sup>.</p>
+<p>Finally, for convenience we set a default target in <code>.cargo/config</code>. With this
+we can omit the <code>--target</code> flag on every Xargo invocation.</p>
+<pre><code class="language-console" data-lang="console">$ cat &gt;&gt;.cargo/config &lt;&lt;'EOF'
+[build]
+target = &quot;thumbv7em-none-eabihf&quot;
+EOF
+</code></pre><p>The target chosen here must match the ARM core inside the target device. There
+are four options:</p>
+<ul>
+<li><code>thumbv6m-none-eabi</code>, for Cortex M0 and M0+ devices.</li>
+<li><code>thumbv7m-none-eabi</code>, for Cortex M3 devices.</li>
+<li><code>thumbv7em-none-eabi</code>, for Cortex M4 and M7 devices. No FPU.</li>
+<li><code>thumbv7em-none-eabihf</code>, for Cortex M4 and M7 devices. With FPU.</li>
+</ul>
+<blockquote>
+<p><strong>UPDATE</strong> (2017-05-16) Incremental compilation appears to not work with
+builds that need to customize linker sections so you&rsquo;ll have to disable it to
+do embedded development:</p>
+</blockquote>
+<pre><code>$ # disable incremental compilation (if you were using it)
+$ unset CARGO_INCREMENTAL
+</code></pre><h1 id="hello-world">Hello, world!</h1>
+<p>We are done setting up the template. Let&rsquo;s build <a href="https://docs.rs/crate/cortex-m-quickstart/0.1.1/source/examples/hello.rs"><code>examples/hello.rs</code></a> as our
+first program. This program will print <code>&quot;Hello, world!&quot;</code> on the host
+console. This program is written in a device agnostic manner and will work on
+any microcontroller. The only requirement to be able to see the message on the
+host side is a GDB connection between host and device.</p>
+<p>For convenience, here&rsquo;s the full source of the program:</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#e6db74">//! Prints &#34;Hello, world!&#34; on the OpenOCD console using semihosting
+</span><span style="color:#e6db74"></span>
+<span style="color:#75715e">#![feature(used)]</span>
+<span style="color:#75715e">#![no_std]</span>
+
+<span style="color:#75715e">#[macro_use]</span>
+<span style="color:#66d9ef">extern</span> <span style="color:#66d9ef">crate</span> cortex_m;
+<span style="color:#66d9ef">extern</span> <span style="color:#66d9ef">crate</span> cortex_m_rt;
+
+<span style="color:#66d9ef">use</span> cortex_m::asm;
+
+<span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">main</span>() {
+    hprintln<span style="color:#f92672">!</span>(<span style="color:#e6db74">&#34;Hello, world!&#34;</span>);
+}
+
+<span style="color:#75715e">// As we are not using interrupts, we just register a dummy catch all handler
+</span><span style="color:#75715e"></span><span style="color:#75715e">#[allow(dead_code)]</span>
+<span style="color:#75715e">#[used]</span>
+<span style="color:#75715e">#[link_section = </span><span style="color:#e6db74">&#34;.rodata.interrupts&#34;</span><span style="color:#75715e">]</span>
+<span style="color:#66d9ef">static</span> INTERRUPTS: [<span style="color:#66d9ef">extern</span> <span style="color:#e6db74">&#34;C&#34;</span> <span style="color:#66d9ef">fn</span>(); <span style="color:#ae81ff">240</span>] <span style="color:#f92672">=</span> [default_handler; <span style="color:#ae81ff">240</span>];
+
+<span style="color:#66d9ef">extern</span> <span style="color:#e6db74">&#34;C&#34;</span> <span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">default_handler</span>() {
+    asm::bkpt();
+}
+</code></pre></div><p>At first glance, it looks kind of normal &ndash; it has a <code>main</code> function like the
+programs that link to <code>std</code>. Let&rsquo;s inspect it in parts.</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#75715e">#![no_std]</span>
+</code></pre></div><p>We don&rsquo;t link to <code>std</code> as <code>std</code> doesn&rsquo;t support microcontrollers.</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#75715e">#[macro_use]</span>
+<span style="color:#66d9ef">extern</span> <span style="color:#66d9ef">crate</span> cortex_m;
+<span style="color:#66d9ef">extern</span> <span style="color:#66d9ef">crate</span> cortex_m_rt;
+</code></pre></div><p>The <code>cortex-m-rt</code> crate is a very small runtime that boots the device,
+initializes RAM and then calls <code>main</code>. It does all this implicitly; you only
+need to link to it with <code>extern crate</code> to opt into this runtime. The <code>cortex-m</code>
+crate provides an API to use functionality common to all Cortex-M
+microcontrollers.</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">main</span>() {
+    hprintln<span style="color:#f92672">!</span>(<span style="color:#e6db74">&#34;Hello, world!&#34;</span>);
+}
+</code></pre></div><p>In <code>main</code>, we use the <code>hprintln!</code> macro from the <code>cortex-m</code> crate to print the
+message to the OpenOCD console <sup id="fnref:10"><a href="#fn:10" class="footnote-ref" role="doc-noteref">10</a></sup>. The syntax is the same as
+<code>println!</code> in <code>std</code>.</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#75715e">#[allow(dead_code)]</span>
+<span style="color:#75715e">#[used]</span>
+<span style="color:#75715e">#[link_section = </span><span style="color:#e6db74">&#34;.rodata.interrupts&#34;</span><span style="color:#75715e">]</span>
+<span style="color:#66d9ef">static</span> INTERRUPTS: [<span style="color:#66d9ef">extern</span> <span style="color:#e6db74">&#34;C&#34;</span> <span style="color:#66d9ef">fn</span>(); <span style="color:#ae81ff">240</span>] <span style="color:#f92672">=</span> [default_handler; <span style="color:#ae81ff">240</span>];
+</code></pre></div><p>There&rsquo;s also this <code>INTERRUPTS</code> variable. This variable is used to register
+interrupt handlers. As we are not using any interrupt we just register a catch
+all handler for all the possible interrupt sources.</p>
+<p>Let&rsquo;s now build this program.</p>
+<pre><code class="language-console" data-lang="console">$ xargo build --example hello
+
+$ arm-none-eabi-readelf -A target/thumbv7em-none-eabihf/debug/examples/hello                          &lt;&lt;&lt;
+Attribute Section: aeabi
+File Attributes
+  Tag_conformance: &quot;2.09&quot;
+  Tag_CPU_arch: v7E-M
+  Tag_CPU_arch_profile: Microcontroller
+  Tag_THUMB_ISA_use: Thumb-2
+  Tag_FP_arch: VFPv4-D16
+  Tag_ABI_PCS_GOT_use: direct
+  Tag_ABI_FP_denormal: Needed
+  Tag_ABI_FP_exceptions: Needed
+  Tag_ABI_FP_number_model: IEEE 754
+  Tag_ABI_align_needed: 8-byte
+  Tag_ABI_align_preserved: 8-byte, except leaf SP
+  Tag_ABI_HardFP_use: SP only
+  Tag_ABI_VFP_args: VFP registers
+  Tag_ABI_optimization_goals: Prefer Debug
+  Tag_CPU_unaligned_access: v6
+  Tag_FP_HP_extension: Allowed
+  Tag_ABI_FP_16bit_format: IEEE 754
+</code></pre><p>And then run it on the microcontroller.</p>
+<pre><code class="language-console" data-lang="console">$ # On one terminal. Leave this running
+$ openocd -f interface/stlink-v2-1.cfg -f target/stm32f3x.cfg
+(..)
+Info : clock speed 950 kHz
+Info : STLINK v2 JTAG v27 API v2 SWIM v15 VID 0x0483 PID 0x374B
+Info : using stlink api v2
+Info : Target voltage: 2.920499
+Info : stm32f3x.cpu: hardware has 6 breakpoints, 4 watchpoints
+</code></pre><pre><code class="language-console" data-lang="console">$ # On another terminal
+$ # Enable safe loading of .gdbinit scripts
+$ echo 'set auto-load safe-path /' &gt;&gt; ~/.gdbinit
+
+$ arm-none-eabi-gdb target/thumbv7em-none-eabihf/debug/examples/hello
+</code></pre><p>Thanks to the <a href="https://docs.rs/crate/cortex-m-quickstart/0.1.1/source/.gdbinit"><code>.gdbinit</code></a> in the root of the Cargo project, the debugger will
+drop you at the entry point of the program, which is where the program starts
+its execution. In the source view, you can see that the <code>cortex-m-rt</code> runtime
+does what I said it does.</p>
+<p><img src="/quickstart/gdb.png" alt="GDB session"></p>
+<p>(<a href="https://github.com/cyrus-and/gdb-dashboard">gdb-dashboard</a>, if you were wondering &ldquo;Hey, what&rsquo;s that cool GDB UI?&quot;)</p>
+<p>From that point you can step through the program all the way to <code>main</code> but the
+fastest way to get there is to set a breakpoint and let the program run:</p>
+<pre><code class="language-console" data-lang="console">&gt; # On the GDB shell
+&gt; tbreak hello::main
+&gt; continue
+</code></pre><p>You should see:</p>
+<p><img src="/quickstart/main.png" alt="At the main function"></p>
+<p>After you step over the <code>hprintln!</code> line, you should see this on the OpenOCD
+terminal:</p>
+<pre><code class="language-console" data-lang="console">$ # On the OpenOCD terminal
+(..)
+Info : halted: PC: 0x08000a30
+Hello, world!
+Info : halted: PC: 0x08000414
+</code></pre><p>There you go: An embedded &ldquo;Hello, world&rdquo; in Rust.</p>
+<p>Some of you may be wondering whats happens when <code>main</code> returns since embedded
+programs are supposed to never end. What the runtime does is put the device in
+&ldquo;reactive&rdquo; mode (<code>loop { asm!(&quot;wfi&quot;) }</code>), where it services interrupts and
+then sleeps when there&rsquo;s nothing to do.</p>
+<h1 id="a-digression-other-runtime-features">A digression: Other runtime features</h1>
+<p>The <code>cortex-m-rt</code> ships with a few extra optional features that result in a more
+pleasant development experience. I think they are just too good to miss the
+opportunity of showing them to you so let me show two use cases where they come
+in handy:</p>
+<h2 id="debugging-an-exception">Debugging an exception</h2>
+<p>Consider this program: (See <a href="https://docs.rs/crate/cortex-m-quickstart/0.1.1/source/examples/crash.rs"><code>examples/crash.rs</code></a> for the full source).</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">main</span>() {
+    <span style="color:#75715e">// Read an invalid memory address
+</span><span style="color:#75715e"></span>    <span style="color:#66d9ef">unsafe</span> {
+        ptr::read_volatile(<span style="color:#ae81ff">0x2FFF_FFFF</span> <span style="color:#66d9ef">as</span> <span style="color:#f92672">*</span><span style="color:#66d9ef">const</span> <span style="color:#66d9ef">u32</span>);
+    }
+}
+</code></pre></div><p>It tries to read an invalid memory address. Although this is kinda obvious from
+the source code (if you know what typical RAM addresses look like), let&rsquo;s see
+how the runtime would have helped us debug this problem.</p>
+<p>If you debug this program and just leave it run freely, you&rsquo;ll end with a debug
+session like the one shown below.</p>
+<p><img src="/quickstart/exception-handler.png" alt="GDB session"></p>
+<p>Fatal errors like this invalid memory access are handled by the hardware through
+an <em>exception</em> mechanism. When such an error occurs, the processor stops doing
+whatever it was doing and immediately calls the corresponding <em>exception
+handler</em>, which is just a function from the POV of the programmer.</p>
+<p>The <code>cortex-m-rt</code> crate injects a catch all exception handler tailored for
+debugging. This handler will trigger a breakpoint during an exception and give
+you access to plenty of information about the cause of the exception.</p>
+<p>Continuing the debug session: A <code>backtrace</code> will give us a general idea of
+where we came from:</p>
+<pre><code class="language-console" data-lang="console">&gt; # Where did we come from?
+&gt; backtrace
+#0  cortex_m::exception::default_handler::handler (_sr=0x20009f50) at $CARGO_HOME/registry/src/github.com-1ecc6299db9ec823/cortex-m-0.2.4/src/exception.rs:166
+#1  &lt;signal handler called&gt;
+#2  core::ptr::read_volatile&lt;u32&gt; (src=0x2fffffff) at $SYSROOT/lib/rustlib/src/rust/src/libcore/ptr.rs:331
+#3  0x08000442 in crash::main () at $PWD/examples/crash.rs:11
+#4  0x08000684 in cortex_m_rt::lang_items::start (main=0x8000435 &lt;crash::main&gt;, _argc=0, _argv=0x0) at $CARGO_HOME/registry/src/github.com-1ecc6299db9ec823/cortex-m-rt-0.2.0/src/lang_items.rs:61
+#5  0x08000484 in main ()
+</code></pre><p><code>&lt;signal handler called&gt;</code> is the hardware calling the exception handler, so
+<code>read_volatile</code> is where the exception occurred.</p>
+<p>Within the exception handler context, there&rsquo;s this <code>Exception</code> value which
+indicates what kind of exception was raised.</p>
+<pre><code class="language-console" data-lang="console">&gt; # What exception did we hit?
+&gt; p _e
+$1 = cortex_m::exception::Exception::HardFault
+</code></pre><p>There are different kinds of exceptions and each one has its own handler. The
+hard fault exception is the exception that&rsquo;s called when a invalid memory access
+occurs or when the processor tries to execute an invalid instruction, among
+other fatal errors.</p>
+<p>There&rsquo;s also this <code>StackedRegisters</code> value, this is a snapshot of the CPU
+registers at the time the exception occurred.</p>
+<pre><code class="language-console" data-lang="console">&gt; # What was the state of the program when the exception occurred?
+&gt; print/x *_sr
+$2 = cortex_m::exception::StackedRegisters {
+  r0: 0x2fffffff,
+  r1: 0x2fffffff,
+  r2: 0x0,
+  r3: 0x0,
+  r12: 0x0,
+  lr: 0x8000427,
+  pc: 0x8000408,
+  xpsr: 0x61000200
+}
+</code></pre><p>Perhaps the most important of these registers is the <code>pc</code> (Program Counter)
+register; it points to the instruction that triggered the exception. We can
+disassemble the program around that instruction to investigate further:</p>
+<pre><code class="language-console" data-lang="console">&gt; # What instruction generated the exception?
+&gt; disassemble /m _sr.pc
+Dump of assembler code for function core::ptr::read_volatile&lt;u32&gt;:
+330     pub unsafe fn read_volatile&lt;T&gt;(src: *const T) -&gt; T {
+   0x08000400 &lt;+0&gt;:     sub     sp, #20
+   0x08000402 &lt;+2&gt;:     mov     r1, r0
+   0x08000404 &lt;+4&gt;:     str     r0, [sp, #8]
+   0x08000406 &lt;+6&gt;:     str     r0, [sp, #12]
+
+331         intrinsics::volatile_load(src)
+   0x08000408 &lt;+8&gt;:     ldr     r0, [r0, #0]
+   0x0800040a &lt;+10&gt;:    str     r0, [sp, #16]
+   0x0800040c &lt;+12&gt;:    str     r1, [sp, #4]
+   0x0800040e &lt;+14&gt;:    str     r0, [sp, #0]
+   0x08000410 &lt;+16&gt;:    b.n     0x8000412 &lt;core::ptr::read_volatile&lt;u32&gt;+18&gt;
+
+332     }
+   0x08000412 &lt;+18&gt;:    ldr     r0, [sp, #0]
+   0x08000414 &lt;+20&gt;:    add     sp, #20
+   0x08000416 &lt;+22&gt;:    bx      lr
+
+End of assembler dump.
+</code></pre><p><code>0x08000408: ldr r0, [r0, #0]</code> is pointed out as the culprit. This instruction
+tries to load the value stored at the address indicated by the <code>r0</code> register.
+From the <code>StackedRegisters</code> value, we know that <code>r0</code> was <code>0x2fffffff</code>. This
+must mean that the address <code>0x2fffffff</code> is invalid as in it must not be in the
+RAM or Flash memory region. Which is exactly the case here.</p>
+<h2 id="redirection-of-panic-messages">Redirection of <code>panic!</code> messages</h2>
+<p>Another nifty thing that the <code>cortex-m-rt</code> crate can do is print <code>panic!</code>
+messages on the OpenOCD console just like the <code>hprintln!</code> macro does.</p>
+<p>Consider this program (See <a href="https://docs.rs/crate/cortex-m-quickstart/0.1.1/source/examples/panic.rs"><code>examples/panic.rs</code></a> for the full source).</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">main</span>() {
+    panic<span style="color:#f92672">!</span>(<span style="color:#e6db74">&#34;Oops&#34;</span>);
+}
+</code></pre></div><p>If we enable the <code>panic-over-semihosting</code> feature of the <code>cortex-m-rt</code> crate,
+we&rsquo;ll see the <code>panic!</code> message appear on the OpenOCD console when the program is
+executed under the debugger.</p>
+<pre><code class="language-console" data-lang="console">$ # On the OpenOCD console
+(..)
+Info : halted: PC: 0x0800160c
+panicked at 'Oops', examples/panic.rs:24
+</code></pre><p>Line and source file information will show up just like they do when a regular
+Rust program panics. This is pretty useful to catch bugs like arithmetic
+overflow and out of bounds accesses. Oh, and <code>panic!</code>s trigger breakpoints just
+like exceptions so you can use <code>backtrace</code> within the GDB session to get a
+backtrace.</p>
+<h1 id="full-device-support">Full device support</h1>
+<p>Now that we have verified that both the tooling and the template work, we can go
+ahead and build a program that makes use of the device hardware.</p>
+<p>As you may know, using the hardware requires reading and writing to special
+memory regions referred to as registers. The reference manual of the
+microcontroller <sup id="fnref:11"><a href="#fn:11" class="footnote-ref" role="doc-noteref">11</a></sup> contains all there is to know about a microcontroller&rsquo;s
+registers: their locations in memory and what their contents mean. You could
+translate that information into an API but that&rsquo;s a lot of work and error prone.</p>
+<p>A better way is to auto-generate that API from the microcontroller&rsquo;s System View
+Description (SVD) file using a tool like <a href="https://docs.rs/svd2rust/0.7.0/svd2rust/"><code>svd2rust</code></a>. A SVD file is basically
+a machine readable version of the reference manual. Most vendors provide these
+for their devices. <a href="https://github.com/posborne/cmsis-svd/tree/master/data">Here&rsquo;s</a> a database of such files &ndash; it contains more than
+500 SVD files. If you don&rsquo;t find a SVD file for your device there, check your
+microcontroller vendor website or ask them directly.</p>
+<p>Let&rsquo;s use <code>svd2rust</code> on the SVD file of the STM32F303VCT6 microcontroller
+<sup id="fnref:12"><a href="#fn:12" class="footnote-ref" role="doc-noteref">12</a></sup> <sup id="fnref:13"><a href="#fn:13" class="footnote-ref" role="doc-noteref">13</a></sup>.</p>
+<pre><code class="language-console" data-lang="console">$ cd ..
+
+$ cargo new --lib stm32f30x &amp;&amp; cd $_
+
+$ # Fetch the SVD from the database
+$ curl -LO https://github.com/posborne/cmsis-svd/raw/python-0.4/data/STMicro/STM32F30x.svd
+$ dos2unix STM32F30x.svd
+
+$ # Patch the SVD for extra type safety
+$ curl -L https://github.com/japaric/stm32f30x/raw/v0.4.0/STM32F30x.patch | patch -p1
+
+$ cargo install svd2rust --vers 0.7.0
+
+$ # Turn the SVD file into a device crate
+$ svd2rust -i STM32F30x.svd | rustfmt &gt; src/lib.rs
+
+$ # Wow, you certainly don't want to write all that by hand!
+$ wc src/lib.rs
+ 226424 1153424 7689220 src/lib.rs
+
+$ # if you don't have the `add` subcommand
+$ cargo install cargo-edit
+
+$ # Dependencies of the device crate
+$ cargo add cortex-m vcell
+
+$ # sanity check
+$ xargo build --target thumbv7em-none-eabihf
+</code></pre><p>That wasn&rsquo;t too hard and 200K+ lines of Rust just materialized from thin air.</p>
+<p>The output of <code>svd2rust</code> is a <em>crate</em> that provides an API to access <em>every one</em>
+of the microcontroller&rsquo;s peripherals. The API is relatively low level as it
+operates at the register level but it&rsquo;s type safe: It won&rsquo;t let you</p>
+<ul>
+<li>Write to read-only registers.</li>
+<li>Read write-only registers.</li>
+<li>Read or write to the reserved parts of a register.</li>
+<li>Write invalid bit patterns to a register. For example, the 2 lowest bits of a
+register may only support the values <code>0b01</code>, <code>0b10</code> and <code>0b11</code> &ndash; the API
+enforces that those are the only values that you can write to those two bits.</li>
+</ul>
+<p>Apart from avoiding those footguns, the API uses enums / methods instead of
+magic bit patterns like <code>0b01</code> for clarity. The generated API is documented
+<a href="https://docs.rs/svd2rust/0.7.0/svd2rust/#peripheral-api">here</a>.</p>
+<h1 id="blinky">Blinky</h1>
+<p>Armed with an API to access the hardware, we now can write the real &ldquo;Hello,
+world!&rdquo; of the embedded world: A program to blink an LED.</p>
+<p>There&rsquo;s no example for this in <code>cortex-m-quickstart</code> as the implementation is
+device <em>and</em> board specific but here&rsquo;s the code for the STM32F3DISCOVERY:</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#75715e">// examples/blinky.rs
+</span><span style="color:#75715e"></span>
+<span style="color:#75715e">#![feature(used)]</span>
+<span style="color:#75715e">#![no_std]</span>
+
+<span style="color:#75715e">// version = &#34;0.2.0&#34;, default-features = false
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">extern</span> <span style="color:#66d9ef">crate</span> cast;
+<span style="color:#66d9ef">extern</span> <span style="color:#66d9ef">crate</span> cortex_m;
+<span style="color:#66d9ef">extern</span> <span style="color:#66d9ef">crate</span> cortex_m_rt;
+<span style="color:#66d9ef">extern</span> <span style="color:#66d9ef">crate</span> stm32f30x;
+
+<span style="color:#66d9ef">use</span> core::<span style="color:#66d9ef">u16</span>;
+
+<span style="color:#66d9ef">use</span> cast::{<span style="color:#66d9ef">u16</span>, <span style="color:#66d9ef">u32</span>};
+<span style="color:#66d9ef">use</span> cortex_m::asm;
+<span style="color:#66d9ef">use</span> stm32f30x::{GPIOE, RCC, TIM7};
+
+<span style="color:#66d9ef">mod</span> frequency {
+    <span style="color:#e6db74">/// Frequency of APB1 bus (TIM7 is connected to this bus)
+</span><span style="color:#e6db74"></span>    <span style="color:#66d9ef">pub</span> <span style="color:#66d9ef">const</span> APB1: <span style="color:#66d9ef">u32</span> <span style="color:#f92672">=</span> <span style="color:#ae81ff">8_000_000</span>;
+}
+
+<span style="color:#e6db74">/// Timer frequency
+</span><span style="color:#e6db74"></span><span style="color:#66d9ef">const</span> FREQUENCY: <span style="color:#66d9ef">u32</span> <span style="color:#f92672">=</span> <span style="color:#ae81ff">1</span>;
+
+<span style="color:#75715e">#[inline(never)]</span>
+<span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">main</span>() {
+    <span style="color:#75715e">// Critical section, this closure is non-preemptable
+</span><span style="color:#75715e"></span>    cortex_m::interrupt::free(
+        <span style="color:#f92672">|</span>cs<span style="color:#f92672">|</span> {
+            <span style="color:#75715e">// INITIALIZATION PHASE
+</span><span style="color:#75715e"></span>            <span style="color:#75715e">// Exclusive access to the peripherals
+</span><span style="color:#75715e"></span>            <span style="color:#66d9ef">let</span> gpioe <span style="color:#f92672">=</span> GPIOE.borrow(cs);
+            <span style="color:#66d9ef">let</span> rcc <span style="color:#f92672">=</span> RCC.borrow(cs);
+            <span style="color:#66d9ef">let</span> tim7 <span style="color:#f92672">=</span> TIM7.borrow(cs);
+
+            <span style="color:#75715e">// Power up the relevant peripherals
+</span><span style="color:#75715e"></span>            rcc.ahbenr.modify(<span style="color:#f92672">|</span>_, w<span style="color:#f92672">|</span> w.iopeen().enabled());
+            rcc.apb1enr.modify(<span style="color:#f92672">|</span>_, w<span style="color:#f92672">|</span> w.tim7en().enabled());
+
+            <span style="color:#75715e">// Configure the pin PE9 as an output pin
+</span><span style="color:#75715e"></span>            gpioe.moder.modify(<span style="color:#f92672">|</span>_, w<span style="color:#f92672">|</span> w.moder9().output());
+
+            <span style="color:#75715e">// Configure TIM7 for periodic timeouts
+</span><span style="color:#75715e"></span>            <span style="color:#66d9ef">let</span> ratio <span style="color:#f92672">=</span> frequency::APB1 <span style="color:#f92672">/</span> FREQUENCY;
+            <span style="color:#66d9ef">let</span> psc <span style="color:#f92672">=</span> <span style="color:#66d9ef">u16</span>((ratio <span style="color:#f92672">-</span> <span style="color:#ae81ff">1</span>) <span style="color:#f92672">/</span> <span style="color:#66d9ef">u32</span>(<span style="color:#66d9ef">u16</span>::MAX)).unwrap();
+            tim7.psc.write(<span style="color:#f92672">|</span>w<span style="color:#f92672">|</span> w.psc().bits(psc));
+            <span style="color:#66d9ef">let</span> arr <span style="color:#f92672">=</span> <span style="color:#66d9ef">u16</span>(ratio <span style="color:#f92672">/</span> <span style="color:#66d9ef">u32</span>(psc <span style="color:#f92672">+</span> <span style="color:#ae81ff">1</span>)).unwrap();
+            tim7.arr.write(<span style="color:#f92672">|</span>w<span style="color:#f92672">|</span> w.arr().bits(arr));
+            tim7.cr1.write(<span style="color:#f92672">|</span>w<span style="color:#f92672">|</span> w.opm().continuous());
+
+            <span style="color:#75715e">// Start the timer
+</span><span style="color:#75715e"></span>            tim7.cr1.modify(<span style="color:#f92672">|</span>_, w<span style="color:#f92672">|</span> w.cen().enabled());
+
+            <span style="color:#75715e">// APPLICATION LOGIC
+</span><span style="color:#75715e"></span>            <span style="color:#66d9ef">let</span> <span style="color:#66d9ef">mut</span> state <span style="color:#f92672">=</span> <span style="color:#66d9ef">false</span>;
+            <span style="color:#66d9ef">loop</span> {
+                <span style="color:#75715e">// Wait for an update event
+</span><span style="color:#75715e"></span>                <span style="color:#66d9ef">while</span> tim7.sr.read().uif().is_no_update() {}
+
+                <span style="color:#75715e">// Clear the update event flag
+</span><span style="color:#75715e"></span>                tim7.sr.modify(<span style="color:#f92672">|</span>_, w<span style="color:#f92672">|</span> w.uif().clear());
+
+                <span style="color:#75715e">// Toggle the state
+</span><span style="color:#75715e"></span>                state <span style="color:#f92672">=</span> <span style="color:#f92672">!</span>state;
+
+                <span style="color:#75715e">// Blink the LED
+</span><span style="color:#75715e"></span>                <span style="color:#66d9ef">if</span> state {
+                    gpioe.bsrr.write(<span style="color:#f92672">|</span>w<span style="color:#f92672">|</span> w.bs9().set());
+                } <span style="color:#66d9ef">else</span> {
+                    gpioe.bsrr.write(<span style="color:#f92672">|</span>w<span style="color:#f92672">|</span> w.br9().reset());
+                }
+            }
+        },
+    );
+}
+
+<span style="color:#75715e">// This part is the same as before
+</span><span style="color:#75715e"></span><span style="color:#75715e">#[allow(dead_code)]</span>
+<span style="color:#75715e">#[used]</span>
+<span style="color:#75715e">#[link_section = </span><span style="color:#e6db74">&#34;.rodata.interrupts&#34;</span><span style="color:#75715e">]</span>
+<span style="color:#66d9ef">static</span> INTERRUPTS: [<span style="color:#66d9ef">extern</span> <span style="color:#e6db74">&#34;C&#34;</span> <span style="color:#66d9ef">fn</span>(); <span style="color:#ae81ff">240</span>] <span style="color:#f92672">=</span> [default_handler; <span style="color:#ae81ff">240</span>];
+
+<span style="color:#66d9ef">extern</span> <span style="color:#e6db74">&#34;C&#34;</span> <span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">default_handler</span>() {
+    asm::bkpt();
+}
+</code></pre></div><p>It&rsquo;s not necessary to understand every single line of the previous program as it
+contains low level device specific code. But here are some things to note:</p>
+<ul>
+<li>
+<p>There&rsquo;s no <code>unsafe</code> code! Peripherals are global resources and
+microcontrollers have hardware support for preemption in the form of
+interrupts and exceptions so unsynchronized access to a peripheral is <code>unsafe</code>
+in the general case. Here we add synchronization in the form of a critical
+section (<code>interrupt::free</code>) which ensures that the whole closure is executed
+&ldquo;atomically&rdquo;, i.e. without being interrupted.</p>
+</li>
+<li>
+<p>Once we are inside a critical section, we can safely <code>borrow</code> / access the
+peripherals <code>GPIOE</code>, <code>RCC</code> and <code>TIM7</code> for the duration of the critical
+section.</p>
+</li>
+<li>
+<p>The program never ends; there&rsquo;s an infinite <code>loop</code> that prevents that.</p>
+</li>
+<li>
+<p>The timer is configured to generate an <em>update event</em> every second. The timer
+notifies the processor about the update event by setting an <em>update event
+flag</em>, which is just a bit at some known memory location. In this program, we
+continuously check for the state of the flag to force the processor to wait
+for 1 second before toggling the state of the LED. This continuous polling
+approach is known as <em>busy waiting</em>.</p>
+</li>
+</ul>
+<p>And here&rsquo;s the outcome:</p>
+<pre><code class="language-console" data-lang="console">$ # depend on the previously generated device crate
+$ cargo add stm32f30x --path ../stm32f30x
+
+$ xargo build --example blinky
+
+$ arm-none-eabi-gdb target/thumbv7em-none-eabihf/debug/examples/blinky
+(..)
+</code></pre><!-- raw HTML omitted -->
+<p>Yay, it works!</p>
+<p>But the best part is the disassembly of the program when compiled in release
+mode.</p>
+<pre><code class="language-console" data-lang="console">$ xargo build --example blinky --release
+
+$ arm-none-eabi-objdump -Cd target/thumbv7em-none-eabihf/release/examples/blinky
+</code></pre><pre><code class="language-armasm" data-lang="armasm">08000400 &lt;blinky::main&gt;:
+ 8000400:	b580        push	{r7, lr}
+ 8000402:	f3ef 8010   mrs	r0, PRIMASK
+ 8000406:	b672        cpsid	i
+ 8000408:	2201        movs	r2, #1
+ 800040a:	2300        movs	r3, #0
+ 800040c:	f04f 7c00   mov.w	ip, #33554432	; 0x2000000
+ 8000410:	f44f 7e00   mov.w	lr, #512	; 0x200
+ 8000414:	f241 0014   movw	r0, #4116	; 0x1014
+ 8000418:	f2c4 0002   movt	r0, #16386	; 0x4002
+ 800041c:	6801        ldr	r1, [r0, #0]
+ 800041e:	f441 1100   orr.w	r1, r1, #2097152	; 0x200000
+ 8000422:	6001        str	r1, [r0, #0]
+ 8000424:	6881        ldr	r1, [r0, #8]
+ 8000426:	f041 0120   orr.w	r1, r1, #32
+ 800042a:	6081        str	r1, [r0, #8]
+ 800042c:	f241 0000   movw	r0, #4096	; 0x1000
+ 8000430:	f6c4 0000   movt	r0, #18432	; 0x4800
+ 8000434:	6801        ldr	r1, [r0, #0]
+ 8000436:	f362 4193   bfi	r1, r2, #18, #2
+ 800043a:	227a        movs	r2, #122	; 0x7a
+ 800043c:	6001        str	r1, [r0, #0]
+ 800043e:	f241 4100   movw	r1, #5120	; 0x1400
+ 8000442:	f2c4 0100   movt	r1, #16384	; 0x4000
+ 8000446:	628a        str	r2, [r1, #40]	; 0x28
+ 8000448:	f64f 6210   movw	r2, #65040	; 0xfe10
+ 800044c:	62ca        str	r2, [r1, #44]	; 0x2c
+ 800044e:	600b        str	r3, [r1, #0]
+ 8000450:	680a        ldr	r2, [r1, #0]
+ 8000452:	f042 0201   orr.w	r2, r2, #1
+ 8000456:	600a        str	r2, [r1, #0]
+ 8000458:	e00d        b.n	8000476 &lt;blinky::main+0x76&gt;
+ 800045a:	690a        ldr	r2, [r1, #16]
+ 800045c:	f013 0f01   tst.w	r3, #1
+ 8000460:	f022 0201   bic.w	r2, r2, #1
+ 8000464:	610a        str	r2, [r1, #16]
+ 8000466:	f083 0201   eor.w	r2, r3, #1
+ 800046a:	bf14        ite	ne
+ 800046c:	f8c0 c018   strne.w	ip, [r0, #24]
+ 8000470:	f8c0 e018   streq.w	lr, [r0, #24]
+ 8000474:	4613        mov	r3, r2
+ 8000476:	690a        ldr	r2, [r1, #16]
+ 8000478:	f012 0f01   tst.w	r2, #1
+ 800047c:	d0fb        beq.n	8000476 &lt;blinky::main+0x76&gt;
+ 800047e:	e7ec        b.n	800045a &lt;blinky::main+0x5a&gt;
+</code></pre><p>The <code>svd2rust</code> generated API makes heavy use of closures and enums for type
+safety, and of method chains for ergonomics but LLVM optimizes all that away and
+produces very lean code. Also notice how there are no <code>panic!</code> branches; LLVM
+proved that the failure branches of the <code>unwrap</code> methods were unreachable and
+optimized them away. This shows that the type safety provided by the <code>svd2rust</code>
+generated API is zero cost.</p>
+<h1 id="board-support-crates">Board Support Crates</h1>
+<p>Although you could go ahead and build applications just using the register level
+API that <code>svd2rust</code> generates, it&rsquo;s nicer if you can code in something higher
+level and that abstracts away the registers. That&rsquo;s where Board Support Crates
+come in.</p>
+<p>A board support crate provides a high level API to program a specific
+development board. I have developed one such crate for the STM32F3DISCOVERY: the
+<a href="https://docs.rs/f3/0.4.0/f3/"><code>f3</code></a> crate. Let&rsquo;s use that crate to simplify the blinky program.</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#75715e">// examples/blinky2.rs
+</span><span style="color:#75715e"></span>
+<span style="color:#75715e">#![feature(used)]</span>
+<span style="color:#75715e">#![no_std]</span>
+
+<span style="color:#75715e">// version = &#34;0.2.4&#34;
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">extern</span> <span style="color:#66d9ef">crate</span> cortex_m;
+
+<span style="color:#75715e">// version = &#34;0.2.0&#34;
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">extern</span> <span style="color:#66d9ef">crate</span> cortex_m_rt;
+
+<span style="color:#75715e">// version = &#34;0.4.0&#34;
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">extern</span> <span style="color:#66d9ef">crate</span> f3;
+
+<span style="color:#66d9ef">use</span> cortex_m::asm;
+<span style="color:#66d9ef">use</span> f3::led::{self, LEDS};
+<span style="color:#66d9ef">use</span> f3::stm32f30x::{GPIOE, RCC, TIM7};
+<span style="color:#66d9ef">use</span> f3:<span style="color:#960050;background-color:#1e0010">⏲</span>:<span style="color:#a6e22e">Timer</span>;
+
+<span style="color:#e6db74">/// Timer frequency
+</span><span style="color:#e6db74"></span><span style="color:#66d9ef">const</span> FREQUENCY: <span style="color:#66d9ef">u32</span> <span style="color:#f92672">=</span> <span style="color:#ae81ff">1</span>;
+
+<span style="color:#75715e">#[inline(never)]</span>
+<span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">main</span>() {
+    <span style="color:#75715e">// Critical section
+</span><span style="color:#75715e"></span>    cortex_m::interrupt::free(
+        <span style="color:#f92672">|</span>cs<span style="color:#f92672">|</span> {
+            <span style="color:#75715e">// Exclusive access to the peripherals
+</span><span style="color:#75715e"></span>            <span style="color:#66d9ef">let</span> gpioe <span style="color:#f92672">=</span> GPIOE.borrow(cs);
+            <span style="color:#66d9ef">let</span> rcc <span style="color:#f92672">=</span> RCC.borrow(cs);
+            <span style="color:#66d9ef">let</span> tim7 <span style="color:#f92672">=</span> TIM7.borrow(cs);
+
+            <span style="color:#75715e">// Configure the PEx pins as output pins
+</span><span style="color:#75715e"></span>            led::init(gpioe, rcc);
+
+            <span style="color:#75715e">// Configure TIM7 for periodic timeouts
+</span><span style="color:#75715e"></span>            <span style="color:#66d9ef">let</span> timer <span style="color:#f92672">=</span> Timer(tim7);
+            timer.init(rcc, FREQUENCY);
+
+            <span style="color:#75715e">// Start the timer
+</span><span style="color:#75715e"></span>            timer.resume();
+
+            <span style="color:#66d9ef">let</span> <span style="color:#66d9ef">mut</span> state <span style="color:#f92672">=</span> <span style="color:#66d9ef">false</span>;
+            <span style="color:#66d9ef">loop</span> {
+                <span style="color:#75715e">// Wait for an update event *and* clear the update event flag
+</span><span style="color:#75715e"></span>                <span style="color:#66d9ef">while</span> timer.clear_update_flag().is_err() {}
+
+                <span style="color:#75715e">// Toggle the state
+</span><span style="color:#75715e"></span>                state <span style="color:#f92672">=</span> <span style="color:#f92672">!</span>state;
+
+                <span style="color:#75715e">// Blink the LED
+</span><span style="color:#75715e"></span>                <span style="color:#66d9ef">if</span> state {
+                    LEDS[<span style="color:#ae81ff">0</span>].on();
+                } <span style="color:#66d9ef">else</span> {
+                    LEDS[<span style="color:#ae81ff">0</span>].off();
+                }
+            }
+        },
+    );
+
+}
+
+<span style="color:#75715e">// This part is the same as before
+</span><span style="color:#75715e"></span><span style="color:#75715e">#[allow(dead_code)]</span>
+<span style="color:#75715e">#[used]</span>
+<span style="color:#75715e">#[link_section = </span><span style="color:#e6db74">&#34;.rodata.interrupts&#34;</span><span style="color:#75715e">]</span>
+<span style="color:#66d9ef">static</span> INTERRUPTS: [<span style="color:#66d9ef">extern</span> <span style="color:#e6db74">&#34;C&#34;</span> <span style="color:#66d9ef">fn</span>(); <span style="color:#ae81ff">240</span>] <span style="color:#f92672">=</span> [default_handler; <span style="color:#ae81ff">240</span>];
+
+<span style="color:#66d9ef">extern</span> <span style="color:#e6db74">&#34;C&#34;</span> <span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">default_handler</span>() {
+    asm::bkpt();
+}
+</code></pre></div><p>All the register names are gone. The <code>Timer</code> abstraction encodes the idea of a
+timer that generates periodic update events. Even the LEDs have their own
+abstraction in the form of the <code>Led</code> type. And <code>LEDS</code> is a collection of all the
+user LEDs on the board.</p>
+<p>Behavior is unchanged after moving to the <code>f3</code> crate so I&rsquo;m not going to show
+another video of the same thing. Let&rsquo;s see how the new program does in terms of
+performance.</p>
+<pre><code class="language-console" data-lang="console">$ # Remove the device crate
+$ cargo rm stm32f30x
+
+$ # Add the board support crate
+$ cargo add f3 --vers 0.4.0
+
+$ # the f3 crate provides a memory.x file so we must the remove the one we have
+$ rm build.rs memory.x
+
+$ xargo build --example blinky2 --release
+
+$ arm-none-eabi-objdump -Cd target/thumbv7em-none-eabihf/release/examples/blinky
+</code></pre><pre><code class="language-armasm" data-lang="armasm">08000400 &lt;blinky2::main&gt;:
+ 8000400:	b580        push	{r7, lr}
+ 8000402:	f241 0114   movw	r1, #4116	; 0x1014
+ 8000406:	f3ef 8010   mrs	r0, PRIMASK
+ 800040a:	b672        cpsid	i
+ 800040c:	2300        movs	r3, #0
+ 800040e:	f04f 7c00   mov.w	ip, #33554432	; 0x2000000
+ 8000412:	f44f 7e00   mov.w	lr, #512	; 0x200
+ 8000416:	f2c4 0102   movt	r1, #16386	; 0x4002
+ 800041a:	6808        ldr	r0, [r1, #0]
+ 800041c:	f440 1000   orr.w	r0, r0, #2097152	; 0x200000
+ 8000420:	6008        str	r0, [r1, #0]
+ 8000422:	f241 0000   movw	r0, #4096	; 0x1000
+ 8000426:	f6c4 0000   movt	r0, #18432	; 0x4800
+ 800042a:	6802        ldr	r2, [r0, #0]
+ 800042c:	f2c5 5255   movt	r2, #21845	; 0x5555
+ 8000430:	6002        str	r2, [r0, #0]
+ 8000432:	688a        ldr	r2, [r1, #8]
+ 8000434:	f042 0220   orr.w	r2, r2, #32
+ 8000438:	608a        str	r2, [r1, #8]
+ 800043a:	f241 4100   movw	r1, #5120	; 0x1400
+ 800043e:	227a        movs	r2, #122	; 0x7a
+ 8000440:	f2c4 0100   movt	r1, #16384	; 0x4000
+ 8000444:	628a        str	r2, [r1, #40]	; 0x28
+ 8000446:	f64f 6210   movw	r2, #65040	; 0xfe10
+ 800044a:	62ca        str	r2, [r1, #44]	; 0x2c
+ 800044c:	2201        movs	r2, #1
+ 800044e:	60ca        str	r2, [r1, #12]
+ 8000450:	600b        str	r3, [r1, #0]
+ 8000452:	680a        ldr	r2, [r1, #0]
+ 8000454:	f042 0201   orr.w	r2, r2, #1
+ 8000458:	600a        str	r2, [r1, #0]
+ 800045a:	e00d        b.n	8000478 &lt;blinky2::main+0x78&gt;
+ 800045c:	690a        ldr	r2, [r1, #16]
+ 800045e:	f013 0f01   tst.w	r3, #1
+ 8000462:	f022 0201   bic.w	r2, r2, #1
+ 8000466:	610a        str	r2, [r1, #16]
+ 8000468:	f083 0201   eor.w	r2, r3, #1
+ 800046c:	bf14        ite	ne
+ 800046e:	f8c0 c018   strne.w	ip, [r0, #24]
+ 8000472:	f8c0 e018   streq.w	lr, [r0, #24]
+ 8000476:	4613        mov	r3, r2
+ 8000478:	690a        ldr	r2, [r1, #16]
+ 800047a:	f012 0f01   tst.w	r2, #1
+ 800047e:	d0fb        beq.n	8000478 &lt;blinky2::main+0x78&gt;
+ 8000480:	e7ec        b.n	800045c &lt;blinky2::main+0x5c&gt;
+</code></pre><p>The generated code is about the same as the version that directly used the
+<code>stm32f30x</code> crate. So the higher level API provided by the <code>f3</code> crate is also a
+zero cost abstraction.</p>
+<p>OK. That&rsquo;s all the code I&rsquo;m going to show you in this post.</p>
+<h1 id="the-abstraction-layers">The abstraction layers</h1>
+<p>I&rsquo;d like to step back for a bit to look at all the abstraction layers (crates)
+we are using:</p>
+<p><img src="/quickstart/monotask.svg" alt="Monotask application"></p>
+<p>In the above diagram, you can see that the layers are split in two halves. The
+layers on the left are what I like to call device agnostic layers. The crates on
+that side rely on hardware features available on all Cortex-M cores so they work
+for any microcontroller. The crates on the right side are device specific and
+will only work on a limited set of microcontrollers.</p>
+<p>Here&rsquo;s a recap of what each crate does:</p>
+<ul>
+<li>
+<p><code>cortex-m-rt</code>. It handles the boot process and provides debugging facilities.
+This crate can&rsquo;t be directly accessed by the application as there&rsquo;s no API.
+This crate is device agnostic.</p>
+</li>
+<li>
+<p><code>cortex-m</code>. API to use Cortex-M functionality available to all
+microcontrollers.</p>
+</li>
+<li>
+<p><code>stm32f30x</code>, the device crate. Hardware access API specific to a device
+family. Operates at a register level.</p>
+</li>
+<li>
+<p><code>f3</code>, the Board Support Crate. It provides a higher level API to use the
+microcontroller peripherals and it&rsquo;s tailored for a specific development
+board. This crates builds on top of the device crate.</p>
+</li>
+</ul>
+<h1 id="outro">Outro</h1>
+<p>That&rsquo;s it for this post. We have seen:</p>
+<ul>
+<li>A template that handles all the low level stuff: the linker script, linker
+arguments, sysroot customization <sup id="fnref:14"><a href="#fn:14" class="footnote-ref" role="doc-noteref">14</a></sup> and boot sequence. I didn&rsquo;t even
+mention the   linker arguments and sysroot customization up there because you
+didn&rsquo;t need to   know about them but the template handled that as well.</li>
+</ul>
+<ul>
+<li>
+<p>A tool to generate an API to access all the hardware of a microcontroller.</p>
+</li>
+<li>
+<p>How to write memory safe (zero <code>unsafe</code>) single task applications, using
+critical sections (<code>interrupt::free</code>).</p>
+</li>
+</ul>
+<p>In the next one, we&rsquo;ll fix this inefficiency:</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust">                <span style="color:#75715e">// Wait for an update event and clear the flag
+</span><span style="color:#75715e"></span>                <span style="color:#66d9ef">while</span> timer.clear_update_flag().is_err() {}
+</code></pre></div><p>This is blocking code that forces the processor to uselessly busy wait for a
+whole second when it could have been doing something more useful. Also, although
+critical sections give the synchronization needed to achieve memory safety, they
+should be used sparingly. Here we executed everything inside a critical section.
+We&rsquo;ll fix that too. So in the next post, with just one more device agnostic
+crate, we&rsquo;ll leverage interrupts in a memory safe manner and build an efficient
+multitasking application. I&rsquo;ll leave you with this figure.</p>
+<p><img src="/quickstart/multitask.svg" alt="Multitask application"></p>
+<hr>
+<p>Let&rsquo;s discuss on <a href="https://www.reddit.com/r/rust/comments/687b3l/embedded_in_rust_rust_your_arm_microcontroller/">reddit</a>.</p>
+<section class="footnotes" role="doc-endnotes">
+<hr>
+<ol>
+<li id="fn:1" role="doc-endnote">
+<p>RAM is split in two non-contiguous memory regions. One is 40 KiB big,
+the other is 8 KiB big <a href="#fnref:1" class="footnote-backref" role="doc-backlink">&#x21a9;&#xfe0e;</a></p>
+</li>
+<li id="fn:2" role="doc-endnote">
+<p>1 KiB = 1 Kibibyte = 1024 bytes <a href="#fnref:2" class="footnote-backref" role="doc-backlink">&#x21a9;&#xfe0e;</a></p>
+</li>
+<li id="fn:3" role="doc-endnote">
+<p>If you were wondering, LLD can&rsquo;t be used because its linker script
+support is not on parity with GNU ld&rsquo;s. <a href="#fnref:3" class="footnote-backref" role="doc-backlink">&#x21a9;&#xfe0e;</a></p>
+</li>
+<li id="fn:4" role="doc-endnote">
+<p>It should be possible to use LLDB but I haven&rsquo;t figured out how to do
+the equivalent of GDB&rsquo;s <code>load</code> command. <a href="#fnref:4" class="footnote-backref" role="doc-backlink">&#x21a9;&#xfe0e;</a></p>
+</li>
+<li id="fn:5" role="doc-endnote">
+<p>Ideally we should use some proper templating feature here. Cargo
+had that feature for a bit but it got removed. I don&rsquo;t think it supported
+versioning the template though. <a href="#fnref:5" class="footnote-backref" role="doc-backlink">&#x21a9;&#xfe0e;</a></p>
+</li>
+<li id="fn:6" role="doc-endnote">
+<p>If your device only supports flashing via a bootloader, i.e. it
+doesn&rsquo;t expose SWD / JTAG pins, then DON&rsquo;T use this template or you&rsquo;ll
+likely brick your device. This template doesn&rsquo;t support locked devices. <a href="#fnref:6" class="footnote-backref" role="doc-backlink">&#x21a9;&#xfe0e;</a></p>
+</li>
+<li id="fn:7" role="doc-endnote">
+<p><a href="http://www.st.com/en/evaluation-tools/stm32vldiscovery.html">STM32VLDISCOVERY</a>, <a href="http://www.st.com/en/evaluation-tools/stm32f3discovery.html">STM32F3DISCOVERY</a>, <a href="http://wiki.stm32duino.com/index.php?title=Blue_Pill">Blue Pill</a> and another board
+with STM32 micros, <a href="http://www.waveshare.com/wiki/BLE400">BLE400</a> with a nRF51 micro, and <a href="http://www.ti.com/tool/ek-tm4c1294xl">EK-TM4C1294XL</a> with a
+TI micro. <a href="#fnref:7" class="footnote-backref" role="doc-backlink">&#x21a9;&#xfe0e;</a></p>
+</li>
+<li id="fn:8" role="doc-endnote">
+<p>Here I only use one RAM region as that&rsquo;s the most common scenario (most
+microcontrollers have one RAM region). But it&rsquo;s possible to use the two
+memory regions of the microcontroller by placing the call stack in one and
+the <code>static</code> variables in the other as done in <a href="https://docs.rs/crate/f3/0.4.0/source/memory.x">this linker script</a>. <a href="#fnref:8" class="footnote-backref" role="doc-backlink">&#x21a9;&#xfe0e;</a></p>
+</li>
+<li id="fn:9" role="doc-endnote">
+<p>There&rsquo;s no heap support in <code>cortex-m-rt</code> at this time but
+<a href="https://github.com/japaric/cortex-m-rt/issues/5">it&rsquo;s on the TODO list</a>. <a href="#fnref:9" class="footnote-backref" role="doc-backlink">&#x21a9;&#xfe0e;</a></p>
+</li>
+<li id="fn:10" role="doc-endnote">
+<p>The <code>hprintln!</code> macro uses semihosting so it&rsquo;s very slow, like
+100s of ms per write operation. Don&rsquo;t use it where timing is critical. <a href="#fnref:10" class="footnote-backref" role="doc-backlink">&#x21a9;&#xfe0e;</a></p>
+</li>
+<li id="fn:11" role="doc-endnote">
+<p><a href="http://www.st.com/resource/en/reference_manual/cd00240193.pdf">This</a> (<em>WARNING</em> big PDF file) is the reference manual of the
+STM32F303VCT6 microcontroller. <a href="#fnref:11" class="footnote-backref" role="doc-backlink">&#x21a9;&#xfe0e;</a></p>
+</li>
+<li id="fn:12" role="doc-endnote">
+<p>There&rsquo;s already a <code>svd2rust</code> generated crate for this
+microcontroller on crates.io, the <a href="https://crates.io/crates/stm32f30x/0.4.0"><code>stm32f30x</code></a>, but it&rsquo;s instructive to do
+this by hand. <a href="#fnref:12" class="footnote-backref" role="doc-backlink">&#x21a9;&#xfe0e;</a></p>
+</li>
+<li id="fn:13" role="doc-endnote">
+<p>Actually, this SVD file targets not just the STM32F303
+microcontroller but the whole STM32F30x microcontroller family so the file
+also describes the STM32F301, STM32F302, etc. microcontrollers. <a href="#fnref:13" class="footnote-backref" role="doc-backlink">&#x21a9;&#xfe0e;</a></p>
+</li>
+<li id="fn:14" role="doc-endnote">
+<p>Xargo by default only builds the <code>core</code> crate but most Cortex-M
+applications also need compiler intrinsics which are not in <code>core</code>. So the
+template uses a <code>Xargo.toml</code> file to compile the <a href="https://github.com/rust-lang-nursery/compiler-builtins">compiler-builtins</a> crate,
+which provides the needed compiler intrinsics, as part of the Xargo sysroot. <a href="#fnref:14" class="footnote-backref" role="doc-backlink">&#x21a9;&#xfe0e;</a></p>
+</li>
+</ol>
+</section>
+
+    </div>
+
+    
+    
+    <div class="article-toc" >
+        <h3>Contents</h3>
+        <nav id="TableOfContents">
+  <ul>
+    <li><a href="#debugging-an-exception">Debugging an exception</a></li>
+    <li><a href="#redirection-of-panic-messages">Redirection of <code>panic!</code> messages</a></li>
+  </ul>
+</nav>
+    </div>
+    
+    
+
+    
+  </div>
+</section>
+
+
+<section class="section">
+  <div class="container has-text-centered">
+    <p><a rel="license" href="http://creativecommons.org/licenses/by/4.0/"><img alt="Creative Commons License" src="https://i.creativecommons.org/l/by/4.0/80x15.png" /></a><br/>Jorge Aparicio</p>
+  </div>
+</section>
+
+
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/styles/tomorrow-night.min.css" />
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/highlight.min.js" integrity="sha256-aYTdUrn6Ow1DDgh5JTc3aDGnnju48y/1c8s1dgkYPQ8=" crossorigin="anonymous"></script>
+
+<script type="text/javascript" src="//cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/languages/armasm.min.js"></script>
+
+<script type="text/javascript" src="//cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/languages/c.min.js"></script>
+
+<script type="text/javascript" src="//cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/languages/diff.min.js"></script>
+
+<script type="text/javascript" src="//cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/languages/llvm.min.js"></script>
+
+<script type="text/javascript" src="//cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/languages/rust.min.js"></script>
+
+<script type="text/javascript" src="//cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/languages/shell.min.js"></script>
+
+<script>hljs.initHighlightingOnLoad();</script>
+
+
+</body>

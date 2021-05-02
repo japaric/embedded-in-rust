@@ -1,0 +1,350 @@
+<!DOCTYPE html>
+<html lang="en-us">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta content="Rust, embedded, development" name="keywords">
+<meta content="Jorge Aparicio" name="author">
+<meta property="og:title" content="Weekly driver 1 &amp; 2: L3GD20, LSM303DLHC and Madgwick - Embedded in Rust">
+<meta property="og:url" content="https://blog.japaric.io/wd-1-2-l3gd20-lsm303dlhc-madgwick/">
+<meta property="og:description" content="A blog about Rust and embedded stuff">
+<meta property="og:type" content="website" />
+<title>Weekly driver 1 &amp; 2: L3GD20, LSM303DLHC and Madgwick | Embedded in Rust</title>
+<link rel="stylesheet" href="https://blog.japaric.io//css/style.css">
+<link rel="shortcut icon" href="https://blog.japaric.io//wave.ico">
+<link rel="alternate" type="application/atom+xml" title="Embedded in Rust Posts" href="https://blog.japaric.io//index.xml">
+<link href="//maxcdn.bootstrapcdn.com/font-awesome/4.7.0/css/font-awesome.min.css" rel="stylesheet" integrity="sha384-wvfXpqpZZVQGK6TAh5PVlGOfQNHSoD2xbE+QkPxCAFlNEevoEH3Sl0sibVcOQVnN" crossorigin="anonymous">
+
+<link rel="stylesheet" href="//cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/styles/github.min.css">
+
+</head>
+
+<body>
+<section class="section">
+  <div class="container">
+    <nav class="nav">
+      <div class="nav-left">
+        <a class="nav-item" href="https://blog.japaric.io/"><h1 class="title is-4">Embedded in Rust</h1></a>
+      </div>
+      <div class="nav-right">
+        <nav class="nav-item level is-mobile">
+          
+          <a class="level-item" href="https://github.com/japaric" target="_blank">
+            <span class="icon">
+              <i class="fa fa-github"></i>
+            </span>
+          </a>
+          
+          <a class="level-item" href="/index.xml" target="_blank">
+            <span class="icon">
+              <i class="fa fa-rss"></i>
+            </span>
+          </a>
+          
+        </nav>
+      </div>
+    </nav>
+  </div>
+</section>
+
+<section class="section">
+  <div class="container">
+    <h1 class="title">Weekly driver 1 &amp; 2: L3GD20, LSM303DLHC and Madgwick</h1>
+    <h2 class="subtitle is-5">February 19, 2018 by Jorge Aparicio</h2>
+    
+    <div class="content">
+      <p>Oh, time flies. It&rsquo;s already week 8 and we have zero <a href="/brave-new-io/#making-more-batteries">weekly driver</a> posts out there &ndash; don&rsquo;t worry
+though because there&rsquo;s plenty of <a href="https://github.com/japaric/embedded-hal#drivers">drivers</a> and <code>embedded-hal</code> <a href="https://github.com/japaric/embedded-hal#implementations">implementations</a> in the works.</p>
+<p>To play catch up in this post I&rsquo;ll cover two <a href="https://crates.io/crates/embedded-hal"><code>embedded-hal</code></a> drivers: the <a href="https://crates.io/crates/l3gd20"><code>l3gd20</code></a> and the
+<a href="https://crates.io/crates/lsm303dlhc"><code>lsm303dlhc</code></a>. The <a href="http://www.st.com/en/mems-and-sensors/l3gd20.html">L3GD20</a> is an IC that contains a gyroscope and exposes I2C and SPI interfaces;
+the <a href="http://www.st.com/en/mems-and-sensors/lsm303dlhc.html">LSM303DLHC</a> is an IC that contains an accelerometer and a magnetometer, and exposes an I2C
+interface. You can find these two ICs on the <a href="http://www.st.com/en/evaluation-tools/stm32f3discovery.html">STM32F3DISCOVERY</a> board.</p>
+<p>Gyroscope, accelerometer and magnetometer &ndash; all these are motion sensors. On their own they aren&rsquo;t
+<em>that</em> useful because each one has some sort of weakness but when you put them together you can
+build some nifty stuff.</p>
+<!-- raw HTML omitted -->
+<h1 id="l3gd20">L3GD20</h1>
+<p>Even though the L3GD20 has I2C and SPI interfaces the <code>l3gd20</code> driver only lets you interface the
+L3GD20 using SPI. Coincidentally, on the STM32F3DISCOVERY board the L3GD20 is connected to the SPI
+bus of the STM32F303 microcontroller.</p>
+<p>The L3GD20 contains a gyroscope, but what&rsquo;s a gyroscope useful for?</p>
+<h2 id="gyroscope">Gyroscope</h2>
+<p>A gyroscope is a sensor that measures the angular rate exerted on it. Angular rate is basically the
+speed at which something is rotating, and it&rsquo;s measured in degrees per second or in radians per
+second. Gyroscopes like the L3GD20 measure a 3D angular rate but report it as angular rates across
+three orthogonal axes. See picture below:</p>
+<!-- raw HTML omitted -->
+<p>So the L3GD20 will report an angular rate across its X axis, another one across its Y axis and yet
+another across its Z axis.</p>
+<p>Going back to the <code>l3gd20</code> driver. Once you create an instance of the driver you can read the sensor
+using the blocking <code>gyro()</code> method. The method returns an <code>I16x3</code> value which contains the readings
+of the sensor along its X, Y and Z axes.</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#66d9ef">let</span> <span style="color:#66d9ef">mut</span> l3gd20 <span style="color:#f92672">=</span> L3gd20::new(spi, nss)<span style="color:#f92672">?</span>;
+
+<span style="color:#66d9ef">let</span> I16x3 { x, y, z } <span style="color:#f92672">=</span> l3gd20.gyro()<span style="color:#f92672">?</span>;
+</code></pre></div><p>Each reading is a 16 bit integer that represents an angular rate. To map this integer to degrees
+per second you need to multiply it by the sensitivity of the sensor. The L3GD20 defaults to a
+sensitivity of <code>8.75e-3 dps / LSB</code> (dps = degrees per second; LSB = Least Significant Bit); this
+maps the 16 bit integer to a range of about <code>[-250, 250]</code> degrees per second.</p>
+<p>If we collect data from the gyroscope while keeping the F3 board still we&rsquo;ll see something like
+this:</p>
+<!-- raw HTML omitted -->
+<p><code>AR_x</code> stands for Angular Rate across the X axis; <code>|AR|</code> is the magnitude of the 3D angular rate.
+The blue line is sensor data collected during the span of one second and the green line is the mean
+of the data.</p>
+<h3 id="calibration">Calibration</h3>
+<p>There&rsquo;s a problem with this data though: it says that the mean angular rate is not zero, which
+implies that the L3GD20 and the F3 board to which is attached are rotating. We know that was not the
+case: the board was kept still while measuring so the all the readings <em>should</em> be centered around
+zero but instead they are <em>offset</em> by some value. This offset is known as <em>bias</em> and it&rsquo;s commonly
+found on gyroscopes and other kind of sensors.</p>
+<p>To correct this bias error we have to calibrate the gyroscope. But turns out we kind of already did:
+the mean values we computed in the previous graph are the biases of the gyroscope. The only thing
+that&rsquo;s left is to subtract the bias from each axis measurements.</p>
+<!-- raw HTML omitted -->
+<p>Now these are more correct measurements!</p>
+<p>We can calibrate the gyroscope for bias while the gyroscope / board is not moving so we can do that
+each time the system is initialized if we know that the board is still during initialization. The
+problem is that bias doesn&rsquo;t remain constant in time; it tends to drift with both the passage of
+time and with changes in temperature so the calibration will eventually become invalid. There are
+methods to compensate for bias drift but I won&rsquo;t cover them here.</p>
+<p>Let&rsquo;s move on to the next IC.</p>
+<h1 id="lsm303dlhc">LSM303DLHC</h1>
+<p>This IC contains an accelerometer and a magnetometer. Let&rsquo;s look at each of them in detail.</p>
+<h2 id="accelerometer">Accelerometer</h2>
+<p>Accelerometers are sensors that measure <em>proper</em> acceleration. In simple terms, the difference
+between proper acceleration and the <em>coordinate</em> acceleration you are familiar with is that proper
+acceleration <em>includes</em> the acceleration of gravity. This means that even if an accelerometer is not
+moving it will sense the acceleration of the gravity.</p>
+<p>Like the gyroscope in the L3GD20, the accelerometer in the LSM303DLHC measures a 3D acceleration
+vector but it reports the decomposition of the 3D vector along three orthogonal axes.</p>
+<!-- raw HTML omitted -->
+<p>Using the <code>lsm303dlhc</code> driver is similar to using the <code>l3gd20</code> driver. Once you instantiate the
+driver you can read the accelerometer data using the blocking <code>accel()</code> method.</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#66d9ef">let</span> <span style="color:#66d9ef">mut</span> lsm303dlhc <span style="color:#f92672">=</span> Lsm303dlhc::new(i2c)<span style="color:#f92672">?</span>;
+
+<span style="color:#66d9ef">let</span> I16x3 { x, y, z } <span style="color:#f92672">=</span> lsm303dlhc.accel()<span style="color:#f92672">?</span>;
+</code></pre></div><p>Again, you get a 16 bit integer for the reading along each axis. The default sensitivity of the
+accelerometer is around <code>6.1e-5 g / LSB</code> (g is the acceleration of gravity); this maps the integer
+to a range of <code>[-2, 2]</code> g.</p>
+<p>If we collect data from the accelerometer while keeping the F3 board still on a horizontal surface
+we&rsquo;ll see something like this:</p>
+<!-- raw HTML omitted -->
+<p><code>G_x</code> stands for acceleration of Gravity across the X axis; <code>|G|</code> is the magnitude of the
+acceleration of Gravity. The blue line is sensor data collected during the span of one second and
+the green line is the mean of the data.</p>
+<p>This accelerometer could use some calibration because the X and Y components should have a mean of
+zero and the Z (down) component should have a mean of 1g but that&rsquo;s not that critical for the demo
+so I&rsquo;ll skip it.</p>
+<h2 id="magnetometer">Magnetometer</h2>
+<p>Magnetometers are sensors that measure magnetic fields. In the absence of nearby magnets a
+magnetometer will measure Earth&rsquo;s magnetic field, which points to the geographic north (unless you
+are too close to the poles, <a href="https://mobile.twitter.com/TerribleMaps/status/964950464608571393">I suppose</a>), so you can use the magnetometer as digital compass.</p>
+<p>Earth&rsquo;s magnetic field is a 3D vector but the magnetometer in the LSM303DLHC decomposes it along
+three orthogonal axes.</p>
+<!-- raw HTML omitted -->
+<p>The <code>lsm303dlhc</code> driver provides a blocking <code>mag()</code> method to read the magnetometer data.</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#66d9ef">let</span> I16x3 { x, y, z } <span style="color:#f92672">=</span> lsm303dlhc.mag()<span style="color:#f92672">?</span>;
+</code></pre></div><p>As with the other methods, you&rsquo;ll get a 16 bit integer for each axis.</p>
+<p>Below is shown a magnetometer reading obtained while the F3 board was sitting still on a horizontal
+surface. No scaling (multiply by the sensitivity) was performed.</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-text" data-lang="text">I16x3 { x: 26, y: -167, z: -553 }
+</code></pre></div><p>From the X and Y components you can compute where north is in the horizontal XY plane. For instance,
+if the X component is zero and the Y component is non zero then north is aligned to the Y axis of
+the magnetometer. The Z component, the vertical component of Earth&rsquo;s magnetic field, varies with
+latitude; it should be close to zero when the measurement is done on the equator.</p>
+<h3 id="calibration-1">Calibration</h3>
+<p>Like the gyroscope, the magnetometer also suffers from bias. Furthermore, the metal components on
+the board itself can strengthen / weaken nearby magnetic fields; this results in different <em>per
+axis</em> sensitivities so a magnetic field of constant magnitude can be perceived as having different
+magnitudes when measured along the different axes of the magnetometer.</p>
+<p>As Earth&rsquo;s magnetic field magnitude is roughly constant, ideally we should measure it as having the
+same magnitude regardless of the orientation of the magnetometer. We&rsquo;ll use this fact to calibrate
+the magnetometer and compensate for the ferromagnetic properties of the board.</p>
+<p>Assuming the only magnetic field the magnetometer is sensing is the Earth&rsquo;s we should observe that
+all the magnetometer readings satisfy the following equation:</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-text" data-lang="text">mx * mx + my * my + mz * mz == K  // Eq. 1
+</code></pre></div><p>Where <code>mx</code> is the reading along the X axis, <code>my</code> is the reading along the Y axis, <code>mz</code> the reading
+along the Z axis, and <code>K</code> is some constant.</p>
+<p>This also happens to be the equation of a sphere centered at coordinate <code>(0, 0, 0)</code> so if we plot
+the readings in 3D space we should see that all of them lie on the surface of a sphere.</p>
+<p>To calibrate the magnetometer we&rsquo;ll collect measurements from the magnetometer in different
+orientations. We&rsquo;ll do that by logging data while the board in being rotated in different ways. See
+video below for a demo of what I mean.</p>
+<!-- raw HTML omitted -->
+<p><strong>IMPORTANT</strong> While logging calibration data keep the magnetometer <em>away</em> from sources of
+electromagnetic fields (EMF). The above video is actually a <em>bad</em> example in that regard because
+the EMF that the laptop emits heavily affect the magnetometer readings &ndash; the laptop EMF can easily
+double the magnetometer readings.</p>
+<p>Here&rsquo;s the data that was collected over the lapse of 32 seconds of motion.</p>
+<!-- raw HTML omitted -->
+<p>Plot <code>M_XY</code> is a scatter plot of the magnetometer readings along the X axis vs the readings along
+the Y axis. Plots <code>M_XZ</code> and <code>M_YZ</code> are similar but involve a different pair of axes.</p>
+<p>Remember that I said that the readings plotted in 3D space should look like a sphere? These first
+three plots are like the projections of that sphere onto the XY, YZ and XZ planes so they <em>should</em>
+look like circles centered at coordinate <code>(0, 0)</code> but they are a bit off both in position and shape.</p>
+<p>Plot <code>|M|</code> is the magnitude of the Earth&rsquo;s magnetic field as sensed by the magnetometer. The
+Earth&rsquo;s magnetic field is constant so the plot should be a straight line parallel to the X axis.
+Instead we see that the sensed magnitude is all over the place.</p>
+<p>The calibration process more or less boils down to finding a transformation of the calibration data
+that makes it fulfill equation <code>1</code>, the sphere equation. A <a href="https://www.nxp.com/docs/en/application-note/AN4246.pdf">proper solution</a> involves matrices but a
+<a href="https://github.com/kriswiner/MPU6050/wiki/Simple-and-Effective-Magnetometer-Calibration">simplified solution</a> is to independently transform the readings along each axis according to this
+equation:</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#75715e">// calibrate the magnetometer readings along the X axis
+</span><span style="color:#75715e"></span>mx <span style="color:#f92672">=</span> (mx <span style="color:#f92672">-</span> bias_x) <span style="color:#f92672">/</span> range_x
+</code></pre></div><p>Where <code>mx</code> is an array of readings along the X axis, and <code>bias_x</code> and <code>range_x</code> are scalars that can
+be found using these equations:</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust">bias_x <span style="color:#f92672">=</span> (mx.max() <span style="color:#f92672">+</span> mx.min()) <span style="color:#f92672">/</span> <span style="color:#ae81ff">2</span>;
+range_x <span style="color:#f92672">=</span> (mx.max() <span style="color:#f92672">-</span> mx.min()) <span style="color:#f92672">/</span> <span style="color:#ae81ff">2</span>;
+</code></pre></div><p>Applying this transformation to the calibration data yields the following calibrated data:</p>
+<!-- raw HTML omitted -->
+<p>Now the plots <code>M_XY</code>, <code>M_YZ</code> and <code>M_XZ</code> do look like circles centered at <code>(0, 0)</code>, and the magnitude
+plot <code>|M|</code> looks much more like a constant value with some noise sprinkled on it.</p>
+<h1 id="madgwicks-orientation-filter">Madgwick&rsquo;s orientation filter</h1>
+<p>(This is the thing that you saw in the intro video.)</p>
+<p>Madgwick&rsquo;s orientation filter is a sensor fusion algorithm that computes the absolute orientation of
+an object from MARG sensor data. MARG stands for Magnetic, Angular Rate and Gravity, and basically
+refers to a system that can measure Earth&rsquo;s <strong>M</strong>agnetic field, <strong>A</strong>ngular <strong>R</strong>ate and the
+acceleration of <strong>G</strong>ravity. The magnetometer (M), gyroscope (AR) and accelerometer (G) on the F3
+board form a MARG sensor array.</p>
+<p>To give you an idea of how this filter works: the Gravity vector tells you where <em>down</em> is and the
+Magnetic vector tells you where <em>north</em> is. These two vectors kind of form an absolute coordinate
+system as their directions are pretty much constant.</p>
+<p>Thus, the Gravity and Magnetic data give information about how the MARG system is oriented with
+respect to this <em>down</em>-<em>north</em> coordinate system. Whereas the Angular Rate data gives information
+about how that orientation is changing.</p>
+<p>None of this data can&rsquo;t be fully trusted though: if the MARG system moves then the accelerometer
+will measure not only the acceleration of gravity but also its own acceleration; the Magnetic data
+can be easily affected by EM radiation, external magnetic sources and nearby ferromagnetic
+materials; and the Angular Rate data suffers from bias that drifts over time and that changes with
+the ambient temperature.</p>
+<p>The way the filter deals with all this uncertainty is to treat the data not as ground truth but as
+the input of an optimization problem. The rest is the magic of mathematics.</p>
+<p>And it holds quite well, I must say. In the video at the beginning of this post the magnetometer is
+subject to the EMF that my laptop generates and at some point in the video I shake the board along
+the different accelerometer axes. All these are disturbances introduced in the input data but the
+filter handles them without much trouble.</p>
+<p>For more details (i.e. the actual math) you can read Madgwick&rsquo;s <a href="http://x-io.co.uk/res/doc/madgwick_internal_report.pdf">internal report</a>. There&rsquo;s also a
+conference <a href="http://ieeexplore.ieee.org/document/5975346">paper</a> but it&rsquo;s behind a paywall &ndash; its contents are not that different from what&rsquo;s
+written in the internal report though.</p>
+<h2 id="api">API</h2>
+<p>I have published Madgwick&rsquo;s orientation filter as the <a href="https://crates.io/crates/madgwick"><code>madgwick</code></a> crate. This crate is compatible
+with <code>no_std</code> programs and requires no memory allocation so it can be run on bare metal systems.</p>
+<p>The API is straightforward to use: you create an instance of the filter; you feed MARG sensor data
+into it and you get back the 3D orientation as a unit quaternion.</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#66d9ef">let</span> <span style="color:#66d9ef">mut</span> filter <span style="color:#f92672">=</span> madgwick::Marg::new(BETA, SAMPLING_PERIOD);
+
+<span style="color:#75715e">// e.g. `Quaternion(0.9999, 0.0017, -0.0046, 0.0006)`
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">let</span> quat <span style="color:#f92672">=</span> filter.update(m, ar, g);
+</code></pre></div><p>The parameter <code>BETA</code> is the <em>gain</em> of the filter and its value should be in the same order of
+magnitude as the measurement noise in the gyroscope (in <code>rad / s</code>). You can measure the gyroscope
+noise by logging gyroscope data while the board is still and then computing the standard deviation
+of the readings along each axis.</p>
+<p>The parameter <code>SAMPLING_PERIOD</code> is the sampling period in seconds. You should run the filter
+periodically and on each periodic run you should feed the latest sensor data to the filter. That
+period is the sampling period of the filter.</p>
+<h2 id="visualizations">Visualizations</h2>
+<p>You can find the visualization software used for the Madgwick demo <a href="https://github.com/japaric/f3/tree/v0.5.3/viz">here</a>. It uses <a href="https://crates.io/crates/kiss3d"><code>kiss3d</code></a> to do
+the rendering &ndash; kudos to the authors; this was my first time doing anything graphics related with
+Rust and it was pretty straightforward 👍.</p>
+<p>All the plots in this blog post where done using this <a href="https://github.com/japaric/f3/blob/v0.5.3/plot.py">Python script</a>.</p>
+<h2 id="firmware">Firmware</h2>
+<p>You can find the F3 firmware used for the demo as the <a href="https://crates.io/crates/madgwick"><code>madgwick</code></a> example in the <a href="https://crates.io/crates/f3"><code>f3</code></a> crate. That
+crate also contains a <a href="https://docs.rs/f3/0.5.3/f3/examples/_13_log_sensors/index.html"><code>log-sensors</code></a> example that was used to log the data used to make the plots
+in this blog post and to calibrate the magnetometer.</p>
+<h1 id="conclusion">Conclusion</h1>
+<p>That&rsquo;s it! Two <code>embedded-hal</code> drivers are out; 50 more to go before the year ends 😅. And
+you also got a reusable implementation of Madgwick&rsquo;s orientation filter.</p>
+<p>Finally, don&rsquo;t forget to calibrate your sensors before you use them for anything serious!</p>
+<hr>
+<p><strong>Thank you patrons! ❤️</strong></p>
+<p>I want to wholeheartedly thank:</p>
+<!-- raw HTML omitted -->
+<!-- raw HTML omitted -->
+<!-- raw HTML omitted -->
+<p><a href="https://github.com/Razican">Iban Eguia</a>,
+<a href="https://github.com/aturon">Aaron Turon</a>,
+<a href="https://github.com/archaelus">Geoff Cant</a>,
+<a href="http://www.harrisonchin.com/">Harrison Chin</a>,
+<a href="https://github.com/brandonedens">Brandon Edens</a>,
+<a href="https://github.com/whitequark">whitequark</a>,
+<a href="https://jamesmunns.com/">James Munns</a>,
+<a href="https://github.com/flundstrom2">Fredrik Lundström</a>,
+<a href="https://github.com/kjetilkjeka">Kjetil Kjeka</a>,
+Kor Nielsen,
+<a href="https://myrrlyn.net/">Alexander Payne</a>,
+<a href="https://metafluff.com/">Dietrich Ayala</a>,
+<a href="http://kenkeiter.com/">Kenneth Keiter</a>,
+<a href="https://github.com/HadrienG2">Hadrien Grasland</a>,
+<a href="https://github.com/vitiral">vitiral</a>
+and 48 more people for supporting my work on Patreon.</p>
+<!-- raw HTML omitted -->
+<hr>
+<p>Let&rsquo;s discuss on <a href="https://www.reddit.com/r/rust/comments/7yn7k1/eir_weekly_driver_1_2_l3gd20_lsm303dlhc_and/">reddit</a>.</p>
+
+    </div>
+
+    
+    
+    <div class="article-toc" >
+        <h3>Contents</h3>
+        <nav id="TableOfContents">
+  <ul>
+    <li><a href="#gyroscope">Gyroscope</a>
+      <ul>
+        <li><a href="#calibration">Calibration</a></li>
+      </ul>
+    </li>
+  </ul>
+
+  <ul>
+    <li><a href="#accelerometer">Accelerometer</a></li>
+    <li><a href="#magnetometer">Magnetometer</a>
+      <ul>
+        <li><a href="#calibration-1">Calibration</a></li>
+      </ul>
+    </li>
+  </ul>
+
+  <ul>
+    <li><a href="#api">API</a></li>
+    <li><a href="#visualizations">Visualizations</a></li>
+    <li><a href="#firmware">Firmware</a></li>
+  </ul>
+</nav>
+    </div>
+    
+    
+
+    
+  </div>
+</section>
+
+
+<section class="section">
+  <div class="container has-text-centered">
+    <p><a rel="license" href="http://creativecommons.org/licenses/by/4.0/"><img alt="Creative Commons License" src="https://i.creativecommons.org/l/by/4.0/80x15.png" /></a><br/>Jorge Aparicio</p>
+  </div>
+</section>
+
+
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/styles/tomorrow-night.min.css" />
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/highlight.min.js" integrity="sha256-aYTdUrn6Ow1DDgh5JTc3aDGnnju48y/1c8s1dgkYPQ8=" crossorigin="anonymous"></script>
+
+<script type="text/javascript" src="//cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/languages/armasm.min.js"></script>
+
+<script type="text/javascript" src="//cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/languages/c.min.js"></script>
+
+<script type="text/javascript" src="//cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/languages/diff.min.js"></script>
+
+<script type="text/javascript" src="//cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/languages/llvm.min.js"></script>
+
+<script type="text/javascript" src="//cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/languages/rust.min.js"></script>
+
+<script type="text/javascript" src="//cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/languages/shell.min.js"></script>
+
+<script>hljs.initHighlightingOnLoad();</script>
+
+
+</body>

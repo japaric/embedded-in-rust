@@ -1,0 +1,762 @@
+<!DOCTYPE html>
+<html lang="en-us">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta content="Rust, embedded, development" name="keywords">
+<meta content="Jorge Aparicio" name="author">
+<meta property="og:title" content="cargo-call-stack, part 2: getting call graph information from rustc - Embedded in Rust">
+<meta property="og:url" content="https://blog.japaric.io/stack-analysis-2/">
+<meta property="og:description" content="A blog about Rust and embedded stuff">
+<meta property="og:type" content="website" />
+<title>cargo-call-stack, part 2: getting call graph information from rustc | Embedded in Rust</title>
+<link rel="stylesheet" href="https://blog.japaric.io//css/style.css">
+<link rel="shortcut icon" href="https://blog.japaric.io//wave.ico">
+<link rel="alternate" type="application/atom+xml" title="Embedded in Rust Posts" href="https://blog.japaric.io//index.xml">
+<link href="//maxcdn.bootstrapcdn.com/font-awesome/4.7.0/css/font-awesome.min.css" rel="stylesheet" integrity="sha384-wvfXpqpZZVQGK6TAh5PVlGOfQNHSoD2xbE+QkPxCAFlNEevoEH3Sl0sibVcOQVnN" crossorigin="anonymous">
+
+<link rel="stylesheet" href="//cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/styles/github.min.css">
+
+</head>
+
+<body>
+<section class="section">
+  <div class="container">
+    <nav class="nav">
+      <div class="nav-left">
+        <a class="nav-item" href="https://blog.japaric.io/"><h1 class="title is-4">Embedded in Rust</h1></a>
+      </div>
+      <div class="nav-right">
+        <nav class="nav-item level is-mobile">
+          
+          <a class="level-item" href="https://github.com/japaric" target="_blank">
+            <span class="icon">
+              <i class="fa fa-github"></i>
+            </span>
+          </a>
+          
+          <a class="level-item" href="/index.xml" target="_blank">
+            <span class="icon">
+              <i class="fa fa-rss"></i>
+            </span>
+          </a>
+          
+        </nav>
+      </div>
+    </nav>
+  </div>
+</section>
+
+<section class="section">
+  <div class="container">
+    <h1 class="title">cargo-call-stack, part 2: getting call graph information from rustc</h1>
+    <h2 class="subtitle is-5">April 13, 2019 by Jorge Aparicio</h2>
+    
+      <div class="tags">
+    
+        <a class="button is-link" href="/tags/static-analysis">static analysis</a>
+    
+        <a class="button is-link" href="/tags/tooling">tooling</a>
+    
+        <a class="button is-link" href="/tags/functional-safety">functional safety</a>
+    
+</div>
+
+    
+    <div class="content">
+      <p>In a <a href="../stack-analysis/">previous post</a> I described the current implementation of
+<a href="https://crates.io/crates/cargo-call-stack"><code>cargo-call-stack</code></a>, a static stack usage analysis tool. In the second part of
+that post I described the problems the tool runs into when dealing with indirect
+function calls (both function pointer calls and dynamic dispatch) and proposed
+improving the output of the tool by having <code>rustc</code> inject type information in
+the LLVM IR it produces.</p>
+<p>While <a href="https://github.com/rust-lang/rust/issues/59412">discussing that idea</a> with <code>rustc</code> developers they noted that the compiler
+could emit information that&rsquo;s more relevant to call graph analysis than just the
+signatures of functions and trait methods. In this post I&rsquo;ll describe the call
+graph metadata I&rsquo;m <a href="https://github.com/rust-lang/rust/pull/59777">currently implementing</a> in <code>rustc</code> and how it will help
+tools like <code>cargo-call-stack</code>. By the way, I have a <a href="https://github.com/japaric/cargo-call-stack/tree/call-metadata">feature branch</a> of
+<code>cargo-call-stack</code> that uses this upcoming <code>rustc</code> feature if you want to try it
+out but you&rsquo;ll need to build a custom <code>rustc</code>.</p>
+<h1 id="the-problem">The problem</h1>
+<p>First, let me rehash the problem <code>cargo-call-stack</code> has with indirect function
+calls. Consider the following program, which contains a function pointer call:</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#66d9ef">static</span> X: <span style="color:#a6e22e">AtomicBool</span> <span style="color:#f92672">=</span> AtomicBool::new(<span style="color:#66d9ef">false</span>);
+
+<span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">main</span>() {
+    <span style="color:#66d9ef">let</span> <span style="color:#66d9ef">mut</span> x: <span style="color:#a6e22e">fn</span>() -&gt; <span style="color:#66d9ef">i32</span> <span style="color:#f92672">=</span> foo;
+
+    <span style="color:#75715e">// ..
+</span><span style="color:#75715e"></span>
+    <span style="color:#66d9ef">if</span> X.load(Ordering::Acquire) {
+        x <span style="color:#f92672">=</span> bar;
+    }
+
+    <span style="color:#75715e">// function pointer call
+</span><span style="color:#75715e"></span>    x();
+
+    <span style="color:#75715e">// ..
+</span><span style="color:#75715e"></span>}
+
+<span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">foo</span>() -&gt; <span style="color:#66d9ef">i32</span> {
+    <span style="color:#75715e">// ..
+</span><span style="color:#75715e"></span>}
+
+<span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">bar</span>() -&gt; <span style="color:#66d9ef">i32</span> {
+    <span style="color:#75715e">// ..
+</span><span style="color:#75715e"></span>}
+
+<span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">baz</span>() -&gt; <span style="color:#66d9ef">u32</span> {
+    <span style="color:#75715e">// ..
+</span><span style="color:#75715e"></span>}
+</code></pre></div><p>The tool (<code>cargo-call-stack</code>) computes the call graph from the LLVM IR of a Rust
+program (reminder: we use LLVM IR because it&rsquo;s pretty close in structure to the
+optimized machine code and it&rsquo;s relatively stable, unlike the <code>rustc</code> API and
+MIR). The relevant parts of the LLVM IR of this program are shown below:</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-llvm" data-lang="llvm"><span style="color:#75715e">; app::main
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">define</span> <span style="color:#66d9ef">internal</span> <span style="color:#66d9ef">void</span> @_ZN3app4main17h2788607e78870dd4E() {
+  <span style="color:#75715e">; ..
+</span><span style="color:#75715e"></span>
+  <span style="color:#75715e">; function pointer call
+</span><span style="color:#75715e"></span>  %3 = <span style="color:#66d9ef">call</span> <span style="color:#66d9ef">i32</span> %2(), !dbg !140
+
+  <span style="color:#75715e">; ..
+</span><span style="color:#75715e"></span>}
+
+<span style="color:#75715e">; app::foo
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">define</span> <span style="color:#66d9ef">internal</span> <span style="color:#66d9ef">i32</span> @_ZN3app3foo17h9efc21ae5e8e5b5aE() {
+  <span style="color:#75715e">; ..
+</span><span style="color:#75715e"></span>}
+
+<span style="color:#75715e">; app::bar
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">define</span> <span style="color:#66d9ef">internal</span> <span style="color:#66d9ef">i32</span> @_ZN3app3bar17h1ce8c48ecc8a3452E() {
+  <span style="color:#75715e">; ..
+</span><span style="color:#75715e"></span>}
+
+<span style="color:#75715e">; app::baz
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">define</span> <span style="color:#66d9ef">internal</span> <span style="color:#66d9ef">i32</span> @_ZN3app3baz17hbb47c4b31a6d6735E() {
+  <span style="color:#75715e">; ..
+</span><span style="color:#75715e"></span>}
+</code></pre></div><p>From the LLVM IR alone we know that <code>main</code> calls a function with signature
+<code>i32 ()</code> through a pointer. <code>i32 ()</code> is the LLVM IR version of the Rust type
+<code>fn() -&gt; i32</code>. The problem in this example is that in LLVM IR integers are
+always signed so the signature of function <code>baz</code> also becomes <code>i32 ()</code> in the
+LLVM IR. This causes the tool to wrongly consider <code>baz</code> as a potential callee
+for the function pointer call in <code>main</code>.</p>
+<p>Integers are not the only problem; LLVM will usually optimize away arguments
+and return values causing, for example, functions with signatures
+<code>fn(i32) -&gt; i32</code> or <code>fn() -&gt; i32</code> to become just <code>()</code> in LLVM IR, which is
+equivalent to Rust&rsquo;s <code>fn()</code> type.</p>
+<h1 id="the-original-proposal">The original proposal</h1>
+<p>My original idea to deal with this type conversion problem was to add the Rust
+signature to <em>all</em> function definitions and function pointer calls using LLVM IR
+<a href="https://llvm.org/docs/LangRef.html#metadata">metadata</a>. Thus, the previously shown LLVM IR would become:</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-llvm" data-lang="llvm"><span style="color:#75715e">; app::main
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">define</span> <span style="color:#66d9ef">internal</span> <span style="color:#66d9ef">void</span> @_ZN3app4main17h2788607e78870dd4E() !rust !0 {
+  <span style="color:#75715e">; ..                                                   ^^^^^^^^
+</span><span style="color:#75715e"></span>
+  <span style="color:#75715e">; function pointer call
+</span><span style="color:#75715e"></span>  %3 = <span style="color:#66d9ef">call</span> <span style="color:#66d9ef">i32</span> %2(), !dbg !140, !rust !1
+  <span style="color:#75715e">;                              ^^^^^^^^
+</span><span style="color:#75715e"></span>
+  <span style="color:#75715e">; ..
+</span><span style="color:#75715e"></span>}
+
+<span style="color:#75715e">; app::foo
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">define</span> <span style="color:#66d9ef">internal</span> <span style="color:#66d9ef">i32</span> @_ZN3app3foo17h9efc21ae5e8e5b5aE() !rust !1 {
+  <span style="color:#75715e">; ..                                                 ^^^^^^^^
+</span><span style="color:#75715e"></span>}
+
+<span style="color:#75715e">; app::bar
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">define</span> <span style="color:#66d9ef">internal</span> <span style="color:#66d9ef">i32</span> @_ZN3app3bar17h1ce8c48ecc8a3452E() !rust !1 {
+  <span style="color:#75715e">; ..                                                 ^^^^^^^^
+</span><span style="color:#75715e"></span>}
+
+<span style="color:#75715e">; app::baz
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">define</span> <span style="color:#66d9ef">internal</span> <span style="color:#66d9ef">i32</span> @_ZN3app3baz17hbb47c4b31a6d6735E() !rust !2 {
+  <span style="color:#75715e">; ..                                                 ^^^^^^^^
+</span><span style="color:#75715e"></span>}
+
+<span style="color:#75715e">; ..
+</span><span style="color:#75715e"></span>
+!0 = !&#34;fn()&#34;
+!1 = !&#34;fn() -&gt; u32&#34;
+!2 = !&#34;fn() -&gt; i32&#34;
+<span style="color:#75715e">; ..
+</span></code></pre></div><p>With this extra information the tool would be able to narrow down the list of
+potential callees of the function pointer call in <code>main</code> to just <code>foo</code> and <code>bar</code>
+since all of them have the same metadata: <code>!rust !1</code>, which is an alias for
+<code>!&quot;fn() -&gt; u32&quot;</code>.</p>
+<p>This works well enough in this particular example but we can do even better!</p>
+<h1 id="function-pointers">Function pointers</h1>
+<p>One of the <code>rustc</code> passes that runs before <em>codegen</em> (the MIR -&gt; LLVM-IR pass)
+analyzes the MIR of the crate to decide <em>which</em> functions to codegen and it can
+easily detect which functions are casted / coerced into function pointers.</p>
+<p>In the previous example, we coerced the anonymous function type <code>fn() -&gt; u32 {foo}</code>, which is zero sized, into a function pointer <code>fn() -&gt; u32</code>, which is
+pointer sized (8 bytes on x86_64); then we did the same with the function <code>bar</code>.
+If we tweak the metadata generation logic to only add the <code>!rust</code> metadata to
+functions that are converted into function pointers the LLVM IR of that example
+would become:</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-llvm" data-lang="llvm"><span style="color:#75715e">; app::main
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">define</span> <span style="color:#66d9ef">internal</span> <span style="color:#66d9ef">void</span> @_ZN3app4main17h2788607e78870dd4E()          {
+  <span style="color:#75715e">; ..                                                   ^^^^^^^^
+</span><span style="color:#75715e"></span>
+  <span style="color:#75715e">; function pointer call
+</span><span style="color:#75715e"></span>  %3 = <span style="color:#66d9ef">call</span> <span style="color:#66d9ef">i32</span> %2(), !dbg !140, !rust !0
+  <span style="color:#75715e">;                                    ^^
+</span><span style="color:#75715e"></span>
+  <span style="color:#75715e">; ..
+</span><span style="color:#75715e"></span>}
+
+<span style="color:#75715e">; app::foo
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">define</span> <span style="color:#66d9ef">internal</span> <span style="color:#66d9ef">i32</span> @_ZN3app3foo17h9efc21ae5e8e5b5aE() !rust !0 {
+  <span style="color:#75715e">; ..                                                       ^^
+</span><span style="color:#75715e"></span>}
+
+<span style="color:#75715e">; app::bar
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">define</span> <span style="color:#66d9ef">internal</span> <span style="color:#66d9ef">i32</span> @_ZN3app3bar17h1ce8c48ecc8a3452E() !rust !0 {
+  <span style="color:#75715e">; ..                                                       ^^
+</span><span style="color:#75715e"></span>}
+
+<span style="color:#75715e">; app::baz
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">define</span> <span style="color:#66d9ef">internal</span> <span style="color:#66d9ef">i32</span> @_ZN3app3baz17hbb47c4b31a6d6735E()          {
+  <span style="color:#75715e">; ..                                                 ^^^^^^^^
+</span><span style="color:#75715e"></span>}
+
+<span style="color:#75715e">; ..
+</span><span style="color:#75715e"></span>
+<span style="color:#75715e">; yes, the format of the metadata changed a bit here
+</span><span style="color:#75715e"></span>!0 = !{!&#34;fn&#34;, !&#34;fn() -&gt; u32&#34;}
+<span style="color:#75715e">; ..
+</span></code></pre></div><p>With this change the tool would still be able to locate the candidates for the
+function pointer call in <code>main</code>. What would be the advantage of doing it this
+way? We can reduce <em>false positives</em> with this approach. Consider this program:</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#66d9ef">static</span> X: <span style="color:#a6e22e">AtomicBool</span> <span style="color:#f92672">=</span> AtomicBool::new(<span style="color:#66d9ef">false</span>);
+
+<span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">main</span>() {
+    <span style="color:#66d9ef">let</span> <span style="color:#66d9ef">mut</span> x: <span style="color:#a6e22e">fn</span>() -&gt; <span style="color:#66d9ef">u32</span> <span style="color:#f92672">=</span> foo;
+
+    <span style="color:#66d9ef">if</span> X.load(Ordering::Acquire) {
+        x <span style="color:#f92672">=</span> bar;
+    }
+
+    x();
+    baz();
+}
+
+<span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">foo</span>() -&gt; <span style="color:#66d9ef">u32</span> {
+    <span style="color:#75715e">// ..
+</span><span style="color:#75715e"></span>}
+
+<span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">bar</span>() -&gt; <span style="color:#66d9ef">u32</span> {
+    <span style="color:#75715e">// ..
+</span><span style="color:#75715e"></span>}
+
+<span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">baz</span>() -&gt; <span style="color:#66d9ef">u32</span> {
+    <span style="color:#75715e">// ..
+</span><span style="color:#75715e"></span>}
+</code></pre></div><p>This time <code>foo</code>, <code>bar</code> and <code>baz</code> all have the same Rust signature; however, the
+function pointer call can only invoke <code>foo</code> or <code>bar</code>. If we apply the <code>!rust</code>
+metadata only to functions that are coerced into function pointers we would end
+with the following LLVM IR:</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-llvm" data-lang="llvm"><span style="color:#75715e">; app::main
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">define</span> <span style="color:#66d9ef">internal</span> <span style="color:#66d9ef">void</span> @_() {
+  <span style="color:#75715e">; ..
+</span><span style="color:#75715e"></span>
+  <span style="color:#75715e">; `x()`
+</span><span style="color:#75715e"></span>  %2 = <span style="color:#66d9ef">tail</span> <span style="color:#66d9ef">call</span> <span style="color:#66d9ef">i32</span> %spec.select() #8, !dbg !138, !rust !93
+
+  <span style="color:#75715e">; `baz()`
+</span><span style="color:#75715e"></span>  <span style="color:#66d9ef">tail</span> <span style="color:#66d9ef">call</span> <span style="color:#66d9ef">fastcc</span> <span style="color:#66d9ef">void</span> @_ZN3app3baz17h9f37979edaee3ecdE(), !dbg !140
+
+  <span style="color:#75715e">; ..
+</span><span style="color:#75715e"></span>}
+
+<span style="color:#75715e">; app::foo
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">define</span> <span style="color:#66d9ef">internal</span> <span style="color:#66d9ef">i32</span> <span style="color:#960050;background-color:#1e0010">@</span>() !rust !93 {
+  <span style="color:#75715e">; ..
+</span><span style="color:#75715e"></span>}
+
+<span style="color:#75715e">; app::bar
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">define</span> <span style="color:#66d9ef">internal</span> <span style="color:#66d9ef">i32</span> @_() !rust !93 {
+  <span style="color:#75715e">; ..
+</span><span style="color:#75715e"></span>}
+
+<span style="color:#75715e">; app::baz
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">define</span> <span style="color:#66d9ef">internal</span> <span style="color:#66d9ef">i32</span> @_() {
+  <span style="color:#75715e">; ..
+</span><span style="color:#75715e"></span>}
+
+<span style="color:#75715e">; ..
+</span><span style="color:#75715e"></span>!93 = !{!&#34;fn&#34;, !&#34;fn() -&gt; u32&#34;}
+<span style="color:#75715e">; ..
+</span></code></pre></div><p>Note that <code>baz</code> does <em>not</em> have &ldquo;fn&rdquo; metadata. The tool would then be able to
+produce an accurate call graph:</p>
+<!-- raw HTML omitted -->
+<p>The dashed node <code>fn() -&gt; u32</code> in the graph represents the function pointer
+call (<code>x()</code>), which can result in either <code>foo</code> or <code>bar</code> being invoked.</p>
+<p>If we had used the original approach of adding metadata to <em>all</em> functions the
+above call graph would have ended with a false positive edge between <code>fn() -&gt; u32</code> and <code>baz</code>.</p>
+<p>A requisite for <em>safely</em> invoking a function through a pointer is first creating
+a function pointer from said function. In the improved approach we are tracking
+this operation with the &ldquo;fn&rdquo; metadata: no &ldquo;fn&rdquo; metadata means that the function
+is never converted into a function pointer so we can omit it from the list of
+callee candidates of function pointer calls. This results in less edges (false
+positives) compared to my original proposal.</p>
+<p>In theory, it <em>is</em> possible to invoke a function that has never be converted
+into a function pointer through a pointer doing something like
+<code>(mem::transmute::&lt;usize, fn()&gt;(0x2000_0000))()</code> but this will result in
+<em>Undefined Behavior</em> (UB) in most cases as the addresses of functions are only
+known  after linking. If the intention is to invoke a function at a known, fixed
+memory address (like an interrupt handler) you are much better off using
+something like <code>extern &quot;C&quot; { fn interrupt(); } interrupt()</code> which does not
+result in UB but also it&rsquo;s not a function pointer call &ndash; it&rsquo;s a direct function
+call.</p>
+<p>The improved approach is not perfect but it&rsquo;s certainly an improvement over my
+original proposal. Even with the improved approach, one can fabricate false
+positives like this:</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#66d9ef">static</span> X: <span style="color:#a6e22e">AtomicBool</span> <span style="color:#f92672">=</span> AtomicBool::new(<span style="color:#66d9ef">false</span>);
+
+<span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">main</span>() {
+    <span style="color:#66d9ef">let</span> <span style="color:#66d9ef">mut</span> x: <span style="color:#a6e22e">fn</span>() -&gt; <span style="color:#66d9ef">u32</span> <span style="color:#f92672">=</span> foo;
+
+    <span style="color:#66d9ef">if</span> X.load(Ordering::Acquire) {
+        x <span style="color:#f92672">=</span> bar;
+    }
+
+    x();
+    baz();
+
+    <span style="color:#75715e">// never invoked or used
+</span><span style="color:#75715e"></span>    <span style="color:#66d9ef">let</span> y: <span style="color:#a6e22e">fn</span>() -&gt; <span style="color:#66d9ef">u32</span> <span style="color:#f92672">=</span> baz;
+}
+
+<span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">foo</span>() -&gt; <span style="color:#66d9ef">u32</span> { .. }
+<span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">bar</span>() -&gt; <span style="color:#66d9ef">u32</span> { .. }
+<span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">baz</span>() -&gt; <span style="color:#66d9ef">u32</span> { .. }
+</code></pre></div><p>This produces the following <em>incorrect</em> call graph</p>
+<!-- raw HTML omitted -->
+<p>As MIR optimizations get better the <code>let y</code> statement will get optimized away
+before the pre-codegen analysis pass where the compiler decides which functions
+get &ldquo;fn&rdquo; metadata, meaning that <code>baz</code> won&rsquo;t have &ldquo;fn&rdquo; metadata in the output
+LLVM IR.</p>
+<p>Of course, even with perfect MIR optimizations one can still force a false
+positive by doing something like this:</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">main</span>() {
+    <span style="color:#66d9ef">let</span> <span style="color:#66d9ef">mut</span> x: <span style="color:#a6e22e">fn</span>() -&gt; <span style="color:#66d9ef">u32</span> <span style="color:#f92672">=</span> foo;
+
+    <span style="color:#66d9ef">if</span> X.load(Ordering::Acquire) {
+        x <span style="color:#f92672">=</span> bar;
+    }
+
+    x();
+    baz();
+
+    <span style="color:#75715e">// never invoked
+</span><span style="color:#75715e"></span>    <span style="color:#66d9ef">let</span> y: <span style="color:#a6e22e">fn</span>() -&gt; <span style="color:#66d9ef">u32</span> <span style="color:#f92672">=</span> baz;
+
+    <span style="color:#75715e">// this prevents `y` from being optimized away both at the MIR and LLVM-IR level
+</span><span style="color:#75715e"></span>    <span style="color:#66d9ef">unsafe</span> { core::ptr::read_volatile(<span style="color:#f92672">&amp;</span>y) }
+}
+
+<span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">foo</span>() -&gt; <span style="color:#66d9ef">u32</span> { .. }
+<span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">bar</span>() -&gt; <span style="color:#66d9ef">u32</span> { .. }
+<span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">baz</span>() -&gt; <span style="color:#66d9ef">u32</span> { .. }
+</code></pre></div><p>This will produce a false edge between the <code>fn() -&gt; u32</code> node and <code>baz</code> in the
+call graph.</p>
+<h1 id="trait-objects">Trait objects</h1>
+<p>We have covered function pointers; trait objects and dynamic dispatch needs a
+slightly different treatment. In my original proposal <em>all</em> trait methods and
+dynamic dispatch sites get annotated with trait - method metadata. This means,
+for example, that the following program:</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#66d9ef">static</span> X: <span style="color:#a6e22e">AtomicBool</span> <span style="color:#f92672">=</span> AtomicBool::new(<span style="color:#66d9ef">false</span>);
+
+<span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">main</span>() {
+    <span style="color:#66d9ef">let</span> <span style="color:#66d9ef">mut</span> to: <span style="color:#66d9ef">&amp;</span><span style="color:#a6e22e">dyn</span> Foo <span style="color:#f92672">=</span> <span style="color:#f92672">&amp;</span>Bar;
+
+    <span style="color:#66d9ef">if</span> X.load(Ordering::Acquire) {
+        to <span style="color:#f92672">=</span> <span style="color:#f92672">&amp;</span>Baz;
+    }
+
+    to.foo();
+    Quux.foo();
+}
+
+<span style="color:#66d9ef">trait</span> Foo {
+    <span style="color:#75715e">// default implementation of this method
+</span><span style="color:#75715e"></span>    <span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">foo</span>(<span style="color:#f92672">&amp;</span>self) -&gt; <span style="color:#66d9ef">bool</span>;
+}
+
+<span style="color:#66d9ef">struct</span> <span style="color:#a6e22e">Bar</span>;
+
+<span style="color:#66d9ef">impl</span> Foo <span style="color:#66d9ef">for</span> Bar {
+    <span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">foo</span>(<span style="color:#f92672">&amp;</span>self) -&gt; <span style="color:#66d9ef">bool</span> { .. }
+}
+
+<span style="color:#66d9ef">struct</span> <span style="color:#a6e22e">Baz</span>;
+
+<span style="color:#66d9ef">impl</span> Foo <span style="color:#66d9ef">for</span> Baz {
+    <span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">foo</span>(<span style="color:#f92672">&amp;</span>self) -&gt; <span style="color:#66d9ef">bool</span> { .. }
+}
+
+<span style="color:#66d9ef">struct</span> <span style="color:#a6e22e">Quux</span>;
+
+<span style="color:#66d9ef">impl</span> Foo <span style="color:#66d9ef">for</span> Quux {
+    <span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">foo</span>(<span style="color:#f92672">&amp;</span>self) -&gt; <span style="color:#66d9ef">bool</span> { .. }
+}
+</code></pre></div><p>Would result in the following LLVM IR</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-llvm" data-lang="llvm"><span style="color:#75715e">; main
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">define</span> <span style="color:#66d9ef">void</span> @main() {
+  <span style="color:#75715e">; ..
+</span><span style="color:#75715e"></span>
+  <span style="color:#75715e">; dynamic dispatch
+</span><span style="color:#75715e"></span>  %4 = <span style="color:#66d9ef">tail</span> <span style="color:#66d9ef">call</span> <span style="color:#66d9ef">zeroext</span> <span style="color:#66d9ef">i1</span> %3({}* %2) #8, !dbg !185, !rust !0
+  <span style="color:#75715e">;                                                   ^^^^^^^^
+</span><span style="color:#75715e"></span>
+  <span style="color:#75715e">; call &lt;app::Quux as app::Foo&gt;::foo
+</span><span style="color:#75715e"></span>  <span style="color:#66d9ef">tail</span> <span style="color:#66d9ef">call</span> <span style="color:#66d9ef">fastcc</span> <span style="color:#66d9ef">void</span> @_(), !dbg !186
+
+  <span style="color:#75715e">; ..
+</span><span style="color:#75715e"></span>}
+
+<span style="color:#75715e">; &lt;app::Bar as app::Foo&gt;::foo
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">define</span> <span style="color:#66d9ef">internal</span> <span style="color:#66d9ef">void</span> @_(%Bar*) <span style="color:#66d9ef">unnamed_addr</span> #1 !dbg !112 !rust !0 {
+  <span style="color:#75715e">; ..                                                   ^^^^^^^^
+</span><span style="color:#75715e"></span>}
+
+<span style="color:#75715e">; &lt;app::Baz as app::Foo&gt;::foo
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">define</span> <span style="color:#66d9ef">internal</span> <span style="color:#66d9ef">void</span> @_(%Baz*) <span style="color:#66d9ef">unnamed_addr</span> #1 !dbg !125 !rust !0 {
+  <span style="color:#75715e">; ..                                                   ^^^^^^^^
+</span><span style="color:#75715e"></span>}
+
+<span style="color:#75715e">; &lt;app::Quux as app::Foo&gt;::foo
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">define</span> <span style="color:#66d9ef">internal</span> <span style="color:#66d9ef">fastcc</span> <span style="color:#66d9ef">void</span> @_() <span style="color:#66d9ef">unnamed_addr</span> #2 !dbg !136 !rust !0 {
+  <span style="color:#75715e">; ..                                                     ^^^^^^^^
+</span><span style="color:#75715e"></span>}
+
+!0 = <span style="color:#e6db74">&#34;(dyn Foo).foo&#34;</span>
+</code></pre></div><p>From which the tool would produce the following call graph:</p>
+<!-- raw HTML omitted -->
+<p>Which is not quite correct: the edge between the dynamic dispatch node, <code>&quot;(dyn Foo).foo&quot;</code>, and the <code>Quux.foo</code> node shouldn&rsquo;t exist because <code>Quux</code> is never used
+as a trait object. <code>rustc</code> can help with that!</p>
+<h2 id="vtables">VTables</h2>
+<p>Turns out the compiler also knows which types will be used as trait objects
+because it has to codegen a vtable for each type - trait pair so we can do
+better here by <em>only</em> emitting trait metadata for the methods of types that are
+coerced / casted into trait objects.</p>
+<p>Applying that to the previous example results in the following changes in the
+LLVM IR:</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-llvm" data-lang="llvm"><span style="color:#75715e">; main
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">define</span> <span style="color:#66d9ef">void</span> @main() {
+  <span style="color:#75715e">; ..
+</span><span style="color:#75715e"></span>
+  <span style="color:#75715e">; dynamic dispatch
+</span><span style="color:#75715e"></span>  %4 = <span style="color:#66d9ef">tail</span> <span style="color:#66d9ef">call</span> <span style="color:#66d9ef">zeroext</span> <span style="color:#66d9ef">i1</span> %3({}* %2) #8, !dbg !185, !rust !0
+  <span style="color:#75715e">;                                                   ^^^^^^^^
+</span><span style="color:#75715e"></span>
+  <span style="color:#75715e">; call &lt;app::Quux as app::Foo&gt;::foo
+</span><span style="color:#75715e"></span>  <span style="color:#66d9ef">tail</span> <span style="color:#66d9ef">call</span> <span style="color:#66d9ef">fastcc</span> <span style="color:#66d9ef">void</span> @_(), !dbg !186
+
+  <span style="color:#75715e">; ..
+</span><span style="color:#75715e"></span>}
+
+<span style="color:#75715e">; &lt;app::Bar as app::Foo&gt;::foo
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">define</span> <span style="color:#66d9ef">internal</span> <span style="color:#66d9ef">void</span> @_(%Bar*) <span style="color:#66d9ef">unnamed_addr</span> #1 !dbg !112 !rust !0 {
+  <span style="color:#75715e">; ..                                                   ^^^^^^^^
+</span><span style="color:#75715e"></span>}
+
+<span style="color:#75715e">; &lt;app::Baz as app::Foo&gt;::foo
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">define</span> <span style="color:#66d9ef">internal</span> <span style="color:#66d9ef">void</span> @_(%Baz*) <span style="color:#66d9ef">unnamed_addr</span> #1 !dbg !125 !rust !0 {
+  <span style="color:#75715e">; ..                                                   ^^^^^^^^
+</span><span style="color:#75715e"></span>}
+
+<span style="color:#75715e">; &lt;app::Quux as app::Foo&gt;::foo
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">define</span> <span style="color:#66d9ef">internal</span> <span style="color:#66d9ef">fastcc</span> <span style="color:#66d9ef">void</span> @_() <span style="color:#66d9ef">unnamed_addr</span> #2 !dbg !136          {
+  <span style="color:#75715e">; ..                                                     ^^^^^^^^
+</span><span style="color:#75715e"></span>}
+
+<span style="color:#75715e">; yes, the format of the metadata changed a bit here
+</span><span style="color:#75715e"></span>!0 = !{!&#34;dyn&#34;, !&#34;Foo&#34;, !&#34;foo&#34;}
+</code></pre></div><p>Which would let the tool produce an accurate call graph:</p>
+<!-- raw HTML omitted -->
+<p>Something that I realized midway implementing this in the compiler is that you
+can <em>not</em> attach multiple metadata nodes of the <em>same kind</em> (e.g. <code>!rust</code>) to a
+<code>define</code> item or an instruction. This is a problem because a function
+(<code>define</code> item) can be both dynamically dispatched and invoked via a function
+pointer, i.e. it needs both &ldquo;dyn&rdquo; metadata and &ldquo;fn&rdquo; metadata. Consider the
+following program:</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#66d9ef">static</span> X: <span style="color:#a6e22e">AtomicBool</span> <span style="color:#f92672">=</span> AtomicBool::new(<span style="color:#66d9ef">false</span>);
+
+<span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">main</span>() {
+    <span style="color:#75715e">// &#34;dyn&#34; metadata
+</span><span style="color:#75715e"></span>    <span style="color:#66d9ef">let</span> x: <span style="color:#66d9ef">&amp;</span><span style="color:#a6e22e">dyn</span> Foo <span style="color:#f92672">=</span> <span style="color:#f92672">&amp;</span>Bar;
+
+    x.foo();
+
+    <span style="color:#75715e">// &#34;fn&#34; metadata
+</span><span style="color:#75715e"></span>    <span style="color:#66d9ef">let</span> y: <span style="color:#a6e22e">fn</span>(<span style="color:#f92672">&amp;</span>Bar) <span style="color:#f92672">=</span> Bar::foo;
+}
+
+<span style="color:#66d9ef">trait</span> Foo {
+    <span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">foo</span>(<span style="color:#f92672">&amp;</span>self);
+}
+
+<span style="color:#66d9ef">struct</span> <span style="color:#a6e22e">Bar</span>;
+
+<span style="color:#66d9ef">impl</span> Foo <span style="color:#66d9ef">for</span> Bar { .. }
+</code></pre></div><p>The solution we picked was to attach a metadata <em>tuple</em> that contains both
+pieces of metadata to the <code>define</code> item. Namely:</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-llvm" data-lang="llvm"><span style="color:#75715e">; app::main
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">define</span> <span style="color:#66d9ef">internal</span> <span style="color:#66d9ef">void</span> @_ZN3app4main17h63fa795f778d6e4eE() <span style="color:#66d9ef">unnamed_addr</span> #0 !dbg !141 {
+  <span style="color:#75715e">; ..
+</span><span style="color:#75715e"></span>
+  <span style="color:#66d9ef">call</span> <span style="color:#66d9ef">void</span> %8({}* <span style="color:#66d9ef">align</span> <span style="color:#ae81ff">1</span> %3), !dbg !163, !rust !164
+
+  <span style="color:#75715e">; ..
+</span><span style="color:#75715e"></span>}
+
+<span style="color:#75715e">; &lt;app::Bar as app::Foo&gt;::foo
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">define</span> <span style="color:#66d9ef">internal</span> <span style="color:#66d9ef">void</span> @_(%Bar*) <span style="color:#66d9ef">unnamed_addr</span> #0 !dbg !167 !rust !169 {
+  <span style="color:#75715e">;                                                      ^^^^^^^^^^ single node
+</span><span style="color:#75715e"></span>}
+
+!164 = !{!&#34;dyn&#34;, !&#34;Foo&#34;, !&#34;foo&#34;}
+<span style="color:#75715e">; tuple with `fn` and `dyn` metadata
+</span><span style="color:#75715e"></span>!169 = !{!164, !170}
+!170 = !{!&#34;fn&#34;, !&#34;fn(&amp;Bar) -&gt; ()&#34;}
+</code></pre></div><h2 id="drop-glue">Drop glue</h2>
+<p>Something which I had not considered at all in my previous post is the <em>drop
+glue</em> of trait objects.</p>
+<p>Trait objects are a form of (open set) polymorphism that consists of <em>erasing</em>
+the concrete type of an object leaving you with only the trait interface; this
+lets you pack objects of different types, but that implement a common trait, in
+a collection like <code>Vec</code> or store them in the same memory slot as shown in the
+example below.</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#66d9ef">static</span> X: <span style="color:#a6e22e">AtomicBool</span> <span style="color:#f92672">=</span> AtomicBool::new(<span style="color:#66d9ef">false</span>);
+
+<span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">main</span>() {
+    <span style="color:#66d9ef">let</span> <span style="color:#66d9ef">mut</span> x: Box<span style="color:#f92672">&lt;</span>dyn Foo<span style="color:#f92672">&gt;</span> <span style="color:#f92672">=</span> Box::new(Bar);
+
+    <span style="color:#66d9ef">if</span> X.load(Ordering::Acquire) {
+        <span style="color:#75715e">// leak the initial value
+</span><span style="color:#75715e"></span>        <span style="color:#66d9ef">unsafe</span> { ptr::write(<span style="color:#f92672">&amp;</span><span style="color:#66d9ef">mut</span> x, Box::new(Baz)) }
+    }
+
+    drop(x);
+}
+
+<span style="color:#66d9ef">trait</span> Foo {
+    <span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">foo</span>(<span style="color:#f92672">&amp;</span>self);
+}
+
+<span style="color:#66d9ef">struct</span> <span style="color:#a6e22e">Bar</span>;
+<span style="color:#66d9ef">impl</span> Foo <span style="color:#66d9ef">for</span> Bar { .. }
+<span style="color:#66d9ef">impl</span> Drop <span style="color:#66d9ef">for</span> Bar { .. }
+
+<span style="color:#66d9ef">struct</span> <span style="color:#a6e22e">Baz</span>;
+<span style="color:#66d9ef">impl</span> Foo <span style="color:#66d9ef">for</span> Baz { .. }
+<span style="color:#66d9ef">impl</span> Drop <span style="color:#66d9ef">for</span> Baz { .. }
+</code></pre></div><p>Eventually a trait object has to be destroyed; what happens at that point is
+that the destructor of the <em>original</em> type has be invoked. In the example above,
+<code>drop(x)</code> could invoke either <code>Bar</code>&rsquo;s or <code>Baz</code>&rsquo;s destructor (<code>Drop</code>
+implementation).</p>
+<p>It should be noted that the code that&rsquo;s executed on <code>drop(x)</code> (or when <code>x</code> goes
+out of scope) is <em>not</em> <code>x</code>&rsquo;s <code>Drop</code> implementation but <code>x</code>s <em>drop glue</em> and this
+drop glue invokes <code>x</code>&rsquo;s <code>Drop</code> implementation, if it has one. &ldquo;Drop glue&rdquo; is
+code (a function) synthesized by the compiler for <em>all</em> types, even for those
+that don&rsquo;t implement the <code>Drop</code> trait. The reason for that is that even if the
+type itself doesn&rsquo;t implement the <code>Drop</code> trait its fields might so the drop glue
+of the type has to run the drop glue of each field.</p>
+<p>Going back to trait objects, trait objects store a function pointer to the drop
+glue of the <em>erased type</em> in their vtable. The drop glue of a trait object
+simply calls the drop glue stored in its vtable. This is basically a function
+pointer call but we can&rsquo;t use &ldquo;fn&rdquo; metadata in this case. To see why consider
+our example: the drop glue of <code>dyn Foo</code> could invoke <code>Bar</code>&rsquo;s drop glue or
+<code>Baz</code>&rsquo;s drop glue; these two functions have different signatures (<code>fn(*mut Bar)</code>
+vs <code>fn(*mut Baz)</code>) and thus different &ldquo;fn&rdquo; metadata.</p>
+<p>Thus we need a third kind of metadata to handle this case: enter &ldquo;drop&rdquo;
+metadata. The idea is to attach &ldquo;drop&rdquo; metadata to the drop glue of all types
+that are coerced / casted into trait objects. Likewise, we&rsquo;ll attach &ldquo;drop&rdquo;
+metadata to the invocation of a trait object drop glue.</p>
+<p>The LLVM IR of our example would then look like this:</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-llvm" data-lang="llvm"><span style="color:#75715e">; Function Attrs: noinline noreturn nounwind
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">define</span> <span style="color:#66d9ef">void</span> @main() <span style="color:#66d9ef">unnamed_addr</span> #2 !dbg !161 {
+  <span style="color:#75715e">; ..
+</span><span style="color:#75715e"></span>
+  <span style="color:#75715e">; `drop(x)`
+</span><span style="color:#75715e"></span>  <span style="color:#66d9ef">tail</span> <span style="color:#66d9ef">call</span> <span style="color:#66d9ef">void</span> %2({}* <span style="color:#66d9ef">nonnull</span> <span style="color:#66d9ef">align</span> <span style="color:#ae81ff">1</span> <span style="color:#66d9ef">inttoptr</span> (<span style="color:#66d9ef">i32</span> <span style="color:#ae81ff">1</span> <span style="color:#66d9ef">to</span> {}*)) #8, !rust !131
+  <span style="color:#75715e">;                                                                  ^^^^^^^^^^
+</span><span style="color:#75715e"></span>
+  <span style="color:#75715e">; ..
+</span><span style="color:#75715e"></span>}
+
+<span style="color:#75715e">; `Baz`&#39;s drop glue
+</span><span style="color:#75715e">; core::ptr::real_drop_in_place::h7d740ebe6d682eb9
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">define</span> <span style="color:#66d9ef">internal</span> <span style="color:#66d9ef">void</span> <span style="color:#960050;background-color:#1e0010">@</span>(%Baz*) <span style="color:#66d9ef">unnamed_addr</span> #0 !dbg !120 !rust !131 {
+  <span style="color:#75715e">; ..                                                  ^^^^^^^^^^
+</span><span style="color:#75715e"></span>
+  <span style="color:#75715e">; call &lt;app::Baz as core::ops::drop::Drop&gt;::drop
+</span><span style="color:#75715e"></span>  <span style="color:#66d9ef">tail</span> <span style="color:#66d9ef">call</span> <span style="color:#66d9ef">fastcc</span> <span style="color:#66d9ef">void</span> @_(), !dbg !133
+
+  <span style="color:#75715e">; ..
+</span><span style="color:#75715e"></span>}
+
+<span style="color:#75715e">; `Bar`&#39;s drop glue
+</span><span style="color:#75715e">; core::ptr::real_drop_in_place::hfa2e157a7c8b54b4
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">define</span> <span style="color:#66d9ef">internal</span> <span style="color:#66d9ef">void</span> @_(%Bar*) <span style="color:#66d9ef">unnamed_addr</span> #0 !dbg !134 !rust !131 {
+  <span style="color:#75715e">; ..                                                   ^^^^^^^^^^
+</span><span style="color:#75715e"></span>
+  <span style="color:#75715e">; call &lt;app::Bar as core::ops::drop::Drop&gt;::drop
+</span><span style="color:#75715e"></span>  <span style="color:#66d9ef">tail</span> <span style="color:#66d9ef">call</span> <span style="color:#66d9ef">fastcc</span> <span style="color:#66d9ef">void</span> @_(), !dbg !143
+
+  <span style="color:#75715e">; ..
+</span><span style="color:#75715e"></span>}
+
+!131 = !{!&#34;drop&#34;, !&#34;Foo&#34;}
+</code></pre></div><p>With this metadata the tool would be able to produce an accurate call graph:</p>
+<!-- raw HTML omitted -->
+<p>It&rsquo;s worth nothing that since a type may implement different traits its drop
+glue may be called by the drop glue of different trait objects. This is
+reflected in the LLVM IR by attaching multiple &ldquo;drop&rdquo; metadata nodes to the
+same drop glue using the tuple syntax we saw before. An example:</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">main</span>() {
+    <span style="color:#66d9ef">let</span> x: Box<span style="color:#f92672">&lt;</span>dyn Baz<span style="color:#f92672">&gt;</span> <span style="color:#f92672">=</span> Box::new(Foo);
+    <span style="color:#66d9ef">let</span> y: Box<span style="color:#f92672">&lt;</span>dyn Quux<span style="color:#f92672">&gt;</span> <span style="color:#f92672">=</span> Box::new(Foo);
+}
+
+<span style="color:#66d9ef">struct</span> <span style="color:#a6e22e">Foo</span>;
+
+<span style="color:#66d9ef">trait</span> Bar {
+    <span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">bar</span>(<span style="color:#f92672">&amp;</span>self);
+}
+
+<span style="color:#66d9ef">impl</span> Bar <span style="color:#66d9ef">for</span> Foo { .. }
+
+<span style="color:#66d9ef">trait</span> Baz: <span style="color:#a6e22e">Bar</span> {
+    <span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">baz</span>(<span style="color:#f92672">&amp;</span>self);
+}
+
+<span style="color:#66d9ef">impl</span> Baz <span style="color:#66d9ef">for</span> Foo { .. }
+
+<span style="color:#66d9ef">trait</span> Quux {
+    <span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">quux</span>(<span style="color:#f92672">&amp;</span>self);
+}
+
+<span style="color:#66d9ef">impl</span> Quux <span style="color:#66d9ef">for</span> Foo { .. }
+</code></pre></div><div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-llvm" data-lang="llvm"><span style="color:#75715e">; core::ptr::real_drop_in_place
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">define</span> <span style="color:#66d9ef">internal</span> <span style="color:#66d9ef">void</span> <span style="color:#960050;background-color:#1e0010">_</span>(%Foo* <span style="color:#66d9ef">nonnull</span> <span style="color:#66d9ef">align</span> <span style="color:#ae81ff">1</span>) <span style="color:#66d9ef">unnamed_addr</span> #0 !dbg !99 !rust !107 {
+  <span style="color:#75715e">; ..
+</span><span style="color:#75715e"></span>}
+
+!107 = !{!108, !109}
+!108 = !{!&#34;drop&#34;, !&#34;Quux&#34;}
+!109 = !{!&#34;drop&#34;, !&#34;Baz&#34;}
+</code></pre></div><p>Note that <code>Foo</code>&rsquo;s drop glue doesn&rsquo;t have the <code>Bar</code> trait within its &ldquo;drop&rdquo;
+metadata because it&rsquo;s never coerced into a <code>Bar</code> trait object. However, the
+<code>Foo.bar</code> method does have &ldquo;dyn&rdquo; metadata because the <code>bar</code> method can be
+invoked through a <code>dyn Baz</code> trait object due to the supertrait relationship
+between <code>Baz</code> and <code>Bar</code>.</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-llvm" data-lang="llvm"><span style="color:#75715e">; &lt;app::Foo as app::Bar&gt;::bar
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">define</span> <span style="color:#66d9ef">internal</span> <span style="color:#66d9ef">void</span> @_(%Foo*) <span style="color:#66d9ef">unnamed_addr</span> #0 !dbg !169 !rust !166 {
+  <span style="color:#75715e">; ..
+</span><span style="color:#75715e"></span>}
+
+!166 = !{!&#34;dyn&#34;, !&#34;Bar&#34;, !&#34;bar&#34;}
+</code></pre></div><h1 id="summary">Summary</h1>
+<p>In summary, I&rsquo;m adding three kinds of LLVM IR metadata (behind an unstable <code>-Z</code>
+flag) to improve tools that perform call graph analysis of Rust programs:</p>
+<ul>
+<li>
+<p>&ldquo;fn&rdquo; metadata to map function pointer calls to the functions that could be
+invoked at runtime. The potential callees are chosen (that is tagged with
+metadata) based on the function signature and only functions that are coerced
+/ casted into function pointers are included in the list.</p>
+</li>
+<li>
+<p>&ldquo;dyn&rdquo; metadata to map the dynamic dispatch of methods to the functions that
+could be invoked at runtime. The potential callees are chosen based on the
+trait and method being dispatched and only types that casted / coerced into a
+trait object are included in the list.</p>
+</li>
+<li>
+<p>&ldquo;drop&rdquo; metadata to map trait objects' drop glue to the functions that could be
+invoked at runtime. Here the candidates are limited to the types that are
+casted / coerced into trait objects.</p>
+</li>
+</ul>
+<p>Tools like <code>cargo-call-stack</code> will be able to use this extra information to
+build more accurate call graphs. The PR for this experimental feature has
+recently entered the review phase; before landing it, we&rsquo;ll have to confirm that
+the changes don&rsquo;t (significantly) impact the compilation times of people that
+are not using this feature.</p>
+<hr>
+<p><strong>Thank you patrons! ❤️</strong></p>
+<p>I want to wholeheartedly thank:</p>
+<!-- raw HTML omitted -->
+<p><a href="https://github.com/Razican">Iban Eguia</a>,
+<a href="https://github.com/archaelus">Geoff Cant</a>,
+<a href="http://www.harrisonchin.com/">Harrison Chin</a>,
+<a href="https://github.com/brandonedens">Brandon Edens</a>,
+<a href="https://github.com/whitequark">whitequark</a>,
+<a href="https://jamesmunns.com/">James Munns</a>,
+<a href="https://github.com/flundstrom2">Fredrik Lundström</a>,
+<a href="https://github.com/kjetilkjeka">Kjetil Kjeka</a>,
+<a href="https://github.com/korran">Kor Nielsen</a>,
+<a href="https://myrrlyn.net/">Alexander Payne</a>,
+<a href="https://metafluff.com/">Dietrich Ayala</a>,
+<a href="https://github.com/HadrienG2">Hadrien Grasland</a>,
+<a href="https://github.com/vitiral">vitiral</a>,
+<a href="https://github.com/leenozara">Lee Smith</a>,
+<a href="https://github.com/FlorianUekermann">Florian Uekermann</a>,
+<a href="https://github.com/idubrov">Ivan Dubrov</a>
+and 63 more people for supporting my work on Patreon.</p>
+<hr>
+<p>Let&rsquo;s discuss on <a href="https://www.reddit.com/r/rust/comments/bcraf5/cargocallstack_part_2_getting_call_graph/">reddit</a>.</p>
+
+    </div>
+
+    
+    
+    <div class="article-toc" >
+        <h3>Contents</h3>
+        <nav id="TableOfContents">
+  <ul>
+    <li><a href="#vtables">VTables</a></li>
+    <li><a href="#drop-glue">Drop glue</a></li>
+  </ul>
+</nav>
+    </div>
+    
+    
+
+    
+  </div>
+</section>
+
+
+<section class="section">
+  <div class="container has-text-centered">
+    <p><a rel="license" href="http://creativecommons.org/licenses/by/4.0/"><img alt="Creative Commons License" src="https://i.creativecommons.org/l/by/4.0/80x15.png" /></a><br/>Jorge Aparicio</p>
+  </div>
+</section>
+
+
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/styles/tomorrow-night.min.css" />
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/highlight.min.js" integrity="sha256-aYTdUrn6Ow1DDgh5JTc3aDGnnju48y/1c8s1dgkYPQ8=" crossorigin="anonymous"></script>
+
+<script type="text/javascript" src="//cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/languages/armasm.min.js"></script>
+
+<script type="text/javascript" src="//cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/languages/c.min.js"></script>
+
+<script type="text/javascript" src="//cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/languages/diff.min.js"></script>
+
+<script type="text/javascript" src="//cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/languages/llvm.min.js"></script>
+
+<script type="text/javascript" src="//cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/languages/rust.min.js"></script>
+
+<script type="text/javascript" src="//cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/languages/shell.min.js"></script>
+
+<script>hljs.initHighlightingOnLoad();</script>
+
+
+</body>

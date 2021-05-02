@@ -1,0 +1,1570 @@
+<!DOCTYPE html>
+<html lang="en-us">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta content="Rust, embedded, development" name="keywords">
+<meta content="Jorge Aparicio" name="author">
+<meta property="og:title" content="Implementing a static stack usage analysis tool - Embedded in Rust">
+<meta property="og:url" content="https://blog.japaric.io/stack-analysis/">
+<meta property="og:description" content="A blog about Rust and embedded stuff">
+<meta property="og:type" content="website" />
+<title>Implementing a static stack usage analysis tool | Embedded in Rust</title>
+<link rel="stylesheet" href="https://blog.japaric.io//css/style.css">
+<link rel="shortcut icon" href="https://blog.japaric.io//wave.ico">
+<link rel="alternate" type="application/atom+xml" title="Embedded in Rust Posts" href="https://blog.japaric.io//index.xml">
+<link href="//maxcdn.bootstrapcdn.com/font-awesome/4.7.0/css/font-awesome.min.css" rel="stylesheet" integrity="sha384-wvfXpqpZZVQGK6TAh5PVlGOfQNHSoD2xbE+QkPxCAFlNEevoEH3Sl0sibVcOQVnN" crossorigin="anonymous">
+
+<link rel="stylesheet" href="//cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/styles/github.min.css">
+
+</head>
+
+<body>
+<section class="section">
+  <div class="container">
+    <nav class="nav">
+      <div class="nav-left">
+        <a class="nav-item" href="https://blog.japaric.io/"><h1 class="title is-4">Embedded in Rust</h1></a>
+      </div>
+      <div class="nav-right">
+        <nav class="nav-item level is-mobile">
+          
+          <a class="level-item" href="https://github.com/japaric" target="_blank">
+            <span class="icon">
+              <i class="fa fa-github"></i>
+            </span>
+          </a>
+          
+          <a class="level-item" href="/index.xml" target="_blank">
+            <span class="icon">
+              <i class="fa fa-rss"></i>
+            </span>
+          </a>
+          
+        </nav>
+      </div>
+    </nav>
+  </div>
+</section>
+
+<section class="section">
+  <div class="container">
+    <h1 class="title">Implementing a static stack usage analysis tool</h1>
+    <h2 class="subtitle is-5">March 13, 2019 by Jorge Aparicio</h2>
+    
+      <div class="tags">
+    
+        <a class="button is-link" href="/tags/static-analysis">static analysis</a>
+    
+        <a class="button is-link" href="/tags/tooling">tooling</a>
+    
+        <a class="button is-link" href="/tags/functional-safety">functional safety</a>
+    
+</div>
+
+    
+    <div class="content">
+      <!-- raw HTML omitted -->
+<p>(This blog covers the implementation details of <a href="https://crates.io/crates/cargo-call-stack/0.1.2"><code>cargo-call-stack</code></a> v0.1.2. If
+you are only interested in <em>using</em> the tool <a href="https://twitter.com/japaric_io/status/1102275637606338562">these</a> <a href="https://twitter.com/japaric_io/status/1105368938018267136">tweets</a> and the <a href="https://github.com/japaric/cargo-call-stack/tree/v0.1.2#cargo-call-stack">README</a>
+will give you an idea of what it can do.)</p>
+<h1 id="motivation">Motivation</h1>
+<p>So, why would you ever want to analyze the stack usage of your program at compile
+time?</p>
+<p>The obvious answer is when you want to know if your application can stack
+overflow at runtime without actually running your program. This is important for
+embedded applications where stack overflows can corrupt memory, and it&rsquo;s
+actually a hard requirement for <a href="https://www.absint.com/qualification/safety.htm">certifying</a> the <a href="https://en.wikipedia.org/wiki/Functional_safety">functional safety</a> of embedded
+applications.</p>
+<p>Of course, there are <a href="https://www.absint.com/stackanalyzer/index.htm">several</a> <a href="https://www.iar.com/support/tech-notes/general/stack-usage-and-stack-usage-control-files/">stack</a> usage <a href="https://www.adacore.com/gnatpro/toolsuite/gnatstack">analysis</a> tools out there
+but they only target C/C++, are closed source and/or cost $$$$$. So here at
+<a href="https://www.ltu.se/?l=en">LTU</a> we set out to build a stack usage analysis tool for Rust:
+<a href="https://crates.io/crates/cargo-call-stack/0.1.2"><code>cargo-call-stack</code></a>. Of course we don&rsquo;t claim that you can use our tool to
+certify your Rust applications, at least not yet ;-).</p>
+<h1 id="how-does-it-work">How does it work?</h1>
+<p>Stack usage analysis consists of three steps: first, computing the stack usage
+of every function (subroutine) in the program, then computing the full
+call graph of the program and finally using these two pieces of information to
+compute the worst-case stack usage.</p>
+<h2 id="stack_sizes"><code>.stack_sizes</code></h2>
+<p>For the first step we use <a href="https://doc.rust-lang.org/unstable-book/compiler-flags/emit-stack-sizes.html"><code>-Z emit-stack-sizes</code></a>. This experimental flag
+enables an LLVM feature that creates a linker section named <code>.stack_sizes</code>; this
+section contains the stack usage of every function in the program.</p>
+<p>Consider this program:</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#75715e">// template: https://github.com/rust-embedded/cortex-m-quickstart
+</span><span style="color:#75715e">// rustc: nightly-2019-03-01 (~1.33.0)
+</span><span style="color:#75715e"></span>
+<span style="color:#75715e">#![feature(asm)]</span>
+<span style="color:#75715e">#![no_std]</span>
+<span style="color:#75715e">#![no_main]</span>
+
+<span style="color:#66d9ef">extern</span> <span style="color:#66d9ef">crate</span> panic_halt; <span style="color:#75715e">// panic-halt = &#34;=0.2.0&#34;
+</span><span style="color:#75715e"></span>
+<span style="color:#66d9ef">use</span> cortex_m_rt::entry; <span style="color:#75715e">// cortex-m-rt = &#34;=0.6.7&#34;
+</span><span style="color:#75715e"></span>
+<span style="color:#75715e">#[entry]</span>
+<span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">main</span>() -&gt; <span style="color:#f92672">!</span> {
+    foo();
+    bar();
+
+    <span style="color:#66d9ef">loop</span> {}
+}
+
+<span style="color:#75715e">#[inline(never)]</span>
+<span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">foo</span>() {
+    <span style="color:#75715e">// spill variables onto the stack
+</span><span style="color:#75715e"></span>    <span style="color:#66d9ef">unsafe</span> { asm<span style="color:#f92672">!</span>(<span style="color:#e6db74">&#34;&#34;</span> : : <span style="color:#e6db74">&#34;r&#34;</span>(<span style="color:#ae81ff">0</span>) <span style="color:#e6db74">&#34;r&#34;</span>(<span style="color:#ae81ff">1</span>) <span style="color:#e6db74">&#34;r&#34;</span>(<span style="color:#ae81ff">2</span>) <span style="color:#e6db74">&#34;r&#34;</span>(<span style="color:#ae81ff">3</span>) <span style="color:#e6db74">&#34;r&#34;</span>(<span style="color:#ae81ff">4</span>) <span style="color:#e6db74">&#34;r&#34;</span>(<span style="color:#ae81ff">5</span>)) }
+}
+
+<span style="color:#75715e">#[inline(never)]</span>
+<span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">bar</span>() {
+    <span style="color:#75715e">// spill even more variables onto the stack
+</span><span style="color:#75715e"></span>    <span style="color:#66d9ef">unsafe</span> { asm<span style="color:#f92672">!</span>(<span style="color:#e6db74">&#34;&#34;</span> : : <span style="color:#e6db74">&#34;r&#34;</span>(<span style="color:#ae81ff">0</span>) <span style="color:#e6db74">&#34;r&#34;</span>(<span style="color:#ae81ff">1</span>) <span style="color:#e6db74">&#34;r&#34;</span>(<span style="color:#ae81ff">2</span>) <span style="color:#e6db74">&#34;r&#34;</span>(<span style="color:#ae81ff">3</span>) <span style="color:#e6db74">&#34;r&#34;</span>(<span style="color:#ae81ff">4</span>) <span style="color:#e6db74">&#34;r&#34;</span>(<span style="color:#ae81ff">5</span>) <span style="color:#e6db74">&#34;r&#34;</span>(<span style="color:#ae81ff">6</span>) <span style="color:#e6db74">&#34;r&#34;</span>(<span style="color:#ae81ff">7</span>)) }
+}
+</code></pre></div><p>If we build this example with <code>-Z emit-stack-sizes</code> we&rsquo;ll get the <code>.stack_sizes</code>
+section.</p>
+<pre><code class="language-console" data-lang="console">$ cargo rustc --bin app --release -- -Z emit-stack-sizes
+
+$ size -Ax target/thumbv7m-none-eabi/release/app | head -n8
+target/thumbv7m-none-eabi/release/app  :
+section             size         addr
+.vector_table      0x400          0x0
+.text              0x292        0x400
+.rodata              0x0        0x694
+.data                0x0   0x20000000
+.bss                 0x0   0x20000000
+.stack_sizes        0x23          0x0
+</code></pre><p>We can use the <a href="https://crates.io/crates/stack-sizes"><code>cargo-stack-sizes</code></a> tool to parse the <code>.stack_sizes</code> section
+and print it in human readable format.</p>
+<pre><code class="language-console" data-lang="console">$ cargo stack-sizes --bin app --release
+address         stack   name
+0x00000414      16      app::bar::ha68263a6ecabd8f4
+0x00000400      8       app::foo::h447512bba9d1cb41
+0x0000042c      0       main
+0x00000436      0       Reset
+0x00000686      0       DefaultHandler_
+0x00000688      0       DefaultPreInit
+0x00000690      0       HardFault_
+</code></pre><p>The number reported here is the stack usage <em>in isolation</em>; it doesn&rsquo;t consider
+the call graph of the program.</p>
+<h2 id="call-graph">Call graph</h2>
+<p>To build the call graph we parse the LLVM-IR of the program, which we get from
+the <code>--emit=llvm-ir</code> rustc flag. This flag produces a <code>.ll</code> file that contains
+the LLVM-IR of the crate.</p>
+<p>If you are not familiar with LLVM-IR this is what it looks like:</p>
+<blockquote>
+<p><strong>NOTE:</strong> I have cleaned up all the LLVM-IR snippets shown in this post by
+removing uninteresting bits like attributes and metadata with the goal of
+making them short enough to fit the screen.</p>
+</blockquote>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-llvm" data-lang="llvm"><span style="color:#75715e">; app::baz
+</span><span style="color:#75715e">; Function Attrs: noinline nounwind
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">define</span> <span style="color:#66d9ef">internal</span> <span style="color:#66d9ef">fastcc</span> <span style="color:#66d9ef">i32</span> @_ZN3app3baz17h677ca7ea9c7e9167E() <span style="color:#66d9ef">unnamed_addr</span> #0 {
+start:
+<span style="color:#75715e">; call app::bar
+</span><span style="color:#75715e"></span>  <span style="color:#66d9ef">tail</span> <span style="color:#66d9ef">call</span> <span style="color:#66d9ef">fastcc</span> <span style="color:#66d9ef">void</span> @_ZN3app3bar17h2e93e4e5ba96c2a6E()
+  %0 = <span style="color:#66d9ef">load</span> <span style="color:#66d9ef">volatile</span> <span style="color:#66d9ef">i32</span>, <span style="color:#66d9ef">i32</span>* <span style="color:#66d9ef">bitcast</span> (&lt;{ [<span style="color:#ae81ff">4</span> <span style="color:#66d9ef">x</span> <span style="color:#66d9ef">i8</span>] }&gt;* @0 <span style="color:#66d9ef">to</span> <span style="color:#66d9ef">i32</span>*), <span style="color:#66d9ef">align</span> <span style="color:#ae81ff">4</span>
+  <span style="color:#66d9ef">ret</span> <span style="color:#66d9ef">i32</span> %0
+}
+</code></pre></div><p>This is a function definition. The signature of this function is <code>i32 ()</code> in
+LLVM type system. This function calls a function named <code>app::bar</code> (its mangled
+name, <code>@_ZN3app3bar17h2e93e4e5ba96c2a6E</code>, appears in the IR), which has
+signature <code>void ()</code>.</p>
+<p>The LLVM-IR shown above corresponds to this function:</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#75715e">#[inline(never)]</span>
+<span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">baz</span>() -&gt; <span style="color:#66d9ef">i32</span> {
+    bar();
+
+    <span style="color:#66d9ef">unsafe</span> { core::ptr::read_volatile(<span style="color:#f92672">&amp;</span><span style="color:#ae81ff">0</span>) }
+}
+</code></pre></div><p>By reading all the function definitions in the IR we can build an accurate call
+graph of the program as long as it only contains <em>direct</em> function calls like
+the one shown above. (Later we&rsquo;ll see how to deal with function pointers and
+trait objects)</p>
+<p>Once you have the stack usage of all functions and the call graph computing the
+worst-case stack usage boils down to walking the graph and adding up the
+individual stack usage numbers.</p>
+<p>Consider this modification of the first example.</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#75715e">#[entry]</span>
+<span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">main</span>() -&gt; <span style="color:#f92672">!</span> {
+    foo();
+    <span style="color:#75715e">// bar(); // CHANGED!
+</span><span style="color:#75715e"></span>
+    <span style="color:#75715e">// NEW!
+</span><span style="color:#75715e"></span>    <span style="color:#75715e">// NOTE we use a volatile load here to prevent LLVM from
+</span><span style="color:#75715e"></span>    <span style="color:#75715e">// optimizing away the return value
+</span><span style="color:#75715e"></span>    <span style="color:#66d9ef">unsafe</span> {
+        core::ptr::read_volatile(<span style="color:#f92672">&amp;</span>baz());
+    }
+
+    <span style="color:#66d9ef">loop</span> {}
+}
+
+<span style="color:#75715e">#[inline(never)]</span>
+<span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">foo</span>() {
+    <span style="color:#75715e">// spill variables onto the stack
+</span><span style="color:#75715e"></span>    <span style="color:#66d9ef">unsafe</span> { asm<span style="color:#f92672">!</span>(<span style="color:#e6db74">&#34;&#34;</span> : : <span style="color:#e6db74">&#34;r&#34;</span>(<span style="color:#ae81ff">0</span>) <span style="color:#e6db74">&#34;r&#34;</span>(<span style="color:#ae81ff">1</span>) <span style="color:#e6db74">&#34;r&#34;</span>(<span style="color:#ae81ff">2</span>) <span style="color:#e6db74">&#34;r&#34;</span>(<span style="color:#ae81ff">3</span>) <span style="color:#e6db74">&#34;r&#34;</span>(<span style="color:#ae81ff">4</span>) <span style="color:#e6db74">&#34;r&#34;</span>(<span style="color:#ae81ff">5</span>)) }
+}
+
+<span style="color:#75715e">#[inline(never)]</span>
+<span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">bar</span>() {
+    <span style="color:#66d9ef">unsafe</span> { asm<span style="color:#f92672">!</span>(<span style="color:#e6db74">&#34;&#34;</span> : : <span style="color:#e6db74">&#34;r&#34;</span>(<span style="color:#ae81ff">0</span>) <span style="color:#e6db74">&#34;r&#34;</span>(<span style="color:#ae81ff">1</span>) <span style="color:#e6db74">&#34;r&#34;</span>(<span style="color:#ae81ff">2</span>) <span style="color:#e6db74">&#34;r&#34;</span>(<span style="color:#ae81ff">3</span>) <span style="color:#e6db74">&#34;r&#34;</span>(<span style="color:#ae81ff">4</span>) <span style="color:#e6db74">&#34;r&#34;</span>(<span style="color:#ae81ff">5</span>) <span style="color:#e6db74">&#34;r&#34;</span>(<span style="color:#ae81ff">6</span>) <span style="color:#e6db74">&#34;r&#34;</span>(<span style="color:#ae81ff">7</span>)) }
+}
+
+<span style="color:#75715e">#[inline(never)]</span>
+<span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">baz</span>() -&gt; <span style="color:#66d9ef">i32</span> {
+    bar();
+
+    <span style="color:#66d9ef">unsafe</span> { core::ptr::read_volatile(<span style="color:#f92672">&amp;</span><span style="color:#ae81ff">0</span>) }
+}
+</code></pre></div><p>Let&rsquo;s see what <code>cargo-call-stack</code> produces</p>
+<pre><code class="language-console" data-lang="console">$ # here we choose `main` as the start point of the call graph
+$ cargo call-stack --bin app main &gt; cg.dot
+
+$ dot -Tsvg cg.dot &gt; cg.svg
+</code></pre><!-- raw HTML omitted -->
+<p>The nodes in this graph are functions and the edges indicate which functions a
+function may call. The <code>local</code> number is the stack usage of the function that
+we got from the <code>.stack_sizes</code> section. The <code>max</code> number is the worst-case stack
+usage of a function; this number includes the stack space used by functions
+called by the function.</p>
+<p>In this case, <code>main</code>&rsquo;s worst-case stack usage is 32 bytes and occurs when <code>main</code>
+calls <code>baz</code> and then <code>baz</code> calls <code>bar</code>, so the worst-case call stack is: <code>main</code>,
+<code>baz</code>, <code>bar</code>.</p>
+<h3 id="why-llvm-ir">Why LLVM-IR?</h3>
+<p>At this point you may be wondering why we are using LLVM-IR to build the call
+graph and not something more Rust-y like MIR.</p>
+<p>The main reason is that LLVM-IR is <em>very</em> close in structure to the final binary
+and that&rsquo;s because the <code>.ll</code> file produced by <code>rustc</code> contains the IR <em>after</em>
+optimizations have been applied.</p>
+<p>If we had built the call graph using MIR it would have contained way more nodes
+than there actually are in the binary. The extra MIR nodes wouldn&rsquo;t exist in the
+final binary because LLVM inlined the functions or optimized them away. More
+work would had been required to remove these extra nodes.</p>
+<p>Another advantage of using LLVM-IR is that is a relatively stable format, unlike
+MIR, so moving to a newer Rust compiler is less likely to break the tool.</p>
+<h2 id="cycles">Cycles</h2>
+<p>Finding the worst-case stack usage of an acyclic call graph is straightforward:
+you walk the graph node by node in reverse topological order. Things get a bit
+trickier when you have cycles in the graph. Cycles appear when the program uses
+recursion. Fibonacci is probably the most known example of recursion so let&rsquo;s
+use it as an example.</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#66d9ef">static</span> X: <span style="color:#a6e22e">AtomicUsize</span> <span style="color:#f92672">=</span> AtomicUsize::new(<span style="color:#ae81ff">0</span>);
+
+<span style="color:#75715e">#[entry]</span>
+<span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">main</span>() -&gt; <span style="color:#f92672">!</span> {
+    X.store(fib(X.load(Ordering::Relaxed)), Ordering::Relaxed);
+
+    <span style="color:#66d9ef">loop</span> {}
+}
+
+<span style="color:#75715e">#[inline(never)]</span>
+<span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">fib</span>(n: <span style="color:#66d9ef">usize</span>) -&gt; <span style="color:#66d9ef">usize</span> {
+    <span style="color:#66d9ef">if</span> n <span style="color:#f92672">&lt;</span> <span style="color:#ae81ff">2</span> {
+        <span style="color:#ae81ff">1</span>
+    } <span style="color:#66d9ef">else</span> {
+        fib(n <span style="color:#f92672">-</span> <span style="color:#ae81ff">1</span>) <span style="color:#f92672">+</span> fib(n <span style="color:#f92672">-</span> <span style="color:#ae81ff">2</span>)
+    }
+}
+
+<span style="color:#75715e">// could change the value of `X` at any time
+</span><span style="color:#75715e"></span><span style="color:#75715e">#[exception]</span>
+<span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">SysTick</span>() {
+    X.fetch_add(<span style="color:#ae81ff">1</span>, Ordering::Relaxed);
+}
+</code></pre></div><p>The above program produces the following call graph:</p>
+<!-- raw HTML omitted -->
+<p>The <code>fib</code> function itself uses some stack: 16 bytes. However, because it
+recursively calls itself we can&rsquo;t place an upper bound on its stack usage &ndash; we
+don&rsquo;t how deep the recursion will go. Thus we can only say that calling <code>fib</code>
+will use at least 16 bytes of stack; that&rsquo;s why we report <code>&gt;= 16</code> as the
+worst-case stack usage. Since <code>main</code> calls this single-node cycle it inherits
+its unbounded worst-case stack usage.</p>
+<p>If you encounter unbounded stack usage due to recursion you should consider
+removing the recursion to make the program analyzable. For example, <code>fib</code> can
+be rewritten to use a loop instead of recursion.</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#75715e">#[inline(never)]</span>
+<span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">fib</span>(n: <span style="color:#66d9ef">usize</span>) -&gt; <span style="color:#66d9ef">usize</span> {
+    <span style="color:#66d9ef">let</span> (<span style="color:#66d9ef">mut</span> a, <span style="color:#66d9ef">mut</span> b) <span style="color:#f92672">=</span> (<span style="color:#ae81ff">1</span>, <span style="color:#ae81ff">1</span>);
+    <span style="color:#66d9ef">for</span> _ <span style="color:#66d9ef">in</span> <span style="color:#ae81ff">0</span>..n {
+        b <span style="color:#f92672">=</span> core::mem::replace(<span style="color:#f92672">&amp;</span><span style="color:#66d9ef">mut</span> a, b) <span style="color:#f92672">+</span> b;
+    }
+    a
+}
+</code></pre></div><p>But, does this mean that recursion always implies unbounded stack usage? No. In
+some (rare?) cases, the stack usage of cycles can be bounded. Here&rsquo;s one such
+example:</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#75715e">#[entry]</span>
+<span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">main</span>() -&gt; <span style="color:#f92672">!</span> {
+    foo();
+
+    quux();
+
+    <span style="color:#66d9ef">loop</span> {}
+}
+
+<span style="color:#75715e">// these three functions form a cycle that breaks when `SysTick` runs
+</span><span style="color:#75715e"></span><span style="color:#75715e">#[inline(never)]</span>
+<span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">foo</span>() {
+    <span style="color:#66d9ef">if</span> X.load(Ordering::Relaxed) {
+        bar()
+    }
+}
+
+<span style="color:#75715e">#[inline(never)]</span>
+<span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">bar</span>() {
+    <span style="color:#66d9ef">if</span> X.load(Ordering::Relaxed) {
+        baz()
+    }
+}
+
+<span style="color:#75715e">#[inline(never)]</span>
+<span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">baz</span>() {
+    <span style="color:#66d9ef">if</span> X.load(Ordering::Relaxed) {
+        foo()
+    }
+}
+
+<span style="color:#75715e">#[inline(never)]</span>
+<span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">quux</span>() {
+    <span style="color:#75715e">// spill variables onto the stack
+</span><span style="color:#75715e"></span>    <span style="color:#66d9ef">unsafe</span> { asm<span style="color:#f92672">!</span>(<span style="color:#e6db74">&#34;&#34;</span> : : <span style="color:#e6db74">&#34;r&#34;</span>(<span style="color:#ae81ff">0</span>) <span style="color:#e6db74">&#34;r&#34;</span>(<span style="color:#ae81ff">1</span>) <span style="color:#e6db74">&#34;r&#34;</span>(<span style="color:#ae81ff">2</span>) <span style="color:#e6db74">&#34;r&#34;</span>(<span style="color:#ae81ff">3</span>) <span style="color:#e6db74">&#34;r&#34;</span>(<span style="color:#ae81ff">4</span>) <span style="color:#e6db74">&#34;r&#34;</span>(<span style="color:#ae81ff">5</span>)) }
+}
+
+<span style="color:#75715e">#[exception]</span>
+<span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">SysTick</span>() {
+    X.store(<span style="color:#66d9ef">false</span>, Ordering::Relaxed);
+}
+</code></pre></div><p>This program produces the call graph shown at the beginning of this post.</p>
+<!-- raw HTML omitted -->
+<p>Here <code>foo</code>, <code>bar</code> and <code>baz</code> form a cycle but none of them uses the stack so the
+worst-case (<code>max</code>) stack usage of the whole cycle is 0 bytes. To compute the
+worst-case stack usage of <code>main</code> we walk the graph as we usually do but consider
+each cycle as a single node, or in more technical terms: we walk over the SCCs
+(Strongly Connected Components) of the graph in reverse topological order.</p>
+<p>If you are a bit incredulous about this result (I was too!) check out the
+<code>cargo-call-stack</code>
+<a href="https://github.com/japaric/cargo-call-stack/tree/v0.1.2#cycles">README</a>.  It
+contains this exact same example but expands on it further by showing the
+disassembly and the GDB logs of running the example on a Cortex-M3
+microcontroller. (Yes, the stack usage is indeed zero!)</p>
+<h2 id="function-pointers">Function pointers</h2>
+<p>We have only seen direct function calls so far; how do we deal with function
+pointer calls? Turns out that the LLVM-IR representation of function pointers
+calls include the signature of the function and that helps.</p>
+<p>Consider this program:</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#75715e">#[no_mangle]</span> <span style="color:#75715e">// shorter name in the llvm-ir
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">static</span> F: <span style="color:#a6e22e">AtomicPtr</span><span style="color:#f92672">&lt;</span><span style="color:#66d9ef">fn</span>() -&gt; <span style="color:#66d9ef">bool</span><span style="color:#f92672">&gt;</span> <span style="color:#f92672">=</span> AtomicPtr::new(foo <span style="color:#66d9ef">as</span> <span style="color:#f92672">*</span><span style="color:#66d9ef">mut</span> _);
+
+<span style="color:#75715e">#[entry]</span>
+<span style="color:#75715e">#[inline(never)]</span>
+<span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">main</span>() -&gt; <span style="color:#f92672">!</span> {
+    <span style="color:#66d9ef">if</span> <span style="color:#66d9ef">let</span> Some(f) <span style="color:#f92672">=</span> <span style="color:#66d9ef">unsafe</span> { F.load(Ordering::Relaxed).as_ref() } {
+        <span style="color:#75715e">// call via function pointer
+</span><span style="color:#75715e"></span>        f();
+    }
+
+    <span style="color:#66d9ef">loop</span> {}
+}
+
+<span style="color:#75715e">// ..
+</span></code></pre></div><p>Which produces the following LLVM-IR:</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-llvm" data-lang="llvm"><span style="color:#75715e">; Function Attrs: noreturn nounwind
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">define</span> <span style="color:#66d9ef">void</span> @main() <span style="color:#66d9ef">unnamed_addr</span> #2 {
+start:
+  %0 = <span style="color:#66d9ef">load</span> <span style="color:#66d9ef">atomic</span> <span style="color:#66d9ef">i32</span>, <span style="color:#66d9ef">i32</span>* <span style="color:#66d9ef">bitcast</span> (&lt;{ <span style="color:#66d9ef">i8</span>*, [<span style="color:#ae81ff">0</span> <span style="color:#66d9ef">x</span> <span style="color:#66d9ef">i8</span>] }&gt;* @F <span style="color:#66d9ef">to</span> <span style="color:#66d9ef">i32</span>*) <span style="color:#66d9ef">monotonic</span>
+  %1 = <span style="color:#66d9ef">icmp</span> <span style="color:#66d9ef">eq</span> <span style="color:#66d9ef">i32</span> %0, <span style="color:#ae81ff">0</span>
+  <span style="color:#66d9ef">br</span> <span style="color:#66d9ef">i1</span> %1, <span style="color:#66d9ef">label</span> %bb6.preheader, <span style="color:#66d9ef">label</span> %bb3
+
+bb3:                                              <span style="color:#75715e">; preds = %start
+</span><span style="color:#75715e"></span>  %2 = <span style="color:#66d9ef">inttoptr</span> <span style="color:#66d9ef">i32</span> %0 <span style="color:#66d9ef">to</span> <span style="color:#66d9ef">i1</span> ()**
+  %3 = <span style="color:#66d9ef">load</span> <span style="color:#66d9ef">i1</span> ()*, <span style="color:#66d9ef">i1</span> ()** %2, <span style="color:#66d9ef">align</span> <span style="color:#ae81ff">4</span>, !nonnull !46
+<span style="color:#75715e">; ↓
+</span><span style="color:#75715e"></span>  %4 = <span style="color:#66d9ef">tail</span> <span style="color:#66d9ef">call</span> <span style="color:#66d9ef">zeroext</span> <span style="color:#66d9ef">i1</span> %3() #7
+  <span style="color:#66d9ef">br</span> <span style="color:#66d9ef">label</span> %bb6.preheader
+
+bb6.preheader:                                    <span style="color:#75715e">; preds = %start, %bb3
+</span><span style="color:#75715e"></span>  <span style="color:#66d9ef">br</span> <span style="color:#66d9ef">label</span> %bb6
+
+bb6:                                              <span style="color:#75715e">; preds = %bb6.preheader, %bb6
+</span><span style="color:#75715e"></span>  <span style="color:#66d9ef">br</span> <span style="color:#66d9ef">label</span> %bb6
+}
+</code></pre></div><p>The function pointer call appears in line <code>%4 =</code> on the right hand side. Value
+<code>%3</code> is the function pointer. This line also includes the signature of the
+function: <code>i1 ()</code>, which is the LLVM version of Rust&rsquo;s <code>fn() -&gt; bool</code>. We can
+distinguish a function pointer call from a direct function call because the
+latter uses the name of a function (<code>@foo</code>) as the callee whereas the former
+uses a value (<code>%3</code> in this case).</p>
+<p>So from the IR we know that <code>main</code> calls a function pointer with type <code>fn() -&gt; bool</code>. If the crate and its dependency graph are written in pure Rust then we
+know the signatures of all the functions in the final binary. With that
+information we can (pessimistically) assume that <code>main</code> could call <em>any</em>
+function with signature <code>fn() -&gt; bool</code>.</p>
+<p>So if we had these other functions in our example:</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">foo</span>() -&gt; <span style="color:#66d9ef">bool</span> {
+    <span style="color:#66d9ef">false</span>
+}
+
+<span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">bar</span>() -&gt; <span style="color:#66d9ef">bool</span> {
+    <span style="color:#75715e">// spill variables onto the stack
+</span><span style="color:#75715e"></span>    <span style="color:#66d9ef">unsafe</span> { asm<span style="color:#f92672">!</span>(<span style="color:#e6db74">&#34;&#34;</span> : : <span style="color:#e6db74">&#34;r&#34;</span>(<span style="color:#ae81ff">0</span>) <span style="color:#e6db74">&#34;r&#34;</span>(<span style="color:#ae81ff">1</span>) <span style="color:#e6db74">&#34;r&#34;</span>(<span style="color:#ae81ff">2</span>) <span style="color:#e6db74">&#34;r&#34;</span>(<span style="color:#ae81ff">3</span>) <span style="color:#e6db74">&#34;r&#34;</span>(<span style="color:#ae81ff">4</span>) <span style="color:#e6db74">&#34;r&#34;</span>(<span style="color:#ae81ff">5</span>)) }
+
+    <span style="color:#66d9ef">true</span>
+}
+
+<span style="color:#75715e">// this handler can change the function pointer at any time
+</span><span style="color:#75715e"></span><span style="color:#75715e">#[exception]</span>
+<span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">SysTick</span>() {
+    F.store(bar <span style="color:#66d9ef">as</span> <span style="color:#f92672">*</span><span style="color:#66d9ef">mut</span> _, Ordering::Relaxed);
+}
+</code></pre></div><p>The call graph reported by the tool would look like this:</p>
+<!-- raw HTML omitted -->
+<p>Here <code>i1 ()*</code> is a fictitious node that denotes a function pointer call. The
+outgoing neighbors of this node are the functions that could be invoked as a
+result of this call.</p>
+<h2 id="trait-objects">Trait objects</h2>
+<p>We can use a similar approach to reason about dynamic dispatch. Calling a trait
+object method shows in LLVM-IR as calling a function pointer but with the
+peculiarity that the signature of the function, for example, looks like this:
+<code>i1 ({}*)</code> where LLVM&rsquo;s <code>{}*</code> type is basically Rust&rsquo;s <code>*mut ()</code> type.</p>
+<p>Consider the following code:</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#66d9ef">use</span> spin::Mutex; <span style="color:#75715e">// spin = &#34;=0.5.0&#34;
+</span><span style="color:#75715e"></span>
+<span style="color:#75715e">#[no_mangle]</span> <span style="color:#75715e">// shorter name in the llvm-ir
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">static</span> TO: <span style="color:#a6e22e">Mutex</span><span style="color:#f92672">&lt;&amp;</span>&#39;static (dyn Foo <span style="color:#f92672">+</span> Sync)<span style="color:#f92672">&gt;</span> <span style="color:#f92672">=</span> Mutex::new(<span style="color:#f92672">&amp;</span>Bar);
+
+<span style="color:#75715e">#[entry]</span>
+<span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">main</span>() -&gt; <span style="color:#f92672">!</span> {
+    <span style="color:#75715e">// trait object dispatch
+</span><span style="color:#75715e"></span>    (<span style="color:#f92672">*</span>TO.lock()).foo();
+
+    <span style="color:#66d9ef">loop</span> {}
+}
+
+<span style="color:#66d9ef">trait</span> Foo {
+    <span style="color:#75715e">// default implementation of this method
+</span><span style="color:#75715e"></span>    <span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">foo</span>(<span style="color:#f92672">&amp;</span><span style="color:#66d9ef">mut</span> self) -&gt; <span style="color:#66d9ef">bool</span> {
+        foo(<span style="color:#f92672">&amp;</span><span style="color:#66d9ef">mut</span> <span style="color:#ae81ff">0</span>)
+    }
+}
+
+<span style="color:#75715e">// ..
+</span></code></pre></div><p>Which produces the following LLVM-IR:</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-llvm" data-lang="llvm"><span style="color:#75715e">; Function Attrs: minsize noreturn nounwind optsize
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">define</span> <span style="color:#66d9ef">void</span> @main() <span style="color:#66d9ef">unnamed_addr</span> #4 {
+start:
+<span style="color:#75715e">; call &lt;spin::mutex::Mutex&lt;T&gt;&gt;::lock
+</span><span style="color:#75715e"></span>  <span style="color:#66d9ef">tail</span> <span style="color:#66d9ef">call</span> <span style="color:#66d9ef">fastcc</span> <span style="color:#66d9ef">void</span> @&#34;_ZN36_$LT$spin..mutex..Mutex$LT$T$GT$$GT$4lock17h2602c9565791e858E&#34;()
+  %0 = <span style="color:#66d9ef">load</span> {}*, {}** <span style="color:#66d9ef">bitcast</span> (<span style="color:#66d9ef">i8</span>** <span style="color:#66d9ef">getelementptr</span> <span style="color:#66d9ef">inbounds</span> (&lt;{ [<span style="color:#ae81ff">4</span> <span style="color:#66d9ef">x</span> <span style="color:#66d9ef">i8</span>], <span style="color:#66d9ef">i8</span>*, <span style="color:#66d9ef">i8</span>*, [<span style="color:#ae81ff">0</span> <span style="color:#66d9ef">x</span> <span style="color:#66d9ef">i8</span>] }&gt;, &lt;{ [<span style="color:#ae81ff">4</span> <span style="color:#66d9ef">x</span> <span style="color:#66d9ef">i8</span>], <span style="color:#66d9ef">i8</span>*, <span style="color:#66d9ef">i8</span>*, [<span style="color:#ae81ff">0</span> <span style="color:#66d9ef">x</span> <span style="color:#66d9ef">i8</span>] }&gt;* @TO, <span style="color:#66d9ef">i32</span> <span style="color:#ae81ff">0</span>, <span style="color:#66d9ef">i32</span> <span style="color:#ae81ff">1</span>) <span style="color:#66d9ef">to</span> {}**), <span style="color:#66d9ef">align</span> <span style="color:#ae81ff">4</span>, !nonnull !23
+  %1 = <span style="color:#66d9ef">load</span> <span style="color:#66d9ef">i1</span> ({}*)**, <span style="color:#66d9ef">i1</span> ({}*)*** <span style="color:#66d9ef">bitcast</span> (<span style="color:#66d9ef">i8</span>** <span style="color:#66d9ef">getelementptr</span> <span style="color:#66d9ef">inbounds</span> (&lt;{ [<span style="color:#ae81ff">4</span> <span style="color:#66d9ef">x</span> <span style="color:#66d9ef">i8</span>], <span style="color:#66d9ef">i8</span>*, <span style="color:#66d9ef">i8</span>*, [<span style="color:#ae81ff">0</span> <span style="color:#66d9ef">x</span> <span style="color:#66d9ef">i8</span>] }&gt;, &lt;{ [<span style="color:#ae81ff">4</span> <span style="color:#66d9ef">x</span> <span style="color:#66d9ef">i8</span>], <span style="color:#66d9ef">i8</span>*, <span style="color:#66d9ef">i8</span>*, [<span style="color:#ae81ff">0</span> <span style="color:#66d9ef">x</span> <span style="color:#66d9ef">i8</span>] }&gt;* @TO, <span style="color:#66d9ef">i32</span> <span style="color:#ae81ff">0</span>, <span style="color:#66d9ef">i32</span> <span style="color:#ae81ff">2</span>) <span style="color:#66d9ef">to</span> <span style="color:#66d9ef">i1</span> ({}*)***), <span style="color:#66d9ef">align</span> <span style="color:#ae81ff">4</span>, !nonnull !23
+  %2 = <span style="color:#66d9ef">getelementptr</span> <span style="color:#66d9ef">inbounds</span> <span style="color:#66d9ef">i1</span> ({}*)*, <span style="color:#66d9ef">i1</span> ({}*)** %1, <span style="color:#66d9ef">i32</span> <span style="color:#ae81ff">3</span>
+  %3 = <span style="color:#66d9ef">load</span> <span style="color:#66d9ef">i1</span> ({}*)*, <span style="color:#66d9ef">i1</span> ({}*)** %2, <span style="color:#66d9ef">align</span> <span style="color:#ae81ff">4</span>, !invariant.load !23, !nonnull !23
+<span style="color:#75715e">; ↓
+</span><span style="color:#75715e"></span>  %4 = <span style="color:#66d9ef">tail</span> <span style="color:#66d9ef">call</span> <span style="color:#66d9ef">zeroext</span> <span style="color:#66d9ef">i1</span> %3({}* <span style="color:#66d9ef">nonnull</span> <span style="color:#66d9ef">align</span> <span style="color:#ae81ff">1</span> %0) #9
+  <span style="color:#66d9ef">store</span> <span style="color:#66d9ef">atomic</span> <span style="color:#66d9ef">i8</span> <span style="color:#ae81ff">0</span>, <span style="color:#66d9ef">i8</span>* <span style="color:#66d9ef">getelementptr</span> <span style="color:#66d9ef">inbounds</span> (&lt;{ [<span style="color:#ae81ff">4</span> <span style="color:#66d9ef">x</span> <span style="color:#66d9ef">i8</span>], <span style="color:#66d9ef">i8</span>*, <span style="color:#66d9ef">i8</span>*, [<span style="color:#ae81ff">0</span> <span style="color:#66d9ef">x</span> <span style="color:#66d9ef">i8</span>] }&gt;, &lt;{ [<span style="color:#ae81ff">4</span> <span style="color:#66d9ef">x</span> <span style="color:#66d9ef">i8</span>], <span style="color:#66d9ef">i8</span>*, <span style="color:#66d9ef">i8</span>*, [<span style="color:#ae81ff">0</span> <span style="color:#66d9ef">x</span> <span style="color:#66d9ef">i8</span>] }&gt;* @TO, <span style="color:#66d9ef">i32</span> <span style="color:#ae81ff">0</span>, <span style="color:#66d9ef">i32</span> <span style="color:#ae81ff">0</span>, <span style="color:#66d9ef">i32</span> <span style="color:#ae81ff">0</span>) <span style="color:#66d9ef">release</span>, <span style="color:#66d9ef">align</span> <span style="color:#ae81ff">4</span>
+  <span style="color:#66d9ef">br</span> <span style="color:#66d9ef">label</span> %bb5
+
+bb5:                                              <span style="color:#75715e">; preds = %bb5, %start
+</span><span style="color:#75715e"></span>  <span style="color:#66d9ef">br</span> <span style="color:#66d9ef">label</span> %bb5
+}
+</code></pre></div><p>Line <code>%4 =</code> is the dynamic dispatch. Trait method <code>Foo::foo</code> has signature
+<code>fn(&amp;self) -&gt; bool</code>; that&rsquo;s why the signature of the function shows as <code>i1 ({}*)</code> in the LLVM-IR. The type of <code>self</code> has been erased so we only know
+that the first argument (the receiver) is a pointer.</p>
+<p>Which functions could be dispatched by this call? In principle, any with
+signature <code>i1 (???*)</code> where <code>???</code> could be any type: <code>i1</code> (<code>bool</code>), <code>i32</code>,
+<code>%crate::module::Struct</code>, etc., but this approach would also include <em>inherent</em>
+methods and functions whose first argument is a pointer in the list of
+candidates. For example the following function would also be considered a
+candidate:</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#75715e">#[inline(never)]</span>
+<span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">foo</span>(x: <span style="color:#66d9ef">&amp;</span><span style="color:#a6e22e">mut</span> <span style="color:#66d9ef">i32</span>) -&gt; <span style="color:#66d9ef">bool</span> {
+    <span style="color:#75715e">// memory clobber to trick LLVM into believing that `x` may be modified
+</span><span style="color:#75715e"></span>    <span style="color:#66d9ef">unsafe</span> { asm<span style="color:#f92672">!</span>(<span style="color:#e6db74">&#34;&#34;</span> : : : <span style="color:#e6db74">&#34;memory&#34;</span>) }
+
+    <span style="color:#f92672">*</span>x <span style="color:#f92672">&gt;</span> <span style="color:#ae81ff">0</span>
+}
+</code></pre></div><p>We can narrow down the list of candidates a bit further by looking at the <em>name</em>
+of the function. Methods in trait implementations are named using the format:
+<code>&lt;crate::module::Trait for crate::module::Type&gt;::method</code>, whereas default trait
+methods are named using the format: <code>crate::module::Trait::method</code>. The
+<code>app::foo</code> function shown above doesn&rsquo;t match either format.</p>
+<p>Now let&rsquo;s see what <code>cargo-call-stack</code> produces when it uses both signature
+matching and name matching. This is the rest of the program:</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#66d9ef">struct</span> <span style="color:#a6e22e">Bar</span>;
+
+<span style="color:#75715e">// uses the default method implementation
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">impl</span> Foo <span style="color:#66d9ef">for</span> Bar {}
+
+<span style="color:#66d9ef">struct</span> <span style="color:#a6e22e">Baz</span>;
+
+<span style="color:#66d9ef">impl</span> Foo <span style="color:#66d9ef">for</span> Baz {
+    <span style="color:#75715e">// overrides the default method
+</span><span style="color:#75715e"></span>    <span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">foo</span>(<span style="color:#f92672">&amp;</span>self) -&gt; <span style="color:#66d9ef">bool</span> {
+        <span style="color:#75715e">// spill variables onto the stack
+</span><span style="color:#75715e"></span>        <span style="color:#66d9ef">unsafe</span> { asm<span style="color:#f92672">!</span>(<span style="color:#e6db74">&#34;&#34;</span> : : <span style="color:#e6db74">&#34;r&#34;</span>(<span style="color:#ae81ff">0</span>) <span style="color:#e6db74">&#34;r&#34;</span>(<span style="color:#ae81ff">1</span>) <span style="color:#e6db74">&#34;r&#34;</span>(<span style="color:#ae81ff">2</span>) <span style="color:#e6db74">&#34;r&#34;</span>(<span style="color:#ae81ff">3</span>) <span style="color:#e6db74">&#34;r&#34;</span>(<span style="color:#ae81ff">4</span>) <span style="color:#e6db74">&#34;r&#34;</span>(<span style="color:#ae81ff">5</span>)) }
+
+        <span style="color:#66d9ef">true</span>
+    }
+}
+
+<span style="color:#75715e">// could change the trait object at any time
+</span><span style="color:#75715e"></span><span style="color:#75715e">#[exception]</span>
+<span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">SysTick</span>() {
+    <span style="color:#f92672">*</span>TO.lock() <span style="color:#f92672">=</span> <span style="color:#f92672">&amp;</span>Baz;
+}
+</code></pre></div><!-- raw HTML omitted -->
+<p>Here <code>i1 ({}*)</code> is a fictitious node that denotes the dynamic dispatch of a
+trait method with signature <code>fn(&amp;[mut] self) -&gt; bool</code>. This operation could
+result in either <code>Bar.foo</code> or <code>Baz.foo</code> being called. Note that <code>Bar.foo</code>
+appears as <code>app::Foo::foo</code> in the graph because <code>Bar</code> uses the default
+implementation of this method.</p>
+<p>Importantly, there&rsquo;s no edge between <code>i1 ({}*)</code> and <code>app::foo</code> even though
+<code>app::foo</code> matches the signature of the trait method.</p>
+<p>For completeness sake here&rsquo;s the LLVM-IR of all the functions that match the
+LLVM type <code>i1 ({}*)</code>.</p>
+<blockquote>
+<p><strong>NOTE:</strong> Here I have omitted the mangled names since they are long, not
+really useful and the demangled version already appears in the comments.</p>
+</blockquote>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-llvm" data-lang="llvm"><span style="color:#75715e">; &lt;app::Baz as app::Foo&gt;::foo
+</span><span style="color:#75715e">; Function Attrs: minsize nounwind optsize
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">define</span> <span style="color:#66d9ef">zeroext</span> <span style="color:#66d9ef">i1</span> @_(%Baz* <span style="color:#66d9ef">noalias</span> <span style="color:#66d9ef">nonnull</span> <span style="color:#66d9ef">align</span> <span style="color:#ae81ff">1</span>) <span style="color:#66d9ef">unnamed_addr</span> #2 {
+<span style="color:#75715e">; ..
+</span><span style="color:#75715e"></span>}
+
+<span style="color:#75715e">; app::Foo::foo
+</span><span style="color:#75715e">; Function Attrs: minsize nounwind optsize
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">define</span> <span style="color:#66d9ef">zeroext</span> <span style="color:#66d9ef">i1</span> @_(%Bar* <span style="color:#66d9ef">noalias</span> <span style="color:#66d9ef">nonnull</span> <span style="color:#66d9ef">align</span> <span style="color:#ae81ff">1</span>) <span style="color:#66d9ef">unnamed_addr</span> #2 {
+<span style="color:#75715e">; ..
+</span><span style="color:#75715e"></span>}
+
+<span style="color:#75715e">; app::foo
+</span><span style="color:#75715e">; Function Attrs: minsize noinline nounwind optsize
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">define</span> <span style="color:#66d9ef">fastcc</span> <span style="color:#66d9ef">zeroext</span> <span style="color:#66d9ef">i1</span> @_(<span style="color:#66d9ef">i32</span>* <span style="color:#66d9ef">align</span> <span style="color:#ae81ff">4</span> <span style="color:#66d9ef">dereferenceable</span>(<span style="color:#ae81ff">4</span>)) <span style="color:#66d9ef">unnamed_addr</span> #3 {
+<span style="color:#75715e">; ..
+</span><span style="color:#75715e"></span>}
+</code></pre></div><h1 id="checking-correctness">Checking correctness</h1>
+<p>Now that you know how <code>cargo-call-stack</code> works it&rsquo;s a good time to check if it&rsquo;s
+correct by using it on a non-contrived example. The example I&rsquo;ll use in this
+section is a <a href="https://github.com/japaric/jnet/tree/b5bd70cb998b1e01236f6b07ebc516a0359fde3d/firmware#sixlowpan">CoAP / 6LoWPAN server</a>.</p>
+<p>This server exposes an LED resource at path <code>/led</code>; this LED can be
+controlled and polled using PUT and GET requests. The payloads of PUT requests
+and Content responses are in JSON format. This application does <em>not</em> use
+interrupts; all the logic is in an infinite loop (AKA a &ldquo;super loop&rdquo;).</p>
+<p>For starters, here&rsquo;s the call graph produced by <code>cargo-call-stack</code>. (Clicking
+the image should open the SVG in your browser)</p>
+<!-- raw HTML omitted -->
+<p>The tool reports that the worst-case stack usage of <code>main</code> is 1152 bytes. To
+check whether this number is correct or not we&rsquo;ll measure the stack usage by
+running the program for a bit. To measure the stack usage in a non-invasive way
+we&rsquo;ll fill the RAM with some known bit pattern. This can be done in the <a href="https://github.com/rust-embedded/cortex-m-rt/blob/v0.6.7/link.x.in#L133">linker
+script</a>.</p>
+<pre><code>SECTIONS
+{
+  /* .. */
+
+  /* add this after the last section placed in RAM */
+
+  .fill : ALIGN(4)
+  {
+    FILL(0xfeedc0de);
+    . = ORIGIN(RAM) + LENGTH(RAM) - 4;
+    LONG(0xfeedc0de);
+  } &gt; RAM AT &gt; RAM
+
+  /* .. */
+}
+</code></pre><p>This will tell the linker to create an output section named <code>.fill</code> that
+contains the bit pattern <code>0xfeedc0de</code> repeated all over the place. This section
+will span the part of the RAM that&rsquo;s not used for static variables, which is
+where the (call) stack resides.</p>
+<p>As this section is marked as loadable (which is the default; <code>NOLOAD</code> can be
+used to opt out) the debugger will load it into memory ..</p>
+<pre><code class="language-console" data-lang="console">$ cargo run --example sixlowpan --release
+(..)
+Loading section .fill, size 0x4ffc lma 0x20000004
+Loading section .vector_table, size 0x130 lma 0x8000000
+Loading section .text, size 0x4c18 lma 0x8000130
+Loading section .rodata, size 0x520 lma 0x8004d50
+(..)
+
+(gdb) _
+</code></pre><p>.. effectively initializing all unused RAM to the specified bit pattern.
+Examining the memory in GDB confirms that the bit pattern is everywhere. I&rsquo;m
+running this program on a device with 20 KiBi (<code>0x5000</code>) of RAM, which is
+located at address <code>0x2000_0000</code>.</p>
+<pre><code class="language-console" data-lang="console">(gdb) x/16x 0x20004000
+0x20004040:     0xdec0edfe      0xdec0edfe      0xdec0edfe      0xdec0edfe
+0x20004050:     0xdec0edfe      0xdec0edfe      0xdec0edfe      0xdec0edfe
+0x20004060:     0xdec0edfe      0xdec0edfe      0xdec0edfe      0xdec0edfe
+0x20004070:     0xdec0edfe      0xdec0edfe      0xdec0edfe      0xdec0edfe
+
+(gdb) x/16x 0x20004fc0
+0x20004fc0:     0xdec0edfe      0xdec0edfe      0xdec0edfe      0xdec0edfe
+0x20004fd0:     0xdec0edfe      0xdec0edfe      0xdec0edfe      0xdec0edfe
+0x20004fe0:     0xdec0edfe      0xdec0edfe      0xdec0edfe      0xdec0edfe
+0x20004ff0:     0xdec0edfe      0xdec0edfe      0xdec0edfe      0xfeedc0de
+</code></pre><p>(And yes the pattern appears inverted because the target is little endian.)</p>
+<p>What I did next was run the application and use it as I normally would. I sent a
+few requests and pinged the device to try to hit as many code paths as possible.</p>
+<pre><code class="language-console" data-lang="console">$ coap -I lowpan0 GET 'coap://[fe80::2219:220:23:5959]/led'
+-&gt; {type: Confirmable, code: Method::Get, message_id: 4324, options: {UriPath: &quot;led&quot;}}
+&lt;- {type: Acknowledgement, code: Response::Content, message_id: 4324}
+{&quot;led&quot;:true}
+
+$ coap -I lowpan0 PUT 'coap://[fe80::2219:220:23:5959]/led' '{&quot;led&quot;:false}'
+-&gt; {type: Confirmable, code: Method::Put, message_id: 4378, options: {UriPath: &quot;led&quot;}}
+&lt;- {type: Acknowledgement, code: Response::Changed, message_id: 4378}
+
+$ coap -I lowpan0 GET 'coap://[fe80::2219:220:23:5959]/led'
+-&gt; {type: Confirmable, code: Method::Get, message_id: 1654, options: {UriPath: &quot;led&quot;}}
+&lt;- {type: Acknowledgement, code: Response::Content, message_id: 1654}
+{&quot;led&quot;:false}
+
+$ ping -6 -c2 fe80::2219:220:23:5959%lowpan0
+PING fe80::2219:220:23:5959%lowpan0(fe80::2219:220:23:5959%lowpan0) 56 data bytes
+64 bytes from fe80::2219:220:23:5959%lowpan0: icmp_seq=1 ttl=64 time=15.0 ms
+64 bytes from fe80::2219:220:23:5959%lowpan0: icmp_seq=2 ttl=64 time=16.2 ms
+
+--- fe80::2219:220:23:5959%lowpan0 ping statistics ---
+2 packets transmitted, 2 received, 0% packet loss, time 2ms
+rtt min/avg/max/mdev = 15.002/15.612/16.222/0.610 ms
+</code></pre><p>After interacting with the server for a bit I paused the program and proceeded
+to inspect the RAM in GDB. Eventually I found the high-water mark of the stack
+at address <code>0x20004dc0</code>.</p>
+<pre><code class="language-console" data-lang="console">(gdb) x/16x 0x20004db0
+0x20004db0:     0xdec0edfe      0xdec0edfe      0xdec0edfe      0xdec0edfe
+0x20004dc0:     0xdec0edfe      0xdec0edfe      0xdec0edfe      0xdec0edfe
+0x20004dd0:     0x00000001      0x00000000      0x00000000      0x00000000
+0x20004de0:     0x3aaa0001      0x00000000      0x00000000      0x00000000
+</code></pre><p>At its deepest the stack spanned from <code>0x20005000</code> to <code>0x20004dd0</code> (the stack
+grows downwards); that&rsquo;s 560 bytes, which is a much smaller value than the 1152
+bytes reported by the tool as the worst-case stack usage. That&rsquo;s reassuring; it
+would have been bad if the measured stack usage had been greater than the
+worst-case stack usage reported by the tool.</p>
+<h1 id="known-limitations">Known limitations</h1>
+<p>So far I have only shown you examples where <code>cargo-call-stack</code> does a good job
+at building the call graph; however, the tool is far from perfect. In this
+second part of the post we&rsquo;ll see where the tool falls short.</p>
+<h2 id="llvm-intrinsics">LLVM intrinsics</h2>
+<p>I said that the <code>call @_</code> instruction in LLVM-IR corresponds to a direct
+function call. That&rsquo;s not always the case because LLVM intrinsics are also
+invoked using the <code>call</code> instruction. One good example is the <code>llvm.memset</code>
+intrinsic; consider the following code:</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#75715e">#[entry]</span>
+<span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">main</span>() -&gt; <span style="color:#f92672">!</span> {
+    <span style="color:#66d9ef">let</span> x <span style="color:#f92672">=</span> [<span style="color:#ae81ff">0</span><span style="color:#66d9ef">u8</span>; <span style="color:#ae81ff">32</span>];
+
+    <span style="color:#75715e">// force `x` to be allocated on the stack
+</span><span style="color:#75715e"></span>    <span style="color:#66d9ef">unsafe</span> {
+        core::ptr::read_volatile(<span style="color:#f92672">&amp;</span>x.as_ptr());
+    }
+
+    <span style="color:#66d9ef">loop</span> {}
+}
+</code></pre></div><p>It produces the following LLVM-IR:</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-llvm" data-lang="llvm"><span style="color:#75715e">; Function Attrs: noinline noreturn nounwind
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">define</span> <span style="color:#66d9ef">void</span> @main() <span style="color:#66d9ef">unnamed_addr</span> #0 {
+start:
+  %_7 = <span style="color:#66d9ef">alloca</span> <span style="color:#66d9ef">i8</span>*, <span style="color:#66d9ef">align</span> <span style="color:#ae81ff">4</span>
+  %x = <span style="color:#66d9ef">alloca</span> [<span style="color:#ae81ff">32</span> <span style="color:#66d9ef">x</span> <span style="color:#66d9ef">i8</span>], <span style="color:#66d9ef">align</span> <span style="color:#ae81ff">1</span>
+  %0 = <span style="color:#66d9ef">getelementptr</span> <span style="color:#66d9ef">inbounds</span> [<span style="color:#ae81ff">32</span> <span style="color:#66d9ef">x</span> <span style="color:#66d9ef">i8</span>], [<span style="color:#ae81ff">32</span> <span style="color:#66d9ef">x</span> <span style="color:#66d9ef">i8</span>]* %x, <span style="color:#66d9ef">i32</span> <span style="color:#ae81ff">0</span>, <span style="color:#66d9ef">i32</span> <span style="color:#ae81ff">0</span>
+<span style="color:#75715e">; ↓
+</span><span style="color:#75715e"></span>  <span style="color:#66d9ef">call</span> <span style="color:#66d9ef">void</span> @llvm.memset.p0i8.i32(<span style="color:#66d9ef">i8</span>* <span style="color:#66d9ef">nonnull</span> <span style="color:#66d9ef">align</span> <span style="color:#ae81ff">1</span> %0, <span style="color:#66d9ef">i8</span> <span style="color:#ae81ff">0</span>, <span style="color:#66d9ef">i32</span> <span style="color:#ae81ff">32</span>, <span style="color:#66d9ef">i1</span> <span style="color:#66d9ef">false</span>)
+  %_7.0.sroa_cast2 = <span style="color:#66d9ef">bitcast</span> <span style="color:#66d9ef">i8</span>** %_7 <span style="color:#66d9ef">to</span> <span style="color:#66d9ef">i8</span>*
+  <span style="color:#66d9ef">store</span> <span style="color:#66d9ef">i8</span>* %0, <span style="color:#66d9ef">i8</span>** %_7, <span style="color:#66d9ef">align</span> <span style="color:#ae81ff">4</span>
+  %_7.0._7.0. = <span style="color:#66d9ef">load</span> <span style="color:#66d9ef">volatile</span> <span style="color:#66d9ef">i8</span>*, <span style="color:#66d9ef">i8</span>** %_7, <span style="color:#66d9ef">align</span> <span style="color:#ae81ff">4</span>
+  <span style="color:#66d9ef">br</span> <span style="color:#66d9ef">label</span> %bb3
+
+bb3:                                              <span style="color:#75715e">; preds = %bb3, %start
+</span><span style="color:#75715e"></span>  <span style="color:#66d9ef">br</span> <span style="color:#66d9ef">label</span> %bb3
+}
+</code></pre></div><p>Although you get a <code>call</code> instruction there the actual disassembly contains no
+function call:</p>
+<pre><code class="language-armasm" data-lang="armasm">00000400 &lt;main&gt;:
+ 400:   b089            sub     sp, #36 ; 0x24
+ 402:   2000            movs    r0, #0
+ 404:   e9cd 0006       strd    r0, r0, [sp, #24]
+ 408:   e9cd 0004       strd    r0, r0, [sp, #16]
+ 40c:   e9cd 0002       strd    r0, r0, [sp, #8]
+ 410:   e9cd 0000       strd    r0, r0, [sp]
+ 414:   4668            mov     r0, sp
+ 416:   9008            str     r0, [sp, #32]
+ 418:   9808            ldr     r0, [sp, #32]
+ 41a:   e7fe            b.n     41a &lt;main+0x1a&gt;
+</code></pre><p>Turns out the stack-allocated array was initialized <em>inline</em> using a few
+register operations and no loops!</p>
+<p>But this is not always the case; the output machine code depends on the size of
+the array and register availability. For example, if we increase the size of the
+array to 64 we get a call to <code>__aeabi_memclr4</code>.</p>
+<pre><code class="language-armasm" data-lang="armasm">00000400 &lt;main&gt;:
+ 400:   b092            sub     sp, #72 ; 0x48
+ 402:   ac01            add     r4, sp, #4
+ 404:   2140            movs    r1, #64 ; 0x40
+ 406:   4620            mov     r0, r4
+ 408:   f000 f998       bl      73c &lt;__aeabi_memclr4&gt;
+ 40c:   9411            str     r4, [sp, #68]   ; 0x44
+ 40e:   9811            ldr     r0, [sp, #68]   ; 0x44
+ 410:   e7fe            b.n     410 &lt;main+0x10&gt;
+</code></pre><p>Though we see almost no change in the LLVM-IR.</p>
+<pre><code>define void @main() unnamed_addr #0 {
+start:
+  %_7 = alloca i8*, align 4
+; &lt;changed&gt;
+  %x = alloca [64 x i8], align 1
+  %0 = getelementptr inbounds [64 x i8], [64 x i8]* %x, i32 0, i32 0
+  call void @llvm.memset.p0i8.i32(i8* nonnull align 1 %0, i8 0, i32 64, i1 false)
+; &lt;/changed&gt;
+  %_7.0.sroa_cast2 = bitcast i8** %_7 to i8*
+  store i8* %0, i8** %_7, align 4
+  %_7.0._7.0. = load volatile i8*, i8** %_7, align 4
+  br label %bb3
+
+bb3:                                              ; preds = %bb3, %start
+  br label %bb3
+}
+</code></pre><p>We may not always get a call to <code>__aeabi_memclr4</code>; we could get a call to
+<code>__aeabi_memclr</code> depending on the alignment of the array. So for <code>call @llvm.memset(%0, 0, ..)</code> we could get either a call to <code>__aeabi_memclr</code>, a call
+to <code>__aeabi_memclr4</code> or no function call, at least when compiling for ARMv7-M.
+And this is just <em>one</em> LLVM intrinsic! There are at least a dozen of intrinsics
+that behave like this and whose behaviors are architecture specific.</p>
+<h3 id="elf-to-the-rescue">ELF to the rescue</h3>
+<p>How do we deal with these problematic LLVM intrinsics? We could port the
+relevant LLVM code to <code>cargo-call-stack</code> but that would be a lot of work and
+likely to get outdated in an LLVM update. The alternative is to ignore all calls
+to LLVM intrinsics in the IR and instead directly look for function calls in the
+output binary: the ELF file. As of v0.1.2 <code>cargo-call-stack</code> does the latter but
+only for ARM Cortex-M binaries.</p>
+<p>The idea is simple: we walk through all the subroutines (functions) in the
+output ELF, take note of all branch instructions (e.g. <code>B</code> and <code>BL</code>) and use
+that information to add more edges to the call graph. <code>BL</code> (branch link)
+instructions always result in an edge; <code>B</code> (branch) instructions only result in
+an edge <em>if</em> they lead to a different subroutine (<code>B</code> instructions are also used
+to implement <code>if</code> conditionals and <code>for</code> loops within a subroutine). We ignore
+all <code>BLX</code> (branch link exchange) instructions; these correspond to function
+pointer calls and dynamic dispatch but provide no more information than what&rsquo;s
+contained in the LLVM-IR.</p>
+<p>Here&rsquo;s the call graph of the ARM Cortex-M program that zeroes a 64-byte array.</p>
+<!-- raw HTML omitted -->
+<p>When dealing with non-Cortex-M binaries the tool doesn&rsquo;t parse the machine code.
+However, it still tries to convert calls to llvm intrinsics into edges. For
+example, when dealing with ARM binaries the tool assumes that <code>call @llvm.memcpy</code> can lower to either <code>__aeabi_memcpy</code> or <code>__aeabi_memcpy4</code> so it
+inserts <em>two</em> edges. The tool has hard-coded rules to deal with some intrinsics,
+but when it sees an intrinsic it doesn&rsquo;t know about it assumes that it doesn&rsquo;t
+produce a function call and prints a warning about it.</p>
+<h2 id="other-llvm-instructions">Other LLVM instructions</h2>
+<p>This instruction selection problem is not exclusive to LLVM intrinsics; you can
+also see it in LLVM instructions other than <code>call</code>. One example is the <code>fadd</code>
+instruction, which is used to add two floating point numbers. If the compilation
+target has an FPU (e.g. ARMv7E-M) then this LLVM instruction lowers to the
+appropriate machine instructions; if not then the LLVM instruction lowers to a
+call to <code>__aeabi_fadd</code>, at least when compiling for ARM. There are dozens of
+LLVM instructions that behave like this.</p>
+<p>For ARM Cortex-M binaries these LLVM instructions are not a problem because we
+parse the machine code but for other binaries the call graph will likely be
+missing edges. Unlike how intrinsics are handled, the tool doesn&rsquo;t try to reason
+about these LLVM instructions as that would be a lot of work and parsing the
+machine code solves the problem much more efficiently.</p>
+<p>Here&rsquo;s an example that showcases one of these problematic LLVM instructions:</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#75715e">#[no_mangle]</span> <span style="color:#75715e">// shorter name in the llvm-ir
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">static</span> X: <span style="color:#a6e22e">AtomicU32</span> <span style="color:#f92672">=</span> AtomicU32::new(<span style="color:#ae81ff">0</span>);
+
+<span style="color:#75715e">#[entry]</span>
+<span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">main</span>() -&gt; <span style="color:#f92672">!</span> {
+    <span style="color:#66d9ef">let</span> x <span style="color:#f92672">=</span> X.load(Ordering::Relaxed);
+    <span style="color:#66d9ef">let</span> y <span style="color:#f92672">=</span> <span style="color:#66d9ef">f32</span>::from_bits(x) <span style="color:#f92672">*</span> <span style="color:#ae81ff">1.1</span>;
+    X.store(y.to_bits(), Ordering::Relaxed);
+
+    <span style="color:#66d9ef">loop</span> {}
+}
+
+<span style="color:#75715e">// can change the value of `X` at any time
+</span><span style="color:#75715e"></span><span style="color:#75715e">#[exception]</span>
+<span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">SysTick</span>() {
+    X.fetch_add(<span style="color:#ae81ff">1</span>, Ordering::Relaxed);
+}
+</code></pre></div><p>Here&rsquo;s the LLVM IR of <code>main</code>. As you can see there&rsquo;s no <code>call</code> instruction.</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-llvm" data-lang="llvm"><span style="color:#75715e">; Function Attrs: norecurse noreturn nounwind
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">define</span> <span style="color:#66d9ef">void</span> @main() <span style="color:#66d9ef">unnamed_addr</span> #0 {
+start:
+  %0 = <span style="color:#66d9ef">load</span> <span style="color:#66d9ef">atomic</span> <span style="color:#66d9ef">i32</span>, <span style="color:#66d9ef">i32</span>* <span style="color:#66d9ef">bitcast</span> (&lt;{ [<span style="color:#ae81ff">4</span> <span style="color:#66d9ef">x</span> <span style="color:#66d9ef">i8</span>] }&gt;* @X <span style="color:#66d9ef">to</span> <span style="color:#66d9ef">i32</span>*) <span style="color:#66d9ef">monotonic</span>, <span style="color:#66d9ef">align</span> <span style="color:#ae81ff">4</span>
+  %1 = <span style="color:#66d9ef">bitcast</span> <span style="color:#66d9ef">i32</span> %0 <span style="color:#66d9ef">to</span> <span style="color:#66d9ef">float</span>
+  %2 = <span style="color:#66d9ef">fmul</span> <span style="color:#66d9ef">float</span> %1, <span style="color:#ae81ff">0x3FF19999A0000000</span>
+  %3 = <span style="color:#66d9ef">bitcast</span> <span style="color:#66d9ef">float</span> %2 <span style="color:#66d9ef">to</span> <span style="color:#66d9ef">i32</span>
+  <span style="color:#66d9ef">store</span> <span style="color:#66d9ef">atomic</span> <span style="color:#66d9ef">i32</span> %3, <span style="color:#66d9ef">i32</span>* <span style="color:#66d9ef">bitcast</span> (&lt;{ [<span style="color:#ae81ff">4</span> <span style="color:#66d9ef">x</span> <span style="color:#66d9ef">i8</span>] }&gt;* @X <span style="color:#66d9ef">to</span> <span style="color:#66d9ef">i32</span>*) <span style="color:#66d9ef">monotonic</span>, <span style="color:#66d9ef">align</span> <span style="color:#ae81ff">4</span>
+  <span style="color:#66d9ef">br</span> <span style="color:#66d9ef">label</span> %bb5
+
+bb5:                                              <span style="color:#75715e">; preds = %bb5, %start
+</span><span style="color:#75715e"></span>  <span style="color:#66d9ef">br</span> <span style="color:#66d9ef">label</span> %bb5
+}
+</code></pre></div><p>However, there is a BL instruction in its machine code:</p>
+<pre><code class="language-armasm" data-lang="armasm">00000400 &lt;main&gt;:
+ 400:   f240 0400       movw    r4, #0
+ 404:   f64c 41cd       movw    r1, #52429      ; 0xcccd
+ 408:   f2c2 0400       movt    r4, #8192       ; 0x2000
+ 40c:   f6c3 718c       movt    r1, #16268      ; 0x3f8c
+ 410:   6820            ldr     r0, [r4, #0]
+ 412:   f000 f9d5       bl      7c0 &lt;__aeabi_fmul&gt;
+ 416:   6020            str     r0, [r4, #0]
+ 418:   e7fe            b.n     418 &lt;main+0x18&gt;
+</code></pre><p>As this is a Cortex-M program the tool will parse the machine code and produce
+an accurate call graph:</p>
+<!-- raw HTML omitted -->
+<h2 id="binary-blobs">Binary blobs</h2>
+<p><code>rustc</code> can produce LLVM-IR and <code>.stack_sizes</code> information for all the Rust code
+it compiles from source. This includes the crates in the <code>std</code> facade even
+though they come pre-compiled as part of the <code>rust-std</code> component.</p>
+<p>There&rsquo;s an exception though: the <code>compiler-builtins</code> crate. This crate contains
+only <em>compiler intrinsics</em>. When LLVM can&rsquo;t lower an instruction like <code>fadd</code> to
+machine code it lowers it to a call to a compiler intrinsic like <code>__aeabi_fadd</code>.
+Compiler intrinsics are just Rust functions that come pre-compiled in the form
+of the <code>libcompiler_builtins.rlib</code>, which is part of the <code>rust-std</code> component.</p>
+<p>Unlike the other crates in the <code>std</code> facade <code>compiler-builtins</code>&rsquo;s metadata is
+never loaded by <code>rustc</code> when compiling a crate thus no LLVM-IR or <code>.stack_sizes</code>
+section is produced for it. Loading the metadata is not required because this
+special crate is always linked in as a separate object, even when LTO is
+enabled.</p>
+<p>Thus, from the point of view of the analysis, the <code>compiler-builtins</code> crate is a
+<em>binary blob</em>; the tool has no type or stack usage information about the symbols
+(functions) in that crate. There are other binary blobs that a crate can depend
+on: C libraries, like <code>libc.a</code>, and pre-compiled assembly files, these are used
+in the <code>cortex-m</code> crates.</p>
+<h3 id="the-problems">The problems</h3>
+<p>If you are compiling for ARM Cortex-M the tool will extract call graph
+information from the binary blobs &ndash; the machine code is always available &ndash;
+thus all <em>direct</em> function calls will be accounted for. The tool will not,
+however, attempt to analyze the <em>indirect</em> function calls that it finds in the
+machine code  as there&rsquo;s no type information that can be used to build a list of
+potential callees; you will get warnings whenever such indirect function call is
+found. If you are compiling for a different architecture the tool will not parse
+the machine code of these blobs so the graph will be missing <em>both</em> direct and
+indirect edges.</p>
+<p>The lack of stack usage information means that it&rsquo;s not possible to find the
+worst-case stack usage of any function that, directly or indirectly, calls into
+a symbol that resides in a binary blob. In this case the tool will only report a
+lower bound like it did when it encountered potentially unbounded cycles. Here&rsquo;s
+an example:</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#66d9ef">use</span> cortex_m::asm;
+
+<span style="color:#75715e">#[entry]</span>
+<span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">main</span>() -&gt; <span style="color:#f92672">!</span> {
+    asm::nop();
+
+    <span style="color:#66d9ef">loop</span> {}
+}
+</code></pre></div><p>As there&rsquo;s no inline assembly on stable the <code>cortex-m</code> crate implements its
+<code>asm</code> API using pre-compiled assembly files; these pre-compiled assembly files
+are binary blobs so all the <code>asm</code> API has unknown stack usage.</p>
+<!-- raw HTML omitted -->
+<p>Sometimes there&rsquo;s no type information for <em>all</em> the symbols that reside in
+binary blobs. If the symbol is called via FFI then there will be type
+information for that symbol &ndash; the type information comes from the <code>extern</code>
+block in the Rust source code. But if that external function calls another
+function then there will be no type information for the second function. Also,
+there&rsquo;s no type information for compiler intrinsics like <code>__aeabi_memcpy</code> in the
+LLVM-IR &ndash; these don&rsquo;t appear in <code>extern</code> blocks since they are not explicitly
+called by the program.</p>
+<p>If there&rsquo;s at least one symbol for which the tool has no type information then
+the tool must assume that any function pointer call could potentially call into
+such &ldquo;untyped&rdquo; symbol. It does so by adding an edge between an unknown node,
+labeled <code>&quot;?&quot;</code> in the graph, and every one of the fictitious function pointer
+call nodes.</p>
+<h3 id="what-can-we-do">What can we do?</h3>
+<p>We are currently focusing our efforts on making pure Rust embedded applications
+fully analyzable so let&rsquo;s start by addressing the problems that affect that use
+case.</p>
+<p>The main problem for this use case is the <code>compiler-builtins</code> crate. We have no
+type information about the symbols in it, but we can paper over this problem in
+the tool itself. All compiler intrinsics have stable an interface / ABI so we
+can hard-code this information in the tool (and we already do). Note that this
+doesn&rsquo;t include functions called by the compiler intrinsics; those are
+implementation details and have no stable interface. So with this trick you get
+most but not all the type information.</p>
+<p>We don&rsquo;t have stack usage information about the compiler intrinsics but that&rsquo;s
+easy to fix! One simply has to recompile the <code>compiler-builtins</code> crate with <code>-Z emit-stack-sizes</code>. I tested this locally and it works. To make this as
+convenient as possible this should be done in rust-lang/rust CI so the end-user
+doesn&rsquo;t need to do any extra step. In the meantime, I have hard-coded some of
+this information in the tool so, for example, it knows what&rsquo;s the stack usage of
+<code>__aeabi_memcpy4</code> when the target is <code>thumbv7m-none-eabi</code>.</p>
+<p>Those two fixes should cover all use cases where the program only contains
+direct function calls. To fully support programs that do function pointer calls
+we would need <em>complete</em> type information, and I think the only solution for
+that would be to include the <code>compiler-builtins</code> crate in the LTO process
+instead of always treating it as a separate object file. That way we would have
+access to the LLVM-IR of <code>compiler-builtins</code>.</p>
+<p>However, I believe that to be impossible due to how LLVM works: simply put if
+<code>compiler-builtins</code> participated in the LTO process all its IR would be removed
+by the optimization passes and it wouldn&rsquo;t appear in the <code>.ll</code> file that the
+tool parses. The reason for that is that the IR contains <code>call @llvm.memset</code>
+rather than <code>call @__aeabi_memcpy4</code> so the dead code elimination pass will
+remove the <code>__aeabi_memcpy4</code> function; the same thing would happen with all the
+other compiler intrinsics and the internal functions they call.</p>
+<p><!-- raw HTML omitted --><!-- raw HTML omitted --></p>
+<p>Now going back to the general case of Rust programs that link to C libraries: in
+theory it should be possible to (re)compile all C code using clang and the
+<code>-fstack-size-section</code> flag, which is the equivalent of <code>rustc</code>&rsquo;s <code>-Z emit-stack-sizes</code>. That would give us stack usage information about all the C
+functions.</p>
+<p>Here&rsquo;s a contrived example to illustrate the idea:</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-c" data-lang="c"><span style="color:#66d9ef">void</span> <span style="color:#a6e22e">foo</span>() {
+  <span style="color:#75715e">// allocate an array on the stack
+</span><span style="color:#75715e"></span>  <span style="color:#66d9ef">char</span> x[<span style="color:#ae81ff">8</span>];
+
+  <span style="color:#66d9ef">return</span>;
+}
+
+<span style="color:#66d9ef">void</span> <span style="color:#a6e22e">bar</span>() {
+  <span style="color:#66d9ef">return</span>;
+}
+</code></pre></div><pre><code class="language-console" data-lang="console">$ clang -target thumbv7m-none-eabi -c -fstack-size-section foo.c
+
+$ size -Ax foo.o | head -n5
+foo.o  :
+section           size   addr
+.text              0x8    0x0
+.ARM.exidx        0x10    0x0
+.stack_sizes       0xa    0x0
+</code></pre><pre><code class="language-console" data-lang="console">$ arm-none-eabi-objdump -d foo.o | tail -n7
+00000000 &lt;foo&gt;:
+   0:   b082            sub     sp, #8
+   2:   b002            add     sp, #8
+   4:   4770            bx      lr
+
+00000006 &lt;bar&gt;:
+   6:   4770            bx      lr
+</code></pre><pre><code class="language-console" data-lang="console">$ # `stack-sizes` is a tool shipped with `cargo-stack-sizes`
+$ stack-sizes foo.o
+address         stack   name
+0x00000000      8       foo
+0x00000006      0       bar
+</code></pre><p>With stack usage information and the ability to extract call graph information
+from machine code it should be possible to analyze all programs that link to C
+code and only do direct function calls.</p>
+<p>To analyze programs that do indirect function calls we would need type
+information. Here a potential solution could be <a href="https://github.com/rust-lang/rust/issues/49879">cross language LTO</a>. This
+feature would convert the C code compiled by clang into LLVM-IR that the tool
+can analyze. I haven&rsquo;t looked into this yet as pure Rust applications are our
+priority.</p>
+<h2 id="lossy-type-conversions">Lossy type conversions</h2>
+<p>To reason about function pointer calls and trait objects we use LLVM types. LLVM
+types, specially its primitives, don&rsquo;t quite match Rust types. For example,
+there are <em>no</em> unsigned integers in the LLVM type system so a Rust type like
+<code>u8</code> gets transformed into LLVM&rsquo;s <code>i8</code>. This mismatch can cause functions to be
+labeled with the wrong signature which results in incorrect edges being added to
+the graph.</p>
+<p>Consider the following example, which is a variation of the example shown in the
+<a href="#function-pointers">&lsquo;Function pointers&rsquo;</a> section.</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#75715e">// return type changed
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">static</span> F: <span style="color:#a6e22e">AtomicPtr</span><span style="color:#f92672">&lt;</span><span style="color:#66d9ef">fn</span>() -&gt; <span style="color:#66d9ef">u32</span><span style="color:#f92672">&gt;</span> <span style="color:#f92672">=</span> AtomicPtr::new(foo <span style="color:#66d9ef">as</span> <span style="color:#f92672">*</span><span style="color:#66d9ef">mut</span> _);
+
+<span style="color:#75715e">#[entry]</span>
+<span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">main</span>() -&gt; <span style="color:#f92672">!</span> {
+    <span style="color:#66d9ef">if</span> <span style="color:#66d9ef">let</span> Some(f) <span style="color:#f92672">=</span> <span style="color:#66d9ef">unsafe</span> { F.load(Ordering::Relaxed).as_ref() } {
+        f();
+    }
+
+    <span style="color:#75715e">// volatile load to preserve the return value of `baz`
+</span><span style="color:#75715e"></span>    <span style="color:#66d9ef">unsafe</span> {
+        core::ptr::read_volatile(<span style="color:#f92672">&amp;</span>baz());
+    }
+
+    <span style="color:#66d9ef">loop</span> {}
+}
+
+<span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">foo</span>() -&gt; <span style="color:#66d9ef">u32</span> { <span style="color:#75715e">// return type changed
+</span><span style="color:#75715e"></span>    <span style="color:#ae81ff">0</span>
+}
+
+<span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">bar</span>() -&gt; <span style="color:#66d9ef">u32</span> { <span style="color:#75715e">// return type changed
+</span><span style="color:#75715e"></span>    <span style="color:#66d9ef">unsafe</span> { asm<span style="color:#f92672">!</span>(<span style="color:#e6db74">&#34;&#34;</span> : : <span style="color:#e6db74">&#34;r&#34;</span>(<span style="color:#ae81ff">0</span>) <span style="color:#e6db74">&#34;r&#34;</span>(<span style="color:#ae81ff">1</span>) <span style="color:#e6db74">&#34;r&#34;</span>(<span style="color:#ae81ff">2</span>) <span style="color:#e6db74">&#34;r&#34;</span>(<span style="color:#ae81ff">3</span>) <span style="color:#e6db74">&#34;r&#34;</span>(<span style="color:#ae81ff">4</span>) <span style="color:#e6db74">&#34;r&#34;</span>(<span style="color:#ae81ff">5</span>)) }
+
+    <span style="color:#ae81ff">1</span>
+}
+
+<span style="color:#75715e">// new
+</span><span style="color:#75715e"></span><span style="color:#75715e">#[inline(never)]</span>
+<span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">baz</span>() -&gt; <span style="color:#66d9ef">i32</span> {
+    <span style="color:#66d9ef">unsafe</span> { asm<span style="color:#f92672">!</span>(<span style="color:#e6db74">&#34;&#34;</span> : : <span style="color:#e6db74">&#34;r&#34;</span>(<span style="color:#ae81ff">0</span>) <span style="color:#e6db74">&#34;r&#34;</span>(<span style="color:#ae81ff">1</span>) <span style="color:#e6db74">&#34;r&#34;</span>(<span style="color:#ae81ff">2</span>) <span style="color:#e6db74">&#34;r&#34;</span>(<span style="color:#ae81ff">3</span>) <span style="color:#e6db74">&#34;r&#34;</span>(<span style="color:#ae81ff">4</span>) <span style="color:#e6db74">&#34;r&#34;</span>(<span style="color:#ae81ff">5</span>) <span style="color:#e6db74">&#34;r&#34;</span>(<span style="color:#ae81ff">6</span>) <span style="color:#e6db74">&#34;r&#34;</span>(<span style="color:#ae81ff">7</span>)) }
+
+    F.load(Ordering::Relaxed) <span style="color:#66d9ef">as</span> <span style="color:#66d9ef">usize</span> <span style="color:#66d9ef">as</span> <span style="color:#66d9ef">i32</span>
+}
+
+<span style="color:#75715e">#[exception]</span>
+<span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">SysTick</span>() {
+    F.store(bar <span style="color:#66d9ef">as</span> <span style="color:#f92672">*</span><span style="color:#66d9ef">mut</span> _, Ordering::Relaxed);
+}
+</code></pre></div><p>The tool produces the following call graph:</p>
+<!-- raw HTML omitted -->
+<p>Note that the function pointer call shows as <code>i32 ()*</code>, i.e. <code>fn() -&gt; i32</code>, even
+though <code>F</code> has type <code>AtomicPtr&lt;fn() -&gt; u32&gt;</code>. The reason is that both Rust types
+<code>i32</code> and <code>u32</code> map to LLVM&rsquo;s <code>i32</code> type. The result is that there&rsquo;s an edge
+between <code>i32 ()*</code> and <code>baz</code> which shouldn&rsquo;t be there!</p>
+<p>This lossy conversion not only affects integers; it also affects newtypes. For
+example, the Rust type of <code>struct Int(i32)</code> can be transformed into one of these
+two LLVM types: <code>i32</code> or <code>%Int</code>. As far as I have seen you will only get the
+latter if you use an attribute like <code>#[repr(align(8))]</code> on the newtype; in most
+cases you will get <code>i32</code>.</p>
+<p>For completeness sake here&rsquo;s the LLVM-IR of functions <code>foo</code>, <code>bar</code> and <code>baz</code>. It
+will come in handy for the next section.</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-llvm" data-lang="llvm"><span style="color:#75715e">; app::foo
+</span><span style="color:#75715e">; Function Attrs: norecurse nounwind readnone
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">define</span> <span style="color:#66d9ef">i32</span> @_ZN3app3foo17h6b6463a4119b6a8bE() <span style="color:#66d9ef">unnamed_addr</span> #0 {
+<span style="color:#75715e">; ..
+</span><span style="color:#75715e"></span>}
+
+<span style="color:#75715e">; app::bar
+</span><span style="color:#75715e">; Function Attrs: nounwind
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">define</span> <span style="color:#66d9ef">i32</span> @_ZN3app3bar17h81b67229f2291d28E() <span style="color:#66d9ef">unnamed_addr</span> #1 {
+<span style="color:#75715e">; ..
+</span><span style="color:#75715e"></span>}
+
+<span style="color:#75715e">; app::baz
+</span><span style="color:#75715e">; Function Attrs: noinline nounwind
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">define</span> <span style="color:#66d9ef">fastcc</span> <span style="color:#66d9ef">i32</span> @_ZN3app3baz17hf28930053d134261E() <span style="color:#66d9ef">unnamed_addr</span> #2 {
+<span style="color:#75715e">; ..
+</span><span style="color:#75715e"></span>}
+</code></pre></div><h3 id="metadata">Metadata</h3>
+<p>How can we deal with this problem? One potential solution is to make <code>rustc</code>
+add Rust type information to the LLVM-IR in the form of metadata.</p>
+<p>In all the previous LLVM-IR snippets I have been removing the metadata to keep
+them short but metadata can appear next to function definitions, function calls,
+function arguments, etc. and usually takes one of two forms: <code>!scope !&quot;string&quot;</code>
+or <code>!scope !0</code>. The latter form is an alias; the definition of these aliases
+usually appears at the bottom of the <code>.ll</code> file and has the form: <code>!0 = !&quot;string&quot;</code>.</p>
+<p>How would metadata help? We can use metadata to tag every function definition
+with its Rust type and also to tag every function pointer call with its Rust
+type. Then the tool can use these tags to match every function pointer call to
+the functions that have the same Rust type.</p>
+<p>To illustrate the idea let&rsquo;s revisit the previous example assuming that we have
+a custom <code>rustc</code> that injects metadata as described above.</p>
+<p>The function definitions would now look like this:</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-llvm" data-lang="llvm"><span style="color:#75715e">; app::foo
+</span><span style="color:#75715e">; Function Attrs: norecurse nounwind readnone
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">define</span> <span style="color:#66d9ef">i32</span> @_ZN3app3foo17h6b6463a4119b6a8bE() <span style="color:#66d9ef">unnamed_addr</span> #0 !fn !0 {
+<span style="color:#75715e">;                                                             ^^^^^^ NEW!
+</span><span style="color:#75715e">; ..
+</span><span style="color:#75715e"></span>}
+
+<span style="color:#75715e">; app::bar
+</span><span style="color:#75715e">; Function Attrs: nounwind
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">define</span> <span style="color:#66d9ef">i32</span> @_ZN3app3bar17h81b67229f2291d28E() <span style="color:#66d9ef">unnamed_addr</span> #1 !fn !0 {
+<span style="color:#75715e">;                                                             ^^^^^^ NEW!
+</span><span style="color:#75715e">; ..
+</span><span style="color:#75715e"></span>}
+
+<span style="color:#75715e">; app::baz
+</span><span style="color:#75715e">; Function Attrs: noinline nounwind
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">define</span> <span style="color:#66d9ef">fastcc</span> <span style="color:#66d9ef">i32</span> @_ZN3app3baz17hf28930053d134261E() <span style="color:#66d9ef">unnamed_addr</span> #2 !fn !1 {
+<span style="color:#75715e">;                                                                    ^^^^^^ NEW!
+</span><span style="color:#75715e">; ..
+</span><span style="color:#75715e"></span>}
+
+<span style="color:#75715e">; ..
+</span><span style="color:#75715e"></span>
+<span style="color:#75715e">; at the bottom
+</span><span style="color:#75715e"></span>!0 = <span style="color:#e6db74">&#34;fn() -&gt; u32&#34;</span>
+!1 = <span style="color:#e6db74">&#34;fn() -&gt; i32&#34;</span>
+</code></pre></div><p>And the function pointer call would look like this:</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-llvm" data-lang="llvm"><span style="color:#66d9ef">define</span> <span style="color:#66d9ef">void</span> @main() <span style="color:#66d9ef">unnamed_addr</span> #3 {
+<span style="color:#75715e">; ..
+</span><span style="color:#75715e"></span>  %4 = <span style="color:#66d9ef">tail</span> <span style="color:#66d9ef">call</span> <span style="color:#66d9ef">i32</span> %3() #8, !fn !0
+<span style="color:#75715e">;                           ^^^^^^^^ NEW!
+</span><span style="color:#75715e">; ..
+</span><span style="color:#75715e"></span>}
+</code></pre></div><p>With these changes the tool would be able to look at the metadata instead of the
+LLVM type. In this case it would know that line <code>%4</code> is calling a function with
+signature <code>fn() -&gt; u32</code> and that only two functions exactly match that
+signature: <code>foo</code> and <code>bar</code>. The result would be the following call graph:</p>
+<!-- raw HTML omitted -->
+<p>What string sits behind the metadata is not really important as long as each
+different type gets a unique metadata ID but if we use the string version of the
+type we can use that instead of the LLVM type, which would be an improvement in
+readability!</p>
+<h2 id="trait-misselection">Trait misselection</h2>
+<p>We used LLVM types to reason about dynamic dispatch so naturally the lossy
+conversion from Rust types to LLVM types will be an issue, but there&rsquo;s another
+problem specific to dynamic dispatch: namely, at call site, we don&rsquo;t know
+<em>which</em> trait is being called &ndash; we only know the signature of the method that&rsquo;s
+being called.</p>
+<p>Here&rsquo;s an example that illustrates the issue. It&rsquo;s a variation of the example
+shown in the <a href="#trait-objects">&lsquo;Trait objects&rsquo;</a> section.</p>
+<p>(I hope that by this point you have grow accustomed to all the inline assembly,
+volatile operations and atomics required to prevent LLVM from optimizing the
+program beyond our expectations!)</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#66d9ef">static</span> TO: <span style="color:#a6e22e">Mutex</span><span style="color:#f92672">&lt;&amp;</span>&#39;static (dyn Foo <span style="color:#f92672">+</span> Sync)<span style="color:#f92672">&gt;</span> <span style="color:#f92672">=</span> Mutex::new(<span style="color:#f92672">&amp;</span>Bar);
+<span style="color:#66d9ef">static</span> X: <span style="color:#a6e22e">AtomicI32</span> <span style="color:#f92672">=</span> AtomicI32::new(<span style="color:#ae81ff">0</span>);
+
+<span style="color:#75715e">#[entry]</span>
+<span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">main</span>() -&gt; <span style="color:#f92672">!</span> {
+    (<span style="color:#f92672">*</span>TO.lock()).foo();
+
+    <span style="color:#66d9ef">if</span> X.load(Ordering::Relaxed).quux() {
+        <span style="color:#66d9ef">unsafe</span> { asm<span style="color:#f92672">!</span>(<span style="color:#e6db74">&#34;NOP&#34;</span> : : : : <span style="color:#e6db74">&#34;volatile&#34;</span>) }
+    }
+
+    <span style="color:#66d9ef">loop</span> {}
+}
+
+<span style="color:#66d9ef">trait</span> Foo {
+    <span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">foo</span>(<span style="color:#f92672">&amp;</span>self) -&gt; <span style="color:#66d9ef">bool</span> {
+        <span style="color:#66d9ef">unsafe</span> { asm<span style="color:#f92672">!</span>(<span style="color:#e6db74">&#34;&#34;</span> : : <span style="color:#e6db74">&#34;r&#34;</span>(<span style="color:#ae81ff">0</span>) <span style="color:#e6db74">&#34;r&#34;</span>(<span style="color:#ae81ff">1</span>) <span style="color:#e6db74">&#34;r&#34;</span>(<span style="color:#ae81ff">2</span>) <span style="color:#e6db74">&#34;r&#34;</span>(<span style="color:#ae81ff">3</span>) <span style="color:#e6db74">&#34;r&#34;</span>(<span style="color:#ae81ff">4</span>) <span style="color:#e6db74">&#34;r&#34;</span>(<span style="color:#ae81ff">5</span>)) }
+
+        <span style="color:#66d9ef">false</span>
+    }
+}
+
+<span style="color:#66d9ef">struct</span> <span style="color:#a6e22e">Bar</span>;
+
+<span style="color:#66d9ef">impl</span> Foo <span style="color:#66d9ef">for</span> Bar {}
+
+<span style="color:#66d9ef">struct</span> <span style="color:#a6e22e">Baz</span>;
+
+<span style="color:#66d9ef">impl</span> Foo <span style="color:#66d9ef">for</span> Baz {
+    <span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">foo</span>(<span style="color:#f92672">&amp;</span>self) -&gt; <span style="color:#66d9ef">bool</span> {
+        <span style="color:#66d9ef">unsafe</span> { asm<span style="color:#f92672">!</span>(<span style="color:#e6db74">&#34;&#34;</span> : : <span style="color:#e6db74">&#34;r&#34;</span>(<span style="color:#ae81ff">0</span>) <span style="color:#e6db74">&#34;r&#34;</span>(<span style="color:#ae81ff">1</span>) <span style="color:#e6db74">&#34;r&#34;</span>(<span style="color:#ae81ff">2</span>) <span style="color:#e6db74">&#34;r&#34;</span>(<span style="color:#ae81ff">3</span>) <span style="color:#e6db74">&#34;r&#34;</span>(<span style="color:#ae81ff">4</span>) <span style="color:#e6db74">&#34;r&#34;</span>(<span style="color:#ae81ff">5</span>) <span style="color:#e6db74">&#34;r&#34;</span>(<span style="color:#ae81ff">6</span>) <span style="color:#e6db74">&#34;r&#34;</span>(<span style="color:#ae81ff">7</span>)) }
+
+        <span style="color:#66d9ef">true</span>
+    }
+}
+
+<span style="color:#66d9ef">trait</span> Quux {
+    <span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">quux</span>(<span style="color:#f92672">&amp;</span>self) -&gt; <span style="color:#66d9ef">bool</span>;
+}
+
+<span style="color:#66d9ef">impl</span> Quux <span style="color:#66d9ef">for</span> <span style="color:#66d9ef">i32</span> {
+    <span style="color:#75715e">#[inline(never)]</span>
+    <span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">quux</span>(<span style="color:#f92672">&amp;</span>self) -&gt; <span style="color:#66d9ef">bool</span> {
+        <span style="color:#66d9ef">unsafe</span> { core::ptr::read_volatile(self) <span style="color:#f92672">&gt;</span> <span style="color:#ae81ff">0</span> }
+    }
+}
+
+<span style="color:#75715e">#[exception]</span>
+<span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">SysTick</span>() {
+    <span style="color:#f92672">*</span>TO.lock() <span style="color:#f92672">=</span> <span style="color:#f92672">&amp;</span>Baz;
+    X.fetch_add(<span style="color:#ae81ff">1</span>, Ordering::Relaxed);
+}
+</code></pre></div><p>Here&rsquo;s the call graph produced by <code>cargo-call-stack</code>:</p>
+<!-- raw HTML omitted -->
+<p>First, let me remind you what the dynamic dispatch looks like in LLVM-IR:</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-llvm" data-lang="llvm"><span style="color:#75715e">; Function Attrs: noreturn nounwind
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">define</span> <span style="color:#66d9ef">void</span> @main() <span style="color:#66d9ef">unnamed_addr</span> #3 {
+<span style="color:#75715e">; ..
+</span><span style="color:#75715e"></span>  %8 = <span style="color:#66d9ef">tail</span> <span style="color:#66d9ef">call</span> <span style="color:#66d9ef">zeroext</span> <span style="color:#66d9ef">i1</span> %7({}* <span style="color:#66d9ef">nonnull</span> <span style="color:#66d9ef">align</span> <span style="color:#ae81ff">1</span> %4) #8
+<span style="color:#75715e">; ..
+</span><span style="color:#75715e"></span>}
+</code></pre></div><p>The type of the first argument (<code>{}*</code>) tells us this is dynamic dispatch and the
+LLVM type information tells us that the method signature is <code>i1 ({}*)</code>, or
+roughly <code>fn(&amp;[mut] self) -&gt; bool</code> in Rust type system. From that info alone, we
+don&rsquo;t know whether this is calling <code>Foo.foo</code> or <code>Quux.quux</code>; both match the <code>i1 ({}*)</code> signature so the tool adds edges to all implementers of these two
+traits.</p>
+<p>Here&rsquo;s the LLVM-IR of all the <code>Foo.foo</code> and <code>Quux.quux</code> definitions. It will be
+useful for the next section.</p>
+<blockquote>
+<p><strong>NOTE:</strong> I have omitted the mangled function names because they were too
+long.</p>
+</blockquote>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-llvm" data-lang="llvm"><span style="color:#75715e">; app::Foo::foo
+</span><span style="color:#75715e">; Function Attrs: nounwind
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">define</span> <span style="color:#66d9ef">zeroext</span> <span style="color:#66d9ef">i1</span> @_(%Bar* <span style="color:#66d9ef">nocapture</span> <span style="color:#66d9ef">nonnull</span> <span style="color:#66d9ef">align</span> <span style="color:#ae81ff">1</span>) <span style="color:#66d9ef">unnamed_addr</span> #1 {
+<span style="color:#75715e">; ..
+</span><span style="color:#75715e"></span>}
+
+<span style="color:#75715e">; &lt;app::Baz as app::Foo&gt;::foo
+</span><span style="color:#75715e">; Function Attrs: nounwind
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">define</span> <span style="color:#66d9ef">zeroext</span> <span style="color:#66d9ef">i1</span> @_(%Baz* <span style="color:#66d9ef">nocapture</span> <span style="color:#66d9ef">nonnull</span> <span style="color:#66d9ef">align</span> <span style="color:#ae81ff">1</span>) <span style="color:#66d9ef">unnamed_addr</span> #1 {
+<span style="color:#75715e">; ..
+</span><span style="color:#75715e"></span>}
+
+<span style="color:#75715e">; &lt;i32 as app::Quux&gt;::quux
+</span><span style="color:#75715e">; Function Attrs: noinline norecurse nounwind
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">define</span> <span style="color:#66d9ef">fastcc</span> <span style="color:#66d9ef">zeroext</span> <span style="color:#66d9ef">i1</span> @_(<span style="color:#66d9ef">i32</span>* <span style="color:#66d9ef">align</span> <span style="color:#ae81ff">4</span>) <span style="color:#66d9ef">unnamed_addr</span> #2 {
+<span style="color:#75715e">; ..
+</span><span style="color:#75715e"></span>}
+</code></pre></div><h3 id="more-metadata">More metadata</h3>
+<p>How can we do better in this case? We can use even more metadata!</p>
+<p>The idea is simple: we add a metadata ID to every trait method implementation
+and every dynamic dispatch site; the IDs will be unique for each trait name,
+method name pair. The tool then can use these IDs to match the dynamic dispatch
+to the set of trait implementers.</p>
+<p>Let&rsquo;s illustrate with a re-evaluation of the previous example assuming a custom
+<code>rustc</code>.</p>
+<p>All the trait method implementations would get extra metadata as shown below:</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-llvm" data-lang="llvm"><span style="color:#75715e">; app::Foo::foo
+</span><span style="color:#75715e">; Function Attrs: nounwind
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">define</span> <span style="color:#66d9ef">zeroext</span> <span style="color:#66d9ef">i1</span> @_(%Bar* <span style="color:#66d9ef">nocapture</span> <span style="color:#66d9ef">nonnull</span> <span style="color:#66d9ef">align</span> <span style="color:#ae81ff">1</span>) <span style="color:#66d9ef">unnamed_addr</span> #1 !dyn !0 {
+<span style="color:#75715e">;                                                                     ^^^^^^^ NEW!
+</span><span style="color:#75715e">; ..
+</span><span style="color:#75715e"></span>}
+
+<span style="color:#75715e">; &lt;app::Baz as app::Foo&gt;::foo
+</span><span style="color:#75715e">; Function Attrs: nounwind
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">define</span> <span style="color:#66d9ef">zeroext</span> <span style="color:#66d9ef">i1</span> @_(%Baz* <span style="color:#66d9ef">nocapture</span> <span style="color:#66d9ef">nonnull</span> <span style="color:#66d9ef">align</span> <span style="color:#ae81ff">1</span>) <span style="color:#66d9ef">unnamed_addr</span> #1 !dyn !0 {
+<span style="color:#75715e">;                                                                     ^^^^^^^ NEW!
+</span><span style="color:#75715e">; ..
+</span><span style="color:#75715e"></span>}
+
+<span style="color:#75715e">; &lt;i32 as app::Quux&gt;::quux
+</span><span style="color:#75715e">; Function Attrs: noinline norecurse nounwind
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">define</span> <span style="color:#66d9ef">fastcc</span> <span style="color:#66d9ef">zeroext</span> <span style="color:#66d9ef">i1</span> @_(<span style="color:#66d9ef">i32</span>* <span style="color:#66d9ef">align</span> <span style="color:#ae81ff">4</span>) <span style="color:#66d9ef">unnamed_addr</span> #2 !dyn !1 {
+<span style="color:#75715e">;                                                         ^^^^^^^ NEW!
+</span><span style="color:#75715e">; ..
+</span><span style="color:#75715e"></span>}
+
+<span style="color:#75715e">; at the bottom
+</span><span style="color:#75715e"></span>!0 = <span style="color:#e6db74">&#34;(dyn app::Foo).foo&#34;</span>
+!1 = <span style="color:#e6db74">&#34;(dyn app::Ouux).quux&#34;</span>
+</code></pre></div><p>The dynamic dispatch site would also get <code>!dyn</code> metadata:</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-llvm" data-lang="llvm"><span style="color:#75715e">; Function Attrs: noreturn nounwind
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">define</span> <span style="color:#66d9ef">void</span> @main() <span style="color:#66d9ef">unnamed_addr</span> #3 {
+<span style="color:#75715e">; ..
+</span><span style="color:#75715e"></span>  %8 = <span style="color:#66d9ef">tail</span> <span style="color:#66d9ef">call</span> <span style="color:#66d9ef">zeroext</span> <span style="color:#66d9ef">i1</span> %7({}* <span style="color:#66d9ef">nonnull</span> <span style="color:#66d9ef">align</span> <span style="color:#ae81ff">1</span> %4) #8, !dyn <span style="color:#ae81ff">0</span>
+<span style="color:#75715e">;                                                          ^^^^^^ NEW!
+</span><span style="color:#75715e">; ..
+</span><span style="color:#75715e"></span>}
+</code></pre></div><p>Now the tool knows that line <code>%8</code> is calling method <code>foo</code> on a <code>dyn Foo</code> trait
+object and will produce the following call graph:</p>
+<!-- raw HTML omitted -->
+<h2 id="asm"><code>asm!</code></h2>
+<p>Inline assembly (<code>asm!</code>) is not accounted for in LLVM&rsquo;s <code>stack-sizes-section</code>
+analysis. I imagine that&rsquo;s because <code>asm!</code> strings are free form and LLVM never
+really parses them, beyond what&rsquo;s required to do string interpolation.</p>
+<p>Here&rsquo;s a contrived example that demonstrates the problem:</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#75715e">#[inline(never)]</span>
+<span style="color:#75715e">#[no_mangle]</span>
+<span style="color:#66d9ef">unsafe</span> <span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">foo</span>() {
+    asm<span style="color:#f92672">!</span>(<span style="color:#e6db74">r#&#34;
+</span><span style="color:#e6db74">sub sp, #8
+</span><span style="color:#e6db74">add sp, #8
+</span><span style="color:#e6db74">&#34;#</span>);
+}
+</code></pre></div><pre><code class="language-console" data-lang="console">$ cargo stack-sizes --bin app --release | head -n2
+address         stack   name
+0x00000400      0       foo
+
+$ arm-none-eabi-objdump -Cd target/thumbv7m-none-eabi/release/app | sed -n '7,10p'
+00000400 &lt;foo&gt;:
+ 400:   b082            sub     sp, #8
+ 402:   b002            add     sp, #8
+ 404:   4770            bx      lr
+</code></pre><p><code>cargo stack-sizes</code> reports zero stack usage for <code>foo</code>, but if you remember the
+example C code I used in the <a href="#c-code">&lsquo;Binary blobs&rsquo;</a> section you&rsquo;ll notice
+that the disassembly is the same and that clang reported 8 bytes of stack usage
+for the C version. Therefore the number reported for the Rust version of <code>foo</code>
+is wrong due to the presence of inline assembly.</p>
+<p>It&rsquo;s important to note that LLVM <em>does</em> account for the register allocation and
+register spilling caused by <code>asm!</code> blocks when it computes stack usage &ndash; we
+have seen this in the previous examples (remember the &ldquo;spill variables onto the
+stack&rdquo; <code>asm!</code> blocks?). It just doesn&rsquo;t check if the assembly instructions
+modify the stack pointer; it always assumes that they don&rsquo;t.</p>
+<p>What the tool does today is assume that <em>all</em> <code>asm!</code> blocks use zero stack
+space, which we believe it&rsquo;s the most common scenario, and additionally prints a
+warning that includes the <code>asm!</code> string every time it does. The application
+author has to inspect these warnings and make sure that all instances of inline
+assembly are indeed using zero stack space.</p>
+<p>Alternative solutions that we could explore here:</p>
+<ul>
+<li>
+<p>Parse the assembly string to make sense out of it and compute its stack usage.
+This would be a ton of work to get 100% right, and it&rsquo;s also a bit tricky
+because <code>asm!</code> strings are not always valid assembly; they are closer to
+format strings so you would have to deal with strings like <code>&quot;mrs $0, BASEPRI&quot;</code>.</p>
+</li>
+<li>
+<p>Keep a list of assembly strings known to use zero stack space. Only display
+warnings about assembly strings that are not in this list.</p>
+</li>
+<li>
+<p>Assume zero stack usage and display warnings as we do today but add an option
+to let the end user provide stack usage information about assembly strings.</p>
+</li>
+</ul>
+<h2 id="external-assembly">External assembly</h2>
+<p>I have covered inline assembly but there&rsquo;s also external assembly! By &ldquo;external
+assembly&rdquo; I mean assembly files that are compiled on the fly or shipped
+pre-compiled with a crate and then called from Rust code via FFI.</p>
+<p>External assembly has been covered in the <a href="#binary-blob">&lsquo;Binary blobs&rsquo;</a> section
+but in this section I wanted to stress the fact that it&rsquo;s not possible to get
+stack information about it from LLVM. For example:</p>
+<pre><code class="language-armasm" data-lang="armasm">  .global foo
+foo:
+  sub sp, 8
+  add sp, 8
+  bx lr
+</code></pre><pre><code class="language-console" data-lang="console">$ clang -target thumbv7m-none-eabi -fstack-size-section -c foo.s
+clang-7: warning: argument unused during compilation: '-fstack-size-section'
+
+$ size -Ax foo.o
+foo.o  :
+section           size   addr
+.text              0x6    0x0
+.ARM.attributes   0x25    0x0
+Total             0x2b
+</code></pre><p>No stack usage information!</p>
+<p>I see a few ways to deal with the lack of stack usage information:</p>
+<ul>
+<li>
+<p>We add an option to let the end-user pass extra stack usage information about
+these external assembly functions.</p>
+</li>
+<li>
+<p>We make the tool analyze the machine code to compute the stack usage of every
+subroutine for which we don&rsquo;t have <code>.stack_sizes</code> information. This would be a
+ton of work to get 100% right.</p>
+</li>
+<li>
+<p>We do a much more limited form of option (2) where we only try to determine if
+a function uses <em>zero</em> stack space or not. If we can&rsquo;t determine the function
+uses zero stack space then we consider its stack usage to be <em>unknown</em>. This
+is much simpler to implement because we only have to confirm the <em>absence</em> of
+instructions that modify the stack pointer (e.g. <code>push</code>, <code>sub sp, 8</code>, etc.).
+Although limited in what it can analyze this approach would be enough to
+handle several uses of external assembly in the wild (<code>cortex_m::asm</code> for
+example).</p>
+</li>
+</ul>
+<h2 id="corefmt"><code>core::fmt</code></h2>
+<p><code>core::fmt</code> uses this interesting pattern that makes its call graph hard to
+compute. This is the relevant source code:</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#75715e">// src/libcore/fmt/mod.rs (1.33.0)
+</span><span style="color:#75715e"></span>
+<span style="color:#75715e">// NB. Argument is essentially an optimized partially applied formatting function,
+</span><span style="color:#75715e">// equivalent to `exists T.(&amp;T, fn(&amp;T, &amp;mut Formatter) -&gt; Result`.
+</span><span style="color:#75715e"></span>
+<span style="color:#66d9ef">struct</span> <span style="color:#a6e22e">Void</span> {
+    _priv: (),
+    _oibit_remover: <span style="color:#a6e22e">PhantomData</span><span style="color:#f92672">&lt;*</span><span style="color:#66d9ef">mut</span> dyn Fn()<span style="color:#f92672">&gt;</span>,
+}
+
+<span style="color:#e6db74">/// This struct represents the generic &#34;argument&#34; which is taken by the Xprintf
+</span><span style="color:#e6db74">/// family of functions. It contains a function to format the given value. At
+</span><span style="color:#e6db74">/// compile time it is ensured that the function and the value have the correct
+</span><span style="color:#e6db74">/// types, and then this struct is used to canonicalize arguments to one type.
+</span><span style="color:#e6db74"></span><span style="color:#66d9ef">pub</span> <span style="color:#66d9ef">struct</span> <span style="color:#a6e22e">ArgumentV1</span><span style="color:#f92672">&lt;</span><span style="color:#a6e22e">&#39;a</span><span style="color:#f92672">&gt;</span> {
+    value: <span style="color:#66d9ef">&amp;</span><span style="color:#a6e22e">&#39;a</span> Void,
+    formatter: <span style="color:#a6e22e">fn</span>(<span style="color:#f92672">&amp;</span>Void, <span style="color:#f92672">&amp;</span><span style="color:#66d9ef">mut</span> Formatter) -&gt; Result,
+}
+
+<span style="color:#66d9ef">impl</span><span style="color:#f92672">&lt;</span><span style="color:#a6e22e">&#39;a</span><span style="color:#f92672">&gt;</span> ArgumentV1<span style="color:#f92672">&lt;</span><span style="color:#a6e22e">&#39;a</span><span style="color:#f92672">&gt;</span> {
+    <span style="color:#66d9ef">pub</span> <span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">new</span><span style="color:#f92672">&lt;</span><span style="color:#a6e22e">&#39;b</span>, T<span style="color:#f92672">&gt;</span>(x: <span style="color:#66d9ef">&amp;</span><span style="color:#a6e22e">&#39;b</span> T,
+                      f: <span style="color:#a6e22e">fn</span>(<span style="color:#f92672">&amp;</span>T, <span style="color:#f92672">&amp;</span><span style="color:#66d9ef">mut</span> Formatter) -&gt; Result) -&gt; <span style="color:#a6e22e">ArgumentV1</span><span style="color:#f92672">&lt;</span><span style="color:#a6e22e">&#39;b</span><span style="color:#f92672">&gt;</span> {
+        <span style="color:#66d9ef">unsafe</span> {
+            ArgumentV1 {
+                formatter: <span style="color:#a6e22e">mem</span>::transmute(f),
+                value: <span style="color:#a6e22e">mem</span>::transmute(x)
+            }
+        }
+    }
+
+    <span style="color:#66d9ef">pub</span> <span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">from_usize</span>(x: <span style="color:#66d9ef">&amp;</span><span style="color:#66d9ef">usize</span>) -&gt; <span style="color:#a6e22e">ArgumentV1</span> {
+        ArgumentV1::new(x, ArgumentV1::show_usize)
+    }
+
+    <span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">as_usize</span>(<span style="color:#f92672">&amp;</span>self) -&gt; Option<span style="color:#f92672">&lt;</span><span style="color:#66d9ef">usize</span><span style="color:#f92672">&gt;</span> {
+        <span style="color:#66d9ef">if</span> self.formatter <span style="color:#66d9ef">as</span> <span style="color:#66d9ef">usize</span> <span style="color:#f92672">==</span> ArgumentV1::show_usize <span style="color:#66d9ef">as</span> <span style="color:#66d9ef">usize</span> {
+            Some(<span style="color:#66d9ef">unsafe</span> { <span style="color:#f92672">*</span>(self.value <span style="color:#66d9ef">as</span> <span style="color:#f92672">*</span><span style="color:#66d9ef">const</span> _ <span style="color:#66d9ef">as</span> <span style="color:#f92672">*</span><span style="color:#66d9ef">const</span> <span style="color:#66d9ef">usize</span>) })
+        } <span style="color:#66d9ef">else</span> {
+            None
+        }
+    }
+}
+</code></pre></div><p>Which gets used like this: <code>(argv1.formatter)(argv1.value, fmt)</code>.</p>
+<p><code>ArgumentV1</code> is very close to a trait object: it has a pointer to the data
+(<code>value</code>) and a pointer to a vtable (<code>formatter</code>), which in this case only
+contains a single method. Except that it can represent one of <em>many</em> similar
+traits. This is easier to understand with an example:</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">main</span>() {
+    println<span style="color:#f92672">!</span>(<span style="color:#e6db74">&#34;{} and {:?}&#34;</span>, <span style="color:#ae81ff">1</span><span style="color:#66d9ef">i32</span>, <span style="color:#ae81ff">2</span><span style="color:#66d9ef">i64</span>);
+}
+</code></pre></div><p>This program <a href="https://crates.io/crates/cargo-expand"><code>cargo-expand</code></a>s into:</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">main</span>() {
+    {
+        ::std::io::_print(::std::fmt::Arguments::new_v1(
+            <span style="color:#f92672">&amp;</span>[<span style="color:#e6db74">&#34;&#34;</span>, <span style="color:#e6db74">&#34; and &#34;</span>, <span style="color:#e6db74">&#34;\n&#34;</span>],
+            <span style="color:#f92672">&amp;</span><span style="color:#66d9ef">match</span> (<span style="color:#f92672">&amp;</span><span style="color:#ae81ff">1</span><span style="color:#66d9ef">i32</span>, <span style="color:#f92672">&amp;</span><span style="color:#ae81ff">2</span><span style="color:#66d9ef">i64</span>) {
+                (arg0, arg1) <span style="color:#f92672">=&gt;</span> [
+                    ::std::fmt::ArgumentV1::new(arg0, ::std::fmt::Display::fmt),
+                    ::std::fmt::ArgumentV1::new(arg1, ::std::fmt::Debug::fmt),
+                ],
+            },
+        ));
+    };
+}
+</code></pre></div><p>In this case the <code>println!</code> macro creates two instances of <code>ArgumentV1</code>. The
+first one is basically <code>&amp;dyn fmt::Display</code> where <code>Self == i32</code> and the second
+one is <code>&amp;dyn fmt::Debug</code> where <code>Self == i64</code>. This means that when <code>main</code>
+eventually invokes <code>(argv1.formatter)(argv1.value, fmt)</code> it could result in
+either <code>&lt;i32 as fmt::Display&gt;::fmt</code> or <code>&lt;i64 as fmt::Debug&gt;::fmt</code>
+being invoked.</p>
+<p>Of course it&rsquo;s impossible to figure that out from the types: <code>argv1.formatter</code>
+has type <code>fn(&amp;fmt::Void, &amp;mut fmt::Formatter)</code> but at runtime it holds values
+that originally had types like <code>fn(&amp;i32, &amp;mut fmt::Formatter)</code> and <code>fn(&amp;i64, &amp;mut fmt::Formatter)</code>. This only works because the type of the first argument
+gets <em>erased</em> using a <code>transmute</code> operation in <code>ArgumentV1::new</code>.</p>
+<p>Because <code>core::fmt</code> is so pervasively used the tool has a special case in the
+code that analyzes function pointer calls to handle <code>fn(&amp;fmt::Void, &amp;mut fmt::Formatter) -&gt; fmt::Result</code>. Basically, it treats the fictitious node of
+that function pointer call as a dynamic dispatch node and adds edges from it to
+functions that match the signature (<code>fn(&amp;???, &amp;mut fmt::Formatter) -&gt; fmt::Result</code>) where <code>???</code> can be any type.</p>
+<p>Here&rsquo;s an example of a minimal embedded program that uses <code>core::fmt</code>.</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#75715e">// cortex-m-semihosting = &#34;=0.3.2&#34;
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">use</span> cortex_m_semihosting::hprintln;
+
+<span style="color:#75715e">#[entry]</span>
+<span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">main</span>() -&gt; <span style="color:#f92672">!</span> {
+    hprintln<span style="color:#f92672">!</span>(<span style="color:#e6db74">&#34;{}&#34;</span>, <span style="color:#66d9ef">true</span>).ok();
+
+    <span style="color:#66d9ef">loop</span> {}
+}
+</code></pre></div><p>And here&rsquo;s its call graph</p>
+<!-- raw HTML omitted -->
+<p>This type erasure pattern can&rsquo;t be reasoned about in the general case, or at
+least I don&rsquo;t know how one would go about it with just type information. It&rsquo;s
+also not easy for the tool to detect (but you may be able to spot it when you
+look at the call graph) so it&rsquo;s best to avoid using libraries that use this
+pattern (<code>core</code> is fine) if you want to keep your program analyzable.</p>
+<h1 id="whats-next">What&rsquo;s next?</h1>
+<p>Congratulations on reaching this point! This post ended up being way longer than
+I originally planned.</p>
+<p>I hope you got some value out of it. I certainly found very useful to write
+this post. I originally started writing this last week right after I released
+v0.1.1 but midway I realized that <code>cargo-call-stack</code> still had some holes that
+wouldn&rsquo;t be too hard to fix so I ended up working on it some more and released
+v0.1.2. Now that I&rsquo;m about to publish this blog post I still see some low
+hanging fruit so we&rsquo;ll probably see v0.1.3 in the near future!</p>
+<p>So what&rsquo;s next for <code>cargo-call-stack</code>?</p>
+<ul>
+<li>Fixing more <a href="https://github.com/japaric/cargo-call-stack/issues?q=is%3Aissue+is%3Aopen+label%3Abug">bugs</a>.</li>
+</ul>
+<ul>
+<li>
+<p>Send a PR to rust-lang/rust to build the <code>compiler-builtins</code> crate with <code>-Z emit-stack-sizes</code>, at least when the target is ARM Cortex-M.</p>
+</li>
+<li>
+<p>Implement option (3) of the possible solutions to the <a href="#external-assembly">external
+assembly</a> problem.</p>
+</li>
+<li>
+<p>Write an RFC / RFE to add an experimental <code>rustc</code> flag that adds Rust type and
+trait information to the LLVM-IR as described in this post.</p>
+</li>
+<li>
+<p><a href="https://crates.io/crates/cortex-m-rtfm">Real Time For the Masses</a> (RTFM) integration / inter-operation. In this
+post we have focused on the stack usage of the <code>main</code> function, but when you
+have interrupts, which are common in embedded applications, you need to
+consider preemption to compute the <em>overall</em> worst-case stack usage. To properly
+factor in preemption you need to know the priorities of all interrupts. RTFM
+enforces static priorities, which is requirement for being able to statically
+reason about the stack usage of programs that use interrupts, and knows the
+priorities of all interrupts. We need some mechanism to pass RTFM information
+to <code>cargo-call-stack</code> so the latter can compute the overall worst-case stack
+usage.</p>
+</li>
+</ul>
+<ul>
+<li>Maybe add support for parsing ARM instructions (to get more call graph info)
+since I&rsquo;m also working with Cortex-R cores. As of version v0.1.2 the
+tool only parses Thumb instructions, which is what Cortex-M cores use.</li>
+</ul>
+<hr>
+<p><strong>Thank you patrons! ❤️</strong></p>
+<p>I want to wholeheartedly thank:</p>
+<!-- raw HTML omitted -->
+<p><a href="https://github.com/Razican">Iban Eguia</a>,
+<a href="https://github.com/archaelus">Geoff Cant</a>,
+<a href="http://www.harrisonchin.com/">Harrison Chin</a>,
+<a href="https://github.com/brandonedens">Brandon Edens</a>,
+<a href="https://github.com/whitequark">whitequark</a>,
+<a href="https://jamesmunns.com/">James Munns</a>,
+<a href="https://github.com/flundstrom2">Fredrik Lundström</a>,
+<a href="https://github.com/kjetilkjeka">Kjetil Kjeka</a>,
+<a href="https://github.com/korran">Kor Nielsen</a>,
+<a href="https://myrrlyn.net/">Alexander Payne</a>,
+<a href="https://metafluff.com/">Dietrich Ayala</a>,
+<a href="https://github.com/HadrienG2">Hadrien Grasland</a>,
+<a href="https://github.com/vitiral">vitiral</a>,
+<a href="https://github.com/leenozara">Lee Smith</a>,
+<a href="https://github.com/FlorianUekermann">Florian Uekermann</a>,
+<a href="https://github.com/idubrov">Ivan Dubrov</a>
+and 56 more people for supporting my work on Patreon.</p>
+<hr>
+<p>Let&rsquo;s discuss on <a href="https://www.reddit.com/r/rust/comments/b0q13i/implementing_a_static_stack_usage_analysis_tool/">reddit</a>.</p>
+
+    </div>
+
+    
+    
+    <div class="article-toc" >
+        <h3>Contents</h3>
+        <nav id="TableOfContents">
+  <ul>
+    <li><a href="#stack_sizes"><code>.stack_sizes</code></a></li>
+    <li><a href="#call-graph">Call graph</a>
+      <ul>
+        <li><a href="#why-llvm-ir">Why LLVM-IR?</a></li>
+      </ul>
+    </li>
+    <li><a href="#cycles">Cycles</a></li>
+    <li><a href="#function-pointers">Function pointers</a></li>
+    <li><a href="#trait-objects">Trait objects</a></li>
+  </ul>
+
+  <ul>
+    <li><a href="#llvm-intrinsics">LLVM intrinsics</a>
+      <ul>
+        <li><a href="#elf-to-the-rescue">ELF to the rescue</a></li>
+      </ul>
+    </li>
+    <li><a href="#other-llvm-instructions">Other LLVM instructions</a></li>
+    <li><a href="#binary-blobs">Binary blobs</a>
+      <ul>
+        <li><a href="#the-problems">The problems</a></li>
+        <li><a href="#what-can-we-do">What can we do?</a></li>
+      </ul>
+    </li>
+    <li><a href="#lossy-type-conversions">Lossy type conversions</a>
+      <ul>
+        <li><a href="#metadata">Metadata</a></li>
+      </ul>
+    </li>
+    <li><a href="#trait-misselection">Trait misselection</a>
+      <ul>
+        <li><a href="#more-metadata">More metadata</a></li>
+      </ul>
+    </li>
+    <li><a href="#asm"><code>asm!</code></a></li>
+    <li><a href="#external-assembly">External assembly</a></li>
+    <li><a href="#corefmt"><code>core::fmt</code></a></li>
+  </ul>
+</nav>
+    </div>
+    
+    
+
+    
+  </div>
+</section>
+
+
+<section class="section">
+  <div class="container has-text-centered">
+    <p><a rel="license" href="http://creativecommons.org/licenses/by/4.0/"><img alt="Creative Commons License" src="https://i.creativecommons.org/l/by/4.0/80x15.png" /></a><br/>Jorge Aparicio</p>
+  </div>
+</section>
+
+
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/styles/tomorrow-night.min.css" />
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/highlight.min.js" integrity="sha256-aYTdUrn6Ow1DDgh5JTc3aDGnnju48y/1c8s1dgkYPQ8=" crossorigin="anonymous"></script>
+
+<script type="text/javascript" src="//cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/languages/armasm.min.js"></script>
+
+<script type="text/javascript" src="//cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/languages/c.min.js"></script>
+
+<script type="text/javascript" src="//cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/languages/diff.min.js"></script>
+
+<script type="text/javascript" src="//cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/languages/llvm.min.js"></script>
+
+<script type="text/javascript" src="//cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/languages/rust.min.js"></script>
+
+<script type="text/javascript" src="//cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/languages/shell.min.js"></script>
+
+<script>hljs.initHighlightingOnLoad();</script>
+
+
+</body>

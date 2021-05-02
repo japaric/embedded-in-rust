@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="utf-8" standalone="yes"?>
+<rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom">
+  <channel>
+    <title>multi-core on Embedded in Rust</title>
+    <link>https://blog.japaric.io/tags/multi-core/</link>
+    <description>Recent content in multi-core on Embedded in Rust</description>
+    <generator>Hugo -- gohugo.io</generator>
+    <language>en-us</language>
+    <copyright>&lt;a rel=&#34;license&#34; href=&#34;http://creativecommons.org/licenses/by/4.0/&#34;&gt;&lt;img alt=&#34;Creative Commons License&#34; src=&#34;https://i.creativecommons.org/l/by/4.0/80x15.png&#34; /&gt;&lt;/a&gt;&lt;br/&gt;Jorge Aparicio</copyright>
+    <lastBuildDate>Sun, 23 Jun 2019 18:00:00 +0200</lastBuildDate><atom:link href="https://blog.japaric.io/tags/multi-core/index.xml" rel="self" type="application/rss+xml" />
+    <item>
+      <title>Real Time For the Masses goes multi-core</title>
+      <link>https://blog.japaric.io/multicore-rtfm/</link>
+      <pubDate>Sun, 23 Jun 2019 18:00:00 +0200</pubDate>
+      
+      <guid>https://blog.japaric.io/multicore-rtfm/</guid>
+      <description>v0.5.0 of Real Time For the Masses (RTFM), the embedded concurrency framework, is coming out soon-ish &amp;ndash; some time after Rust 1.36 is released &amp;ndash; and will include experimental support for homogeneous and heterogeneous multi-core Cortex-M devices. This blog post covers the upcoming multi-core API and includes a refresher on the single-core API.
+Heterogeneous support in μAMP But first, one update relevant to multi-core RTFM from the μAMP (microamp) front since the last post: cargo-microamp has gained support for heterogeneous multi-core devices.</description>
+    </item>
+    
+    <item>
+      <title>μAMP: Asymmetric Multi-Processing on microcontrollers</title>
+      <link>https://blog.japaric.io/microamp/</link>
+      <pubDate>Fri, 10 May 2019 15:33:00 +0200</pubDate>
+      
+      <guid>https://blog.japaric.io/microamp/</guid>
+      <description>An asymmetric multiprocessing (AMP) system is a multiprocessor computer system where not all of the multiple interconnected central processing units (CPUs) are treated equally. &amp;ndash; Wikipedia
+ What is μAMP? microamp (styled as μAMP) is a framework (library plus cargo subcommand) for building bare-metal applications that target AMP systems.
+This blog post is a deep dive into this framework which serves as the core foundation of the multi-core version of Real Time For the Masses (RTFM), which I&amp;rsquo;ll cover in the next blog post.</description>
+    </item>
+    
+  </channel>
+</rss>

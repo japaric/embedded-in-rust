@@ -1,0 +1,1042 @@
+<!DOCTYPE html>
+<html lang="en-us">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta content="Rust, embedded, development" name="keywords">
+<meta content="Jorge Aparicio" name="author">
+<meta property="og:title" content="RTFM v2: simpler, less overhead and more device support - Embedded in Rust">
+<meta property="og:url" content="https://blog.japaric.io/rtfm-v2/">
+<meta property="og:description" content="A blog about Rust and embedded stuff">
+<meta property="og:type" content="website" />
+<title>RTFM v2: simpler, less overhead and more device support | Embedded in Rust</title>
+<link rel="stylesheet" href="https://blog.japaric.io//css/style.css">
+<link rel="shortcut icon" href="https://blog.japaric.io//wave.ico">
+<link rel="alternate" type="application/atom+xml" title="Embedded in Rust Posts" href="https://blog.japaric.io//index.xml">
+<link href="//maxcdn.bootstrapcdn.com/font-awesome/4.7.0/css/font-awesome.min.css" rel="stylesheet" integrity="sha384-wvfXpqpZZVQGK6TAh5PVlGOfQNHSoD2xbE+QkPxCAFlNEevoEH3Sl0sibVcOQVnN" crossorigin="anonymous">
+
+<link rel="stylesheet" href="//cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/styles/github.min.css">
+
+</head>
+
+<body>
+<section class="section">
+  <div class="container">
+    <nav class="nav">
+      <div class="nav-left">
+        <a class="nav-item" href="https://blog.japaric.io/"><h1 class="title is-4">Embedded in Rust</h1></a>
+      </div>
+      <div class="nav-right">
+        <nav class="nav-item level is-mobile">
+          
+          <a class="level-item" href="https://github.com/japaric" target="_blank">
+            <span class="icon">
+              <i class="fa fa-github"></i>
+            </span>
+          </a>
+          
+          <a class="level-item" href="/index.xml" target="_blank">
+            <span class="icon">
+              <i class="fa fa-rss"></i>
+            </span>
+          </a>
+          
+        </nav>
+      </div>
+    </nav>
+  </div>
+</section>
+
+<section class="section">
+  <div class="container">
+    <h1 class="title">RTFM v2: simpler, less overhead and more device support</h1>
+    <h2 class="subtitle is-5">July 29, 2017 by Jorge Aparicio</h2>
+    
+      <div class="tags">
+    
+        <a class="button is-link" href="/tags/arm-cortex-m">ARM Cortex-m</a>
+    
+        <a class="button is-link" href="/tags/concurrency">concurrency</a>
+    
+        <a class="button is-link" href="/tags/rtfm">RTFM</a>
+    
+</div>
+
+    
+    <div class="content">
+      <p>Hiya folks! It&rsquo;s been a while. Today I&rsquo;m pleased to present the next version of
+the <a href="/fearless-concurrency">Real Time For the Masses</a> framework: <code>cortex-m-rtfm</code> v0.2.0 or just v2,
+which is how I like to call it.</p>
+<p>Here&rsquo;s the executive summary of the changes:</p>
+<ul>
+<li>
+<p>v2 is simpler. v1 used a bunch of tokens &ndash; ceiling tokens, priority tokens,
+preemption threshold tokens and task tokens &ndash; for memory safety; this made
+the API rather boilerplatery. Now most of the tokens as well as the
+boilerplate are gone. Porting applications from v1 to v2 should see a
+reduction of about 10 to 30% in lines of code.</p>
+</li>
+<li>
+<p>v2 has even less overhead. A long standing <a href="/rtfm-overhead/#a-nonzero-cost-pattern">issue</a> with the borrow checker
+that required   using <code>Cell</code> or <code>RefCell</code> as a workaround has been fixed.
+Making the <code>Resource</code> abstraction truly zero cost.</p>
+</li>
+</ul>
+<ul>
+<li>v2 fully supports Cortex-M0(+) devices. Now all the Cortex-M devices have the
+same level of support in <code>cortex-m-rtfm</code>. Not only that but there&rsquo;s also a
+<a href="https://github.com/japaric/msp430-rtfm">port</a> of this version of RTFM for the MSP430 architecture &ndash; with the exact
+same API.</li>
+</ul>
+<h1 id="the-new-api">The new API</h1>
+<p>Let&rsquo;s dig into the new API by porting some of applications I showed to you in
+the <a href="/fearless-concurrency/#hello-world-again">introduction post</a> of RTFM.</p>
+<p>All the examples shown here target the <a href="http://wiki.stm32duino.com/index.php?title=Blue_Pill">&ldquo;Blue Pill&rdquo;</a> development board.</p>
+<h2 id="hello-world">Hello world</h2>
+<p>This is the simplest RTFM application: it has no tasks.</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#75715e">#![feature(proc_macro)]</span> <span style="color:#75715e">// &lt;- IMPORTANT! Feature gate for procedural macros
+</span><span style="color:#75715e"></span><span style="color:#75715e">#![no_std]</span>
+
+<span style="color:#75715e">// git = &#34;https://github.com/japaric/blue-pill&#34;, rev = &#34;2b7d5c56b25f4efad6c7c40042f884cbecb47c0b&#34;
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">extern</span> <span style="color:#66d9ef">crate</span> blue_pill;
+
+<span style="color:#75715e">// version = &#34;0.2.0&#34;
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">extern</span> <span style="color:#66d9ef">crate</span> cortex_m_rtfm <span style="color:#66d9ef">as</span> rtfm; <span style="color:#75715e">// &lt;- this rename is required
+</span><span style="color:#75715e"></span>
+<span style="color:#75715e">// version = &#34;0.2.0&#34;
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">extern</span> <span style="color:#66d9ef">crate</span> cortex_m_semihosting <span style="color:#66d9ef">as</span> semihosting;
+
+<span style="color:#66d9ef">use</span> core::fmt::Write;
+
+<span style="color:#66d9ef">use</span> rtfm::app; <span style="color:#75715e">// &lt;- this is a procedural macro
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">use</span> semihosting::hio;
+
+<span style="color:#75715e">// This macro expands into the `main` function
+</span><span style="color:#75715e"></span>app<span style="color:#f92672">!</span> {
+    <span style="color:#75715e">// this is a path to a _device_ crate, a crate generated using svd2rust
+</span><span style="color:#75715e"></span>    device: <span style="color:#a6e22e">blue_pill</span>::stm32f103xx,
+}
+
+<span style="color:#75715e">// INITIALIZATION
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">init</span>(_p: <span style="color:#a6e22e">init</span>::Peripherals) {
+    <span style="color:#75715e">// Nothing to initialize in this example ...
+</span><span style="color:#75715e"></span>}
+
+<span style="color:#75715e">// IDLE LOOP
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">idle</span>() -&gt; <span style="color:#f92672">!</span> {
+    writeln<span style="color:#f92672">!</span>(hio::hstdout().unwrap(), <span style="color:#e6db74">&#34;Hello, world!&#34;</span>).unwrap();
+
+    <span style="color:#75715e">// Go to sleep
+</span><span style="color:#75715e"></span>    <span style="color:#66d9ef">loop</span> {
+        rtfm::wfi();
+    }
+}
+</code></pre></div><p>The most notable change is that the <a href="https://docs.rs/cortex-m-rtfm/0.1.1/cortex_m_rtfm/macro.tasks.html"><code>tasks!</code></a> macro is gone and has been
+replaced with a procedural macro: <a href="https://docs.rs/cortex-m-rtfm-macros/0.2.0/cortex_m_rtfm_macros/fn.app.html"><code>app!</code></a>. Procedural macros are the next
+iteration of the Rust macro / plugin system and are not yet stable so a feature
+gate is required. Don&rsquo;t forget to include it! Or you&rsquo;ll get some rather obscure
+errors. Procedural macros are imported into scope using the normal <code>use</code>
+mechanism, as if they were functions.</p>
+<p>Like the old <code>tasks!</code> macro the <code>app!</code> macro expects a path to the device crate
+as an argument. However, the <code>app!</code> macro uses this <code>key: value</code> syntax so the
+path must be supplied as the value of the <code>device</code> key.</p>
+<p><code>app!</code> will expand into a <code>main</code> function that will call <code>init</code> and then <code>idle</code>,
+as it did in the previous version. If you didn&rsquo;t know, you can see what macros
+expand to using the <a href="https://crates.io/crates/cargo-expand">cargo-expand</a> subcommand. Here&rsquo;s the expansion of the
+<code>app!</code> macro used in the previous program:</p>
+<pre><code class="language-console" data-lang="console">$ xargo expand
+</code></pre><div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#75715e">// ..
+</span><span style="color:#75715e"></span>
+<span style="color:#66d9ef">mod</span> init {
+    <span style="color:#66d9ef">pub</span> <span style="color:#66d9ef">use</span> blue_pill::stm32f103xx::Peripherals;
+}
+
+<span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">main</span>() {
+    <span style="color:#66d9ef">let</span> init: <span style="color:#a6e22e">fn</span>(stm32f103xx::Peripherals) <span style="color:#f92672">=</span> init;
+
+    rtfm::atomic(<span style="color:#66d9ef">unsafe</span> { <span style="color:#f92672">&amp;</span><span style="color:#66d9ef">mut</span> rtfm::Threshold::new(<span style="color:#ae81ff">0</span>) }, <span style="color:#f92672">|</span>_t<span style="color:#f92672">|</span> <span style="color:#66d9ef">unsafe</span> {
+        init(stm32f103xx::Peripherals::all());
+    });
+
+    <span style="color:#66d9ef">let</span> idle: <span style="color:#a6e22e">fn</span>() -&gt; <span style="color:#f92672">!</span> <span style="color:#f92672">=</span> idle;
+
+    idle();
+}
+
+<span style="color:#75715e">// ..
+</span></code></pre></div><p>As you can see above the <code>init</code> function runs within a <em>global</em> critical section
+and can&rsquo;t be preempted during its execution. For that reason it has <em>full
+access</em> to all the peripherals of the device in the form of the
+<code>init::Peripherals</code> argument. In the previous version of RTFM you had to
+explicitly declare all the peripherals you were going to use in your application
+as <em>resources</em>, as a bunch of <code>static</code> variables. None of that boilerplate is
+required in this version.</p>
+<h2 id="serial-loopback">Serial loopback</h2>
+<p>Next let&rsquo;s port the <a href="/fearless-concurrency/#serial-loopback">serial loopback application</a> from v1 to v2. Here&rsquo;s the full
+code:</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#75715e">#![feature(proc_macro)]</span>
+<span style="color:#75715e">#![no_std]</span>
+
+<span style="color:#66d9ef">extern</span> <span style="color:#66d9ef">crate</span> blue_pill;
+<span style="color:#66d9ef">extern</span> <span style="color:#66d9ef">crate</span> cortex_m_rtfm <span style="color:#66d9ef">as</span> rtfm;
+
+<span style="color:#66d9ef">use</span> blue_pill::Serial;
+<span style="color:#66d9ef">use</span> blue_pill::prelude::<span style="color:#f92672">*</span>;
+<span style="color:#66d9ef">use</span> blue_pill::serial::Event;
+<span style="color:#66d9ef">use</span> blue_pill::time::Hertz;
+<span style="color:#66d9ef">use</span> rtfm::{app, Threshold};
+
+<span style="color:#66d9ef">const</span> BAUD_RATE: <span style="color:#a6e22e">Hertz</span> <span style="color:#f92672">=</span> Hertz(<span style="color:#ae81ff">115_200</span>);
+
+app<span style="color:#f92672">!</span> {
+    device: <span style="color:#a6e22e">blue_pill</span>::stm32f103xx,
+
+    tasks: {
+        <span style="color:#75715e">// this &#34;USART1&#34; refers to the interrupt
+</span><span style="color:#75715e"></span>        USART1: {
+            path: <span style="color:#a6e22e">loopback</span>,
+
+            <span style="color:#75715e">// this &#34;USART1&#34; refers to the peripheral
+</span><span style="color:#75715e"></span>            resources: [USART1],
+        },
+    },
+}
+
+<span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">init</span>(p: <span style="color:#a6e22e">init</span>::Peripherals) {
+    <span style="color:#66d9ef">let</span> serial <span style="color:#f92672">=</span> Serial(p.USART1);
+
+    serial.init(BAUD_RATE.invert(), p.AFIO, None, p.GPIOA, p.RCC);
+
+    <span style="color:#75715e">// RXNE event = a new byte of data has arrived
+</span><span style="color:#75715e"></span>    serial.listen(Event::Rxne);
+}
+
+<span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">idle</span>() -&gt; <span style="color:#f92672">!</span> {
+    <span style="color:#75715e">// Sleep
+</span><span style="color:#75715e"></span>    <span style="color:#66d9ef">loop</span> {
+        rtfm::wfi();
+    }
+}
+
+<span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">loopback</span>(_t: <span style="color:#66d9ef">&amp;</span><span style="color:#a6e22e">mut</span> Threshold, r: <span style="color:#a6e22e">USART1</span>::Resources) {
+    <span style="color:#66d9ef">let</span> serial <span style="color:#f92672">=</span> Serial(<span style="color:#f92672">&amp;**</span>r.USART1);
+
+    <span style="color:#75715e">// grab the byte we just received
+</span><span style="color:#75715e"></span>    <span style="color:#66d9ef">let</span> byte <span style="color:#f92672">=</span> serial.read().unwrap();
+
+    <span style="color:#75715e">// and send it back
+</span><span style="color:#75715e"></span>    serial.write(byte).unwrap();
+}
+</code></pre></div><p>Here we re-introduce the concept of tasks. A task is effectively a response to
+some (external) event in the form of a handler / callback function. In this case
+the only event the application will respond to is the arrival of new data
+through the serial interface. And the response to that event, the <code>loopback</code>
+function, is to send back the received data through the serial interface.</p>
+<p>This program initializes the serial interface in <code>init</code> and then goes to sleep
+in <code>idle</code>. But whenever a new byte of data arrives through the serial interface
+it will temporarily wake up to execute the <code>loopback</code> handler; then it will go
+back to sleep. In more detail: the new data <em>event</em> causes the <code>loopback</code> task
+to become <em>pending</em>. As the <code>loopback</code> task has higher priority than the <code>idle</code>
+loop (all tasks have higher priority than <code>idle</code>) the scheduler will suspend
+<code>idle</code> to execute the <code>loopback</code> task &ndash; this is known as preemption. Once the
+task is completed <code>idle</code> is resumed; this sends the processor back to sleep.</p>
+<p>Code wise tasks are <em>declared</em> in the <code>app!</code> macro. As each task is associated
+to an interrupt (interrupts are a hardware mechanism for preemption) they are
+declared using the name of the interrupt &ndash; <code>USART1</code> in this case. The task
+declaration must include: the <code>path</code> to the task handler and which <code>resources</code>
+the task has access to. The resources can be peripherals or plain data (<code>static</code>
+variables).</p>
+<p>This last part, the <code>resources</code> array, is the most important change since v1. In
+v1 resources had global visibility and the user had to assign them a <em>ceiling</em>
+to make them safe to share between tasks. This was not optimal: although it was
+impossible to pick a ceiling that would break memory safety it was possible to
+pick a ceiling that imposed more critical sections, and thus more runtime
+overhead, than strictly necessary for memory safety.</p>
+<p>In v2 you assign resources to tasks and the optimal ceilings are computed
+<em>automatically</em> so the number of critical sections is minimized without user
+effort. Memory safety, in v2, is obtained by limiting <em>where</em> the resource is
+visible (that is its scope), so resources no longer have global visibility.
+Dropping global visibility eliminated the need for most of the tokens needed in
+v1.</p>
+<p>In this particular program the <code>loopback</code> task needs access to the <code>USART1</code>
+peripheral so <code>USART1</code> is declared as its resource. As no other task, or the
+idle loop, has access the same resource the <code>loopback</code> task ends up having
+<em>exclusive access</em> to the <code>USART1</code> resource, that is a mutable reference
+(<code>&amp;mut-</code>) to the peripheral. This mutable reference is packed in the
+<code>USART1::Resources</code> argument.</p>
+<h2 id="blinky">Blinky</h2>
+<p>Now let&rsquo;s port the classic &ldquo;blinky&rdquo; application to v2. The v1 version is <a href="/fearless-concurrency/#a-blinking-task">here</a>.</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#75715e">#![feature(proc_macro)]</span>
+<span style="color:#75715e">#![no_std]</span>
+
+<span style="color:#66d9ef">extern</span> <span style="color:#66d9ef">crate</span> blue_pill;
+<span style="color:#66d9ef">extern</span> <span style="color:#66d9ef">crate</span> cortex_m;
+<span style="color:#66d9ef">extern</span> <span style="color:#66d9ef">crate</span> cortex_m_rtfm <span style="color:#66d9ef">as</span> rtfm;
+
+<span style="color:#66d9ef">use</span> blue_pill::led::{self, Green};
+<span style="color:#66d9ef">use</span> cortex_m::peripheral::SystClkSource;
+<span style="color:#66d9ef">use</span> rtfm::{app, Threshold};
+
+app<span style="color:#f92672">!</span> {
+    device: <span style="color:#a6e22e">blue_pill</span>::stm32f103xx,
+
+    resources: {
+        <span style="color:#66d9ef">static</span> ON: <span style="color:#66d9ef">bool</span> <span style="color:#f92672">=</span> <span style="color:#66d9ef">false</span>;
+    },
+
+    tasks: {
+        SYS_TICK: {
+            path: <span style="color:#a6e22e">toggle</span>,
+            resources: [ON],
+        },
+    },
+}
+
+<span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">init</span>(p: <span style="color:#a6e22e">init</span>::Peripherals, _r: <span style="color:#a6e22e">init</span>::Resources) {
+    led::init(p.GPIOC, p.RCC);
+
+    <span style="color:#75715e">// Configure the system timer to generate periodic events at 1 Hz rate
+</span><span style="color:#75715e"></span>    p.SYST.set_clock_source(SystClkSource::Core);
+    p.SYST.set_reload(<span style="color:#ae81ff">8_000_000</span>); <span style="color:#75715e">// Period = 1s
+</span><span style="color:#75715e"></span>    p.SYST.enable_interrupt();
+    p.SYST.enable_counter();
+}
+
+<span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">idle</span>() -&gt; <span style="color:#f92672">!</span> {
+    <span style="color:#75715e">// Sleep
+</span><span style="color:#75715e"></span>    <span style="color:#66d9ef">loop</span> {
+        rtfm::wfi();
+    }
+}
+
+<span style="color:#75715e">// TASKS
+</span><span style="color:#75715e"></span>
+<span style="color:#75715e">// Toggle the state of the LED
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">toggle</span>(_t: <span style="color:#66d9ef">&amp;</span><span style="color:#a6e22e">mut</span> Threshold, r: <span style="color:#a6e22e">SYS_TICK</span>::Resources) {
+    <span style="color:#f92672">**</span>r.ON <span style="color:#f92672">=</span> <span style="color:#f92672">!**</span>r.ON;
+
+    <span style="color:#66d9ef">if</span> <span style="color:#f92672">**</span>r.ON {
+        Green.on();
+    } <span style="color:#66d9ef">else</span> {
+        Green.off();
+    }
+}
+</code></pre></div><p>Again we have a single task and that task has only one resource. However, this
+time the resource is not a peripheral but plain data. The <code>ON</code> variable tracks
+whether the LED is on or off.</p>
+<p>Data resources must be declared and initialized in the <code>resources</code> key of the
+<code>app!</code> macro. Declaration of data resources looks exactly like the declaration
+of <code>static</code> variables.</p>
+<p>Like in the previous program the <code>toggle</code> task is the only &ldquo;owner&rdquo; of the <code>ON</code>
+resource so it has exclusive access (<code>&amp;mut-</code>) to it.</p>
+<p>If you were wondering &ldquo;what&rsquo;s up with the double dereference (<code>**</code>) in the
+<code>toggle</code> function?&rdquo; that&rsquo;s required becaused the type of <code>r.ON</code> is <code>&amp;mut Static&lt;bool&gt;</code> instead of <code>&amp;mut bool</code>; both are semantically equal because
+<code>Static</code> is just a newtype. The <code>Static</code> newtype comes in handy when dealing
+with DMA based APIs and code that deals with resources in a generic fashion.</p>
+<p>One extra thing to note here is that we are using the <code>SYS_TICK</code> exception,
+which is available to all Cortex-M microcontrollers, as a task instead of a
+device specific interrupt like <code>TIM2</code>. This is something new in v2; v1 didn&rsquo;t
+support these Cortex-M exceptions.</p>
+<p>If you are a careful observer then you probably noticed that the signature of
+the <code>init</code> function changed in this program: it now includes a <code>init::Resources</code>
+argument. This argument is a collection of all the data resources declared in
+<code>app!</code>. Basically the <code>init</code> function has exclusive access (<code>&amp;mut-</code>) to all the
+data resources; this can be used to initialize resources at runtime.</p>
+<h2 id="concurrency">Concurrency</h2>
+<p>In the next example we&rsquo;ll merge the previous loopback and blinky programs into
+one. The resulting program will run the two tasks <em>concurrently</em>. As there&rsquo;s no
+data sharing because each task uses different resources merging the two programs
+is straightforward. Here&rsquo;s the full code:</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#75715e">#![feature(proc_macro)]</span>
+<span style="color:#75715e">#![no_std]</span>
+
+<span style="color:#66d9ef">extern</span> <span style="color:#66d9ef">crate</span> blue_pill;
+<span style="color:#66d9ef">extern</span> <span style="color:#66d9ef">crate</span> cortex_m;
+<span style="color:#66d9ef">extern</span> <span style="color:#66d9ef">crate</span> cortex_m_rtfm <span style="color:#66d9ef">as</span> rtfm;
+
+<span style="color:#66d9ef">use</span> blue_pill::Serial;
+<span style="color:#66d9ef">use</span> blue_pill::led::{self, Green};
+<span style="color:#66d9ef">use</span> blue_pill::prelude::<span style="color:#f92672">*</span>;
+<span style="color:#66d9ef">use</span> blue_pill::serial::Event;
+<span style="color:#66d9ef">use</span> blue_pill::time::Hertz;
+<span style="color:#66d9ef">use</span> cortex_m::peripheral::SystClkSource;
+<span style="color:#66d9ef">use</span> rtfm::{app, Threshold};
+
+<span style="color:#66d9ef">const</span> BAUD_RATE: <span style="color:#a6e22e">Hertz</span> <span style="color:#f92672">=</span> Hertz(<span style="color:#ae81ff">115_200</span>);
+
+app<span style="color:#f92672">!</span> {
+    device: <span style="color:#a6e22e">blue_pill</span>::stm32f103xx,
+
+    resources: {
+        <span style="color:#66d9ef">static</span> ON: <span style="color:#66d9ef">bool</span> <span style="color:#f92672">=</span> <span style="color:#66d9ef">false</span>;
+    },
+
+    <span style="color:#75715e">// There are now two tasks!
+</span><span style="color:#75715e"></span>    tasks: {
+        SYS_TICK: {
+            path: <span style="color:#a6e22e">toggle</span>,
+            resources: [ON],
+        },
+
+        USART1: {
+            path: <span style="color:#a6e22e">loopback</span>,
+            resources: [USART1],
+        },
+    },
+}
+
+<span style="color:#75715e">// The new `init` is the fusion of the other two programs&#39; `init` functions
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">init</span>(p: <span style="color:#a6e22e">init</span>::Peripherals, _r: <span style="color:#a6e22e">init</span>::Resources) {
+    <span style="color:#66d9ef">let</span> serial <span style="color:#f92672">=</span> Serial(p.USART1);
+
+    led::init(p.GPIOC, p.RCC);
+
+    serial.init(BAUD_RATE.invert(), p.AFIO, None, p.GPIOA, p.RCC);
+    serial.listen(Event::Rxne);
+
+    p.SYST.set_clock_source(SystClkSource::Core);
+    p.SYST.set_reload(<span style="color:#ae81ff">8_000_000</span>); <span style="color:#75715e">// 1s
+</span><span style="color:#75715e"></span>    p.SYST.enable_interrupt();
+    p.SYST.enable_counter();
+}
+
+<span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">idle</span>() -&gt; <span style="color:#f92672">!</span> {
+    <span style="color:#66d9ef">loop</span> {
+        rtfm::wfi();
+    }
+}
+
+<span style="color:#75715e">// TASKS
+</span><span style="color:#75715e"></span>
+<span style="color:#75715e">// Task code is unchanged
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">loopback</span>(_t: <span style="color:#66d9ef">&amp;</span><span style="color:#a6e22e">mut</span> Threshold, r: <span style="color:#a6e22e">USART1</span>::Resources) {
+    <span style="color:#66d9ef">let</span> serial <span style="color:#f92672">=</span> Serial(<span style="color:#f92672">&amp;**</span>r.USART1);
+
+    <span style="color:#66d9ef">let</span> byte <span style="color:#f92672">=</span> serial.read().unwrap();
+    serial.write(byte).unwrap();
+}
+
+<span style="color:#75715e">// Task code is unchanged
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">toggle</span>(_t: <span style="color:#66d9ef">&amp;</span><span style="color:#a6e22e">mut</span> Threshold, r: <span style="color:#a6e22e">SYS_TICK</span>::Resources) {
+    <span style="color:#f92672">**</span>r.ON <span style="color:#f92672">=</span> <span style="color:#f92672">!**</span>r.ON;
+
+    <span style="color:#66d9ef">if</span> <span style="color:#f92672">**</span>r.ON {
+        Green.on();
+    } <span style="color:#66d9ef">else</span> {
+        Green.off();
+    }
+}
+</code></pre></div><h2 id="sharing-data">Sharing data</h2>
+<p>Now let&rsquo;s see what happens if both tasks need to modify the same resource. Let&rsquo;s
+say we want to count the number of context switches, which is the number of
+times the processor wakes up to run a task, for performance tracking purposes.
+For simplicity, we&rsquo;ll omit the part that logs the performance metrics. The
+required changes are shown below:</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust">app<span style="color:#f92672">!</span> {
+    device: <span style="color:#a6e22e">blue_pill</span>::stm32f103xx,
+
+    resources: {
+        <span style="color:#66d9ef">static</span> CONTEXT_SWITCHES: <span style="color:#66d9ef">u32</span> <span style="color:#f92672">=</span> <span style="color:#ae81ff">0</span>; <span style="color:#75715e">// &lt;- NEW!
+</span><span style="color:#75715e"></span>        <span style="color:#66d9ef">static</span> ON: <span style="color:#66d9ef">bool</span> <span style="color:#f92672">=</span> <span style="color:#66d9ef">false</span>;
+    },
+
+    tasks: {
+        SYS_TICK: {
+            path: <span style="color:#a6e22e">toggle</span>,
+            resources: [CONTEXT_SWITCHES, ON], <span style="color:#75715e">// &lt;- NEW!
+</span><span style="color:#75715e"></span>        },
+
+        USART1: {
+            path: <span style="color:#a6e22e">loopback</span>,
+            resources: [CONTEXT_SWITCHES, USART1], <span style="color:#75715e">// &lt;- NEW!
+</span><span style="color:#75715e"></span>        },
+    },
+}
+
+<span style="color:#75715e">// TASKS
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">loopback</span>(r: <span style="color:#a6e22e">USART1</span>::Resources) {
+    <span style="color:#f92672">**</span>r.CONTEXT_SWITCHES <span style="color:#f92672">+=</span> <span style="color:#ae81ff">1</span>; <span style="color:#75715e">// &lt;- NEW!
+</span><span style="color:#75715e"></span>
+    <span style="color:#75715e">// .. same code as before ..
+</span><span style="color:#75715e"></span>}
+
+<span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">toggle</span>(r: <span style="color:#a6e22e">SYS_TICK</span>::Resources) {
+    <span style="color:#f92672">**</span>r.CONTEXT_SWITCHES <span style="color:#f92672">+=</span> <span style="color:#ae81ff">1</span>; <span style="color:#75715e">// &lt;- NEW!
+</span><span style="color:#75715e"></span>
+    <span style="color:#75715e">// .. same code as before ..
+</span><span style="color:#75715e"></span>
+    <span style="color:#75715e">// .. some code that logs `CONTEXT_SWITCHES` and resets its value to 0 ..
+</span><span style="color:#75715e"></span>}
+</code></pre></div><p>Another straightforward change but only because both tasks are operating at the
+<em>same</em> priority so one task can only start if the other one is not running. This
+means that no data race is possible so each task has exclusive access (<code>&amp;mut-</code>)
+to the <code>CONTEXT_SWITCHES</code> resource <em>in turns</em>.</p>
+<h2 id="preemption">Preemption</h2>
+<p>RTFM supports prioritization of tasks. As I mentioned before when a higher
+priority task becomes pending the scheduler suspends the current task to run the
+higher priority task to completion. If not specified in the <code>app!</code> macro all
+tasks default to a priority of 1, which is the lowest priority a task can have.
+<code>idle</code>, on the other hand, has a priority of 0.</p>
+<p>Let&rsquo;s suppose we now want to increase the priority of the <code>loopback</code> task
+because the incoming data throughput has increased and waiting for the <code>toggle</code>
+task to end before we can service <code>loopback</code> may cause data loss.</p>
+<p>If we go ahead and simply increase the priority of the <code>loopback</code> to 2 in the
+previous program it will no longer compile:</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust">app<span style="color:#f92672">!</span> {
+    device: <span style="color:#a6e22e">blue_pill</span>::stm32f103xx,
+
+    resources: {
+        <span style="color:#66d9ef">static</span> CONTEXT_SWITCHES: <span style="color:#66d9ef">u32</span> <span style="color:#f92672">=</span> <span style="color:#ae81ff">0</span>;
+        <span style="color:#66d9ef">static</span> ON: <span style="color:#66d9ef">bool</span> <span style="color:#f92672">=</span> <span style="color:#66d9ef">false</span>;
+    },
+
+    tasks: {
+        SYS_TICK: {
+            path: <span style="color:#a6e22e">toggle</span>,
+            priority: <span style="color:#ae81ff">1</span>, <span style="color:#75715e">// &lt;- this can be omitted, but let&#39;s be explicit for clarity
+</span><span style="color:#75715e"></span>            resources: [CONTEXT_SWITCHES, ON],
+        },
+
+        USART1: {
+            path: <span style="color:#a6e22e">loopback</span>,
+            priority: <span style="color:#ae81ff">2</span>, <span style="color:#75715e">// &lt;- priority increased
+</span><span style="color:#75715e"></span>            resources: [CONTEXT_SWITCHES, USART1],
+        },
+    },
+}
+
+<span style="color:#75715e">// ..
+</span></code></pre></div><pre><code class="language-console" data-lang="console">$ xargo build
+error[E0614]: type `_resource::CONTEXT_SWITCHES` cannot be dereferenced
+  --&gt; examples/sharing.rs:75:6
+   |
+75 |     **r.CONTEXT_SWITCHES += 1;
+   |      ^^^^^^^^^^^^^^^^^^^
+
+error: aborting due to previous error
+</code></pre><p>The code around line 75 is this one:</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">toggle</span>(r: <span style="color:#a6e22e">SYS_TICK</span>::Resources) {
+    <span style="color:#f92672">**</span>r.CONTEXT_SWITCHES <span style="color:#f92672">+=</span> <span style="color:#ae81ff">1</span>;
+
+    <span style="color:#75715e">// .. same code as before ..
+</span><span style="color:#75715e"></span>}
+</code></pre></div><p>So the <code>toggle</code> task can no longer <em>directly</em> access the <code>CONTEXT_SWITCHES</code>
+resource data. Good! This compile error just prevented a data race: with the
+priority change <code>loopback</code> can now preempt the <code>toggle</code> task; since
+incrementing <code>CONTEXT_SWITCHES</code> is <em>not</em> performed in a single instruction but
+as a Read Modify Write (RMW) operation the two RMW operations, the one in
+<code>loopback</code> and one in <code>toggle</code>, can now race and that can result in data loss as
+shown below:</p>
+<pre><code class="language-console" data-lang="console">start:    CONTEXT_SWITCHES == 1
+
+toggle:   let mut register = CONTEXT_SWITCHES.read(); // register = 1
+toggle:   register += 1;                              // register = 2
+
+~ interrupt start ~
+
+loopback: let mut register = CONTEXT_SWITCHES.read(); // register = 1
+loopback: register += 1;                              // register = 2
+loopback: CONTEXT_SWITCHES.store(register);           // CONTEXT_SWITCHES = 2
+..
+
+~ interrupt end ~
+
+toggle:   CONTEXT_SWITCHES.store(register);           // CONTEXT_SWITCHES = 2
+..
+
+end:      CONTEXT_SWITCHES == 2                       // should have been 3!
+</code></pre><p>Which doesn&rsquo;t seem <em>too</em> bad, but if either task was performing a more complex
+operation on <code>CONTEXT_SWITCHES</code> this data race could have resulted in Undefined
+Behavior (UB) due to compiler misoptimizations.</p>
+<p>To eliminate this data race we have to use critical section: enter <a href="https://docs.rs/cortex-m-rtfm/0.2.1/cortex_m_rtfm/trait.Resource.html"><code>claim</code> and
+<code>claim_mut</code></a>.</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">toggle</span>(t: <span style="color:#66d9ef">&amp;</span><span style="color:#a6e22e">mut</span> Threshold, <span style="color:#66d9ef">mut</span> r: <span style="color:#a6e22e">SYS_TICK</span>::Resources) {
+    <span style="color:#66d9ef">use</span> rtfm::Resource; <span style="color:#75715e">// &lt;- trait that provides the `claim{,_mut}` method
+</span><span style="color:#75715e"></span>
+    r.CONTEXT_SWITCHES.claim_mut(t, <span style="color:#f92672">|</span>context_switches, _t<span style="color:#f92672">|</span> {
+        <span style="color:#75715e">// Inside a critical section
+</span><span style="color:#75715e"></span>        <span style="color:#f92672">**</span>context_switches <span style="color:#f92672">+=</span> <span style="color:#ae81ff">1</span>;
+    });
+
+    <span style="color:#75715e">// ..
+</span><span style="color:#75715e"></span>}
+</code></pre></div><p><code>claim_mut</code> creates a critical section and only within this critical section can
+the resource data be read and modified. This critical section makes the RMW
+operation on <code>CONTEXT_SWITCHES</code> uninterruptible by the <code>loopback</code> task. Now the
+concurrent RMW operations can&rsquo;t overlap and the possibility of data races has
+been eliminated.</p>
+<p>That&rsquo;s pretty much it for the core of the new API. As usual you can check out
+the API documentation on <a href="https://docs.rs/cortex-m-rtfm/0.2.1/cortex_m_rtfm/">docs.rs</a>.</p>
+<h1 id="critical-sections-and-threshold">Critical sections and <code>Threshold</code></h1>
+<p>I think this is good time to tell you, or remind you, that RTFM has <em>two</em>
+flavors of critical sections: global ones and non-global ones. The non-global
+ones are the ones you get when you use <code>claim</code> and <code>claim_mut</code>; these critical
+sections prevent <em>some</em> tasks from preempting the current one whereas <em>global</em>
+critical sections prevent <em>all</em> tasks from starting.</p>
+<p>As a rule of thumb you should only use non global critical sections unless you
+really need a global critical section. Non global critical sections impose less
+task blocking so are they better from a real time scheduling point of view.</p>
+<p>Here&rsquo;s a contrived example that showcases the two types of critical sections:</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#75715e">#![feature(proc_macro)]</span>
+<span style="color:#75715e">#![no_std]</span>
+
+<span style="color:#66d9ef">extern</span> <span style="color:#66d9ef">crate</span> blue_pill;
+<span style="color:#66d9ef">extern</span> <span style="color:#66d9ef">crate</span> cortex_m;
+<span style="color:#66d9ef">extern</span> <span style="color:#66d9ef">crate</span> cortex_m_rtfm <span style="color:#66d9ef">as</span> rtfm;
+
+<span style="color:#66d9ef">use</span> blue_pill::stm32f103xx::Interrupt;
+<span style="color:#66d9ef">use</span> rtfm::{app, Resource, Threshold};
+
+app<span style="color:#f92672">!</span> {
+    device: <span style="color:#a6e22e">blue_pill</span>::stm32f103xx,
+
+    resources: {
+        <span style="color:#66d9ef">static</span> R1: <span style="color:#66d9ef">bool</span> <span style="color:#f92672">=</span> <span style="color:#66d9ef">false</span>;
+    },
+
+    tasks: {
+        EXTI0: {
+            path: <span style="color:#a6e22e">exti0</span>,
+            priority: <span style="color:#ae81ff">1</span>,
+            resources: [R1],
+        },
+
+        EXTI1: {
+            path: <span style="color:#a6e22e">exti1</span>,
+            priority: <span style="color:#ae81ff">2</span>,
+            resources: [R1],
+        },
+
+        EXTI2: {
+            path: <span style="color:#a6e22e">exti2</span>,
+            priority: <span style="color:#ae81ff">3</span>,
+        },
+    },
+}
+
+<span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">init</span>(_p: <span style="color:#a6e22e">init</span>::Peripherals, _r: <span style="color:#a6e22e">init</span>::Resources) {}
+
+<span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">idle</span>() -&gt; <span style="color:#f92672">!</span> {
+    <span style="color:#66d9ef">loop</span> {
+        rtfm::wfi();
+    }
+}
+
+<span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">exti0</span>(t: <span style="color:#66d9ef">&amp;</span><span style="color:#a6e22e">mut</span> Threshold, r: <span style="color:#a6e22e">EXTI0</span>::Resources) {
+    <span style="color:#75715e">// Threshold == 1
+</span><span style="color:#75715e"></span>
+    rtfm::set_pending(Interrupt::EXTI1); <span style="color:#75715e">// ~&gt; exti1
+</span><span style="color:#75715e"></span>
+    <span style="color:#75715e">// non-global critical section
+</span><span style="color:#75715e"></span>    r.R1.claim(t, <span style="color:#f92672">|</span>_r1, _t<span style="color:#f92672">|</span> {
+        <span style="color:#75715e">// Threshold = 2
+</span><span style="color:#75715e"></span>        rtfm::set_pending(Interrupt::EXTI1);
+
+        rtfm::set_pending(Interrupt::EXTI2); <span style="color:#75715e">// ~&gt; exti2
+</span><span style="color:#75715e"></span>    }); <span style="color:#75715e">// Threshold = 1
+</span><span style="color:#75715e"></span>
+    <span style="color:#75715e">// ~&gt; exti1
+</span><span style="color:#75715e"></span>
+    <span style="color:#75715e">// global critical section
+</span><span style="color:#75715e"></span>    rtfm::atomic(t, <span style="color:#f92672">|</span>t<span style="color:#f92672">|</span> {
+        <span style="color:#75715e">// Threshold = MAX
+</span><span style="color:#75715e"></span>        <span style="color:#66d9ef">let</span> _r1 <span style="color:#f92672">=</span> r.R1.borrow(t);
+
+        rtfm::set_pending(Interrupt::EXTI1);
+
+        rtfm::set_pending(Interrupt::EXTI2);
+    }); <span style="color:#75715e">// Threshold = 1
+</span><span style="color:#75715e"></span>
+    <span style="color:#75715e">// ~&gt; exti2, exti1
+</span><span style="color:#75715e"></span>}
+
+<span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">exti1</span>(_r: <span style="color:#a6e22e">EXTI1</span>::Resources) {
+    <span style="color:#75715e">// .. modify R1 ..
+</span><span style="color:#75715e"></span>}
+
+<span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">exti2</span>() {
+    <span style="color:#75715e">// ..
+</span><span style="color:#75715e"></span>}
+</code></pre></div><p>In <code>exti0</code> the data of R1 is accessed using a non global critical section and
+then again using a global critical section. Both critical sections contain
+pretty much the same code but behave differently. Let&rsquo;s see why:</p>
+<p>But first let&rsquo;s define what <code>Threshold</code> is &ndash; I have been ignoring it for a
+while now. <code>Threshold</code> is a <em>token</em> that keeps track of the current <em>preemption
+threshold</em>. This threshold indicates what priority a task must have to be able
+to preempt the current task. A threshold of 1 means that a task must have <em>at
+least</em> a priority of 2 to preempt the current task.</p>
+<p>Now let&rsquo;s go back to the program analysis:</p>
+<p>Because the priority of <code>exti0</code> is 1 the preemption threshold, tracked by the
+token <code>t</code>, starts at a value of 1. At the start of <code>exti0</code> we set the task
+<code>EXTI1</code> as <a href="https://docs.rs/cortex-m-rtfm/0.2.1/cortex_m_rtfm/fn.set_pending.html">pending</a>. Because <code>EXTI1</code> has a priority of 2, which is greater than
+the current preemption threshold of 1, it will be executed immediately.</p>
+<p>Then we <code>claim</code> the resource <code>R1</code>; this creates a critical section by increasing
+the preemption threshold, now tracked by <code>_t</code>, to 2. Within this critical
+section the data of the resource <code>R1</code> can be read through the <code>_r1</code> reference.
+Then, within the critical section, we set the task <code>EXTI1</code> as pending; however,
+the task won&rsquo;t be executed immediately because its priority, 2, is equal to the
+current preemption threshold of 2. Then we set the task <code>EXTI2</code> as pending; this
+time the task will be serviced immediately because its priority, 3, is higher
+than the current threshold of 2.</p>
+<p>Once the <code>claim</code> ends the threshold is restored to its previous value of 1. Now
+the task <code>EXTI1</code> can again preempt the current task so it gets executed.</p>
+<p>Then we have <code>rtfm::atomic</code>, a <em>global</em> critical section. Within this critical
+section we can access the data of the resource <code>R1</code> using the <a href="https://docs.rs/cortex-m-rtfm/0.2.1/cortex_m_rtfm/trait.Resource.html#tymethod.borrow"><code>borrow</code></a> method.
+A global critical section effectively raises the preemption threshold to its
+maximum possible value so <em>no task</em> can preempt it. Within this critical section
+we set the tasks <code>EXTI1</code> and <code>EXTI2</code> as pending, but none of them can run
+because of the threshold value.</p>
+<p>Once <code>rtfm::atomic</code> ends the preemption threshold is restored to its previous
+value of 1. Now the tasks can be serviced: <code>EXTI2</code> is serviced first, because of
+its higher priority, then <code>EXTI1</code> is serviced.</p>
+<h1 id="performance">Performance</h1>
+<p>I wrote a <a href="/rtfm-overhead">blog post</a> where I analyzed the runtime cost of the primitives provided
+by RTFM v1. Those numbers mostly hold for v2 with the difference that <code>claim</code>
+and <code>claim_mut</code> are equivalent to v1&rsquo;s <code>Threshold.raise</code> but only when the
+threshold <em>needs</em> to be raised; when the threshold doesn&rsquo;t need to be raised
+<code>claim</code> and <code>claim_mut</code> are no-ops. To elaborate with an example:</p>
+<p>This single claim</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust">app<span style="color:#f92672">!</span> {
+    <span style="color:#75715e">// ..
+</span><span style="color:#75715e"></span>
+    tasks: {
+        EXTI0: {
+            path: <span style="color:#a6e22e">exti0</span>,
+            priority: <span style="color:#ae81ff">1</span>,
+            resources: [R1],
+        },
+
+        EXTI1: {
+            path: <span style="color:#a6e22e">exti1</span>,
+            priority: <span style="color:#ae81ff">2</span>,
+            resources: [R1],
+        },
+    },
+}
+
+<span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">exti0</span>(t: <span style="color:#66d9ef">&amp;</span><span style="color:#a6e22e">mut</span> Threshold, r: <span style="color:#a6e22e">EXTI0</span>::Resources) {
+    r.R1.claim(t, <span style="color:#f92672">|</span>_r1, _t<span style="color:#f92672">|</span> {
+        asm::nop();
+    });
+}
+</code></pre></div><p>produces this machine code</p>
+<pre><code class="language-armasm" data-lang="armasm">08000196 &lt;EXTI0&gt;:
+ 8000196:       f3ef 8011       mrs     r0, BASEPRI
+ 800019a:       21e0            movs    r1, #224        ; 0xe0
+ 800019c:       f381 8812       msr     BASEPRI, r1     ; enter
+ 80001a0:       bf00            nop
+ 80001a2:       f380 8811       msr     BASEPRI, r0     ; exit
+ 80001a6:       4770            bx      lr
+</code></pre><p>Whereas this nested claim</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust">app<span style="color:#f92672">!</span> {
+    <span style="color:#75715e">// ..
+</span><span style="color:#75715e"></span>
+    tasks: {
+        EXTI0: {
+            path: <span style="color:#a6e22e">exti0</span>,
+            priority: <span style="color:#ae81ff">1</span>,
+            resources: [R1, R2],
+        },
+
+        EXTI1: {
+            path: <span style="color:#a6e22e">exti1</span>,
+            priority: <span style="color:#ae81ff">2</span>,
+            resources: [R1, R2],
+        },
+    },
+}
+
+<span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">exti0</span>(t: <span style="color:#66d9ef">&amp;</span><span style="color:#a6e22e">mut</span> Threshold, r: <span style="color:#a6e22e">EXTI0</span>::Resources) {
+    r.R1.claim(t, <span style="color:#f92672">|</span>_r1, t<span style="color:#f92672">|</span> {
+        asm::nop();
+
+        r.R2.claim(t, <span style="color:#f92672">|</span>_r2, _t<span style="color:#f92672">|</span> {
+            asm::nop();
+        });
+
+        asm::nop();
+    });
+}
+</code></pre></div><p>produces this machine code</p>
+<pre><code class="language-armasm" data-lang="armasm">08000196 &lt;EXTI0&gt;:
+ 8000196:       f3ef 8011       mrs     r0, BASEPRI
+ 800019a:       21e0            movs    r1, #224        ; 0xe0
+ 800019c:       f381 8812       msr     BASEPRI, r1     ; enter
+ 80001a0:       bf00            nop
+ 80001a2:       bf00            nop
+ 80001a4:       bf00            nop
+ 80001a6:       f380 8811       msr     BASEPRI, r0     ; exit
+ 80001aa:       4770            bx      lr
+</code></pre><p>The inner claim is a no-op here because the threshold doesn&rsquo;t need to be raised
+again to achieve memory safety.</p>
+<p>On the other hand, this similarly looking nested claim</p>
+<pre><code>app! {
+    // ..
+
+    tasks: {
+        EXTI0: {
+            path: exti0,
+            priority: 1,
+            resources: [R1, R2],
+        },
+
+        EXTI1: {
+            path: exti1,
+            priority: 2,
+            resources: [R1],
+        },
+
+        EXTI2: {
+            path: exti2,
+            priority: 3,
+            resources: [R2],
+        },
+    },
+}
+
+fn exti0(t: &amp;mut Threshold, r: EXTI0::Resources) {
+    r.R1.claim(t, |_r1, t| {
+        asm::nop();
+
+        r.R2.claim(t, |_r2, _t| {
+            asm::nop();
+        });
+
+        asm::nop();
+    });
+}
+</code></pre><p>does result in two nested critical sections</p>
+<pre><code class="language-armasm" data-lang="armasm">08000196 &lt;EXTI0&gt;:
+ 8000196:       21e0            movs    r1, #224        ; 0xe0
+ 8000198:       f3ef 8011       mrs     r0, BASEPRI
+ 800019c:       22d0            movs    r2, #208        ; 0xd0
+ 800019e:       f381 8812       msr     BASEPRI, r1     ; enter outer
+ 80001a2:       bf00            nop
+ 80001a4:       f3ef 8111       mrs     r1, BASEPRI
+ 80001a8:       f382 8812       msr     BASEPRI, r2     ; enter inner
+ 80001ac:       bf00            nop
+ 80001ae:       f381 8811       msr     BASEPRI, r1     ; exit inner
+ 80001b2:       bf00            nop
+ 80001b4:       f380 8811       msr     BASEPRI, r0     ; exit outer
+ 80001b8:       4770            bx      lr
+</code></pre><p>because they are required for memory safety in this case.</p>
+<h2 id="rtfmatomic"><code>rtfm::atomic</code></h2>
+<p>The overhead of <code>rtfm::atomic</code> has also been reduced. This critical section
+works by temporarily disabling interrupts. In v1, <code>rtfm::atomic</code> checked at
+runtime (by reading the <code>PRIMASK</code> register) if interrupts were disabled before
+executing the closure to prevent enabling the interrupts after executing the
+closure. This check is not necessary in v2 because the signature of
+<code>rtfm::atomic</code> has changed to take the <code>Threshold</code> token, which contains
+information about the state of interrupts, so whether the interrupts are enabled
+or not is now known at compile time.</p>
+<p>This code</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">exti0</span>(t: <span style="color:#66d9ef">&amp;</span><span style="color:#a6e22e">mut</span> Threshold, r: <span style="color:#a6e22e">EXTI0</span>::Resources) {
+    rtfm::bkpt();
+
+    rtfm::atomic(t, <span style="color:#f92672">|</span>_t<span style="color:#f92672">|</span> {});
+
+    rtfm::bkpt();
+}
+</code></pre></div><p>now produces this machine code</p>
+<pre><code class="language-armasm" data-lang="armasm">08000198 &lt;EXTI0&gt;:
+ 8000198:       be00            bkpt    0x0000
+ 800019a:       b672            cpsid   i
+ 800019c:       b662            cpsie   i
+ 800019e:       be00            bkpt    0x0000
+ 80001a0:       4770            bx      lr
+</code></pre><p>The runtime overhead of v2&rsquo;s <code>rtfm::atomic</code> is 3 cycles, down from <a href="/rtfm-overhead/#vs-rtfm-atomic">the 6 cycles
+of v1</a>.</p>
+<p>If nested the inner <code>rtfm::atomic</code> become a no-op. For example, this</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">exti0</span>(t: <span style="color:#66d9ef">&amp;</span><span style="color:#a6e22e">mut</span> Threshold, r: <span style="color:#a6e22e">EXTI0</span>::Resources) {
+    rtfm::atomic(t, <span style="color:#f92672">|</span>t<span style="color:#f92672">|</span> {
+        asm::nop();
+
+        rtfm::atomic(t, <span style="color:#f92672">|</span>_t<span style="color:#f92672">|</span> {
+            asm::nop();
+        });
+
+        asm::nop();
+    });
+}
+</code></pre></div><p>produces this:</p>
+<pre><code class="language-armasm" data-lang="armasm">08000196 &lt;EXTI0&gt;:
+ 8000196:       b672            cpsid   i
+ 8000198:       bf00            nop
+ 800019a:       bf00            nop
+ 800019c:       bf00            nop
+ 800019e:       b662            cpsie   i
+ 80001a0:       4770            bx      lr
+</code></pre><h2 id="zero-cost-mutation">Zero cost mutation</h2>
+<p>The area where v2 does much better than v1, in terms of performance, is mutation
+of non primitive types. In v1 you could only get a shared reference (<code>&amp;-</code>), to
+the resource data. This meant that you had to use a <code>Cell</code> or a <code>RefCell</code> to
+mutate the data; these two abstractions have overhead compared to a plain
+mutable reference (<code>&amp;mut-</code>). In v2 you can get a mutable reference to the data
+with no extra overhead.</p>
+<p>Here&rsquo;s some <a href="/rtfm-overhead/#access-mut">code that didn&rsquo;t compile in v1</a> (without the help of <code>Cell</code> /
+<code>RefCell</code>).</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust">app<span style="color:#f92672">!</span> {
+    device: <span style="color:#a6e22e">blue_pill</span>::stm32f103xx,
+
+    resources: {
+        <span style="color:#66d9ef">static</span> A: <span style="color:#66d9ef">i32</span> <span style="color:#f92672">=</span> <span style="color:#ae81ff">0</span>;
+        <span style="color:#66d9ef">static</span> B: <span style="color:#66d9ef">i32</span> <span style="color:#f92672">=</span> <span style="color:#ae81ff">0</span>;
+    },
+
+    tasks: {
+        EXTI0: {
+            path: <span style="color:#a6e22e">exti0</span>,
+            priority: <span style="color:#ae81ff">1</span>,
+            resources: [A, B],
+        },
+
+        EXTI1: {
+            path: <span style="color:#a6e22e">exti1</span>,
+            priority: <span style="color:#ae81ff">2</span>,
+            resources: [A, B],
+        },
+    },
+}
+
+<span style="color:#75715e">// higher priority task
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">exti1</span>(t: <span style="color:#66d9ef">&amp;</span><span style="color:#a6e22e">mut</span> Threshold, r: <span style="color:#a6e22e">EXTI1</span>::Resources) {
+    <span style="color:#f92672">**</span>r.A <span style="color:#f92672">+=</span> <span style="color:#ae81ff">1</span>;
+    <span style="color:#f92672">**</span>r.B <span style="color:#f92672">+=</span> <span style="color:#ae81ff">2</span>;
+
+    mem::swap(r.A, r.B);
+}
+
+<span style="color:#75715e">// lower priority task
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">exti0</span>(
+    t: <span style="color:#66d9ef">&amp;</span><span style="color:#a6e22e">mut</span> Threshold,
+    EXTI0::Resources { <span style="color:#66d9ef">mut</span> A, <span style="color:#66d9ef">mut</span> B }: <span style="color:#a6e22e">EXTI0</span>::Resources,
+) {
+    A.claim_mut(t, <span style="color:#f92672">|</span>a, _<span style="color:#f92672">|</span> <span style="color:#f92672">**</span>a <span style="color:#f92672">+=</span> <span style="color:#ae81ff">1</span>);
+    B.claim_mut(t, <span style="color:#f92672">|</span>b, _<span style="color:#f92672">|</span> <span style="color:#f92672">**</span>b <span style="color:#f92672">+=</span> <span style="color:#ae81ff">2</span>);
+
+    A.claim_mut(t, <span style="color:#f92672">|</span>a, t<span style="color:#f92672">|</span> {
+        B.claim_mut(t, <span style="color:#f92672">|</span>b, _<span style="color:#f92672">|</span> {
+            mem::swap(a, b);
+        });
+    });
+}
+</code></pre></div><p>The above code produces this machine code:</p>
+<pre><code class="language-armasm" data-lang="armasm">08000196 &lt;EXTI1&gt;:
+ 8000196:       f240 0000       movw    r0, #0
+ 800019a:       f2c2 0000       movt    r0, #8192       ; 0x2000
+ 800019e:       e9d0 1200       ldrd    r1, r2, [r0]
+ 80001a2:       3202            adds    r2, #2
+ 80001a4:       3101            adds    r1, #1
+ 80001a6:       e9c0 2100       strd    r2, r1, [r0]
+ 80001aa:       4770            bx      lr
+
+080001ac &lt;EXTI0&gt;:
+ 80001ac:       f240 0200       movw    r2, #0
+ 80001b0:       21e0            movs    r1, #224        ; 0xe0
+ 80001b2:       f3ef 8011       mrs     r0, BASEPRI
+ 80001b6:       f381 8811       msr     BASEPRI, r1     ; enter I
+ 80001ba:       f2c2 0200       movt    r2, #8192       ; 0x2000
+ 80001be:       6813            ldr     r3, [r2, #0]
+ 80001c0:       3301            adds    r3, #1
+ 80001c2:       6013            str     r3, [r2, #0]
+ 80001c4:       f380 8811       msr     BASEPRI, r0     ; leave I
+ 80001c8:       f3ef 8011       mrs     r0, BASEPRI
+ 80001cc:       f381 8811       msr     BASEPRI, r1     ; enter II
+ 80001d0:       6853            ldr     r3, [r2, #4]
+ 80001d2:       3302            adds    r3, #2
+ 80001d4:       6053            str     r3, [r2, #4]
+ 80001d6:       f380 8811       msr     BASEPRI, r0     ; leave II
+ 80001da:       f3ef 8011       mrs     r0, BASEPRI
+ 80001de:       f381 8811       msr     BASEPRI, r1     ; enter III
+ 80001e2:       e9d2 1300       ldrd    r1, r3, [r2]
+ 80001e6:       e9c2 3100       strd    r3, r1, [r2]
+ 80001ea:       f380 8811       msr     BASEPRI, r0     ; leave III
+ 80001ee:       4770            bx      lr
+</code></pre><h1 id="outro">Outro</h1>
+<p>That&rsquo;s it for this post. I hope that you agree with me that the new system is
+simpler. Please give it a try and let me know what you think! If you need more
+convincing here are some open source applications that are using RTFM v2:</p>
+<ul>
+<li>
+<p>Cortex-M</p>
+<ul>
+<li><a href="https://github.com/japaric/2wd"><code>2wd</code></a>, a remotely controlled wheeled robot</li>
+<li><a href="https://github.com/japaric/blue-pill"><code>blue-pill</code></a>, bunch of example apps for the Blue Pill development board</li>
+<li><a href="https://github.com/japaric/ws2812b"><code>ws2812b</code></a>, WS2812B LED ring controlled via a serial interface</li>
+</ul>
+</li>
+<li>
+<p>MSP430</p>
+<ul>
+<li><a href="https://github.com/cr1901/AT2XT/"><code>AT2XT</code></a>, AT to XT Keyboard Protocol Converter</li>
+</ul>
+</li>
+</ul>
+<p>And of course there are always <a href="https://github.com/japaric/cortex-m-rtfm/milestone/1">new features</a> in the pipeline.</p>
+<hr>
+<p><strong>Thank you patrons! ❤️</strong></p>
+<p>I want to wholeheartedly thank:</p>
+<!-- raw HTML omitted -->
+<p><a href="https://github.com/Razican">Iban Eguia</a>, <a href="https://github.com/aturon">Aaron Turon</a>, <a href="https://github.com/archaelus">Geoff Cant</a>, <a href="http://www.harrisonchin.com/">Harrison Chin</a>, <a href="https://github.com/brandonedens">Brandon Edens</a>,
+<a href="https://github.com/whitequark">whitequark</a>, <a href="https://convolv.es/">J. Ryan Stinnett</a>, <a href="https://jamesmunns.com/">James Munns</a> and 27 more people
+for supporting my work on Patreon.</p>
+<hr>
+<p>Let&rsquo;s discuss on <a href="https://www.reddit.com/r/rust/comments/6q9s76/rtfm_v2_simpler_less_overhead_and_more_device/">reddit</a>.</p>
+
+    </div>
+
+    
+    
+    <div class="article-toc" >
+        <h3>Contents</h3>
+        <nav id="TableOfContents">
+  <ul>
+    <li><a href="#hello-world">Hello world</a></li>
+    <li><a href="#serial-loopback">Serial loopback</a></li>
+    <li><a href="#blinky">Blinky</a></li>
+    <li><a href="#concurrency">Concurrency</a></li>
+    <li><a href="#sharing-data">Sharing data</a></li>
+    <li><a href="#preemption">Preemption</a></li>
+  </ul>
+
+  <ul>
+    <li><a href="#rtfmatomic"><code>rtfm::atomic</code></a></li>
+    <li><a href="#zero-cost-mutation">Zero cost mutation</a></li>
+  </ul>
+</nav>
+    </div>
+    
+    
+
+    
+  </div>
+</section>
+
+
+<section class="section">
+  <div class="container has-text-centered">
+    <p><a rel="license" href="http://creativecommons.org/licenses/by/4.0/"><img alt="Creative Commons License" src="https://i.creativecommons.org/l/by/4.0/80x15.png" /></a><br/>Jorge Aparicio</p>
+  </div>
+</section>
+
+
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/styles/tomorrow-night.min.css" />
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/highlight.min.js" integrity="sha256-aYTdUrn6Ow1DDgh5JTc3aDGnnju48y/1c8s1dgkYPQ8=" crossorigin="anonymous"></script>
+
+<script type="text/javascript" src="//cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/languages/armasm.min.js"></script>
+
+<script type="text/javascript" src="//cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/languages/c.min.js"></script>
+
+<script type="text/javascript" src="//cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/languages/diff.min.js"></script>
+
+<script type="text/javascript" src="//cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/languages/llvm.min.js"></script>
+
+<script type="text/javascript" src="//cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/languages/rust.min.js"></script>
+
+<script type="text/javascript" src="//cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/languages/shell.min.js"></script>
+
+<script>hljs.initHighlightingOnLoad();</script>
+
+
+</body>

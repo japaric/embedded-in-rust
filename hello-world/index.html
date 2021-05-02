@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html lang="en-us">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta content="Rust, embedded, development" name="keywords">
+<meta content="Jorge Aparicio" name="author">
+<meta property="og:title" content="Hello, world! - Embedded in Rust">
+<meta property="og:url" content="https://blog.japaric.io/hello-world/">
+<meta property="og:description" content="A blog about Rust and embedded stuff">
+<meta property="og:type" content="website" />
+<title>Hello, world! | Embedded in Rust</title>
+<link rel="stylesheet" href="https://blog.japaric.io//css/style.css">
+<link rel="shortcut icon" href="https://blog.japaric.io//wave.ico">
+<link rel="alternate" type="application/atom+xml" title="Embedded in Rust Posts" href="https://blog.japaric.io//index.xml">
+<link href="//maxcdn.bootstrapcdn.com/font-awesome/4.7.0/css/font-awesome.min.css" rel="stylesheet" integrity="sha384-wvfXpqpZZVQGK6TAh5PVlGOfQNHSoD2xbE+QkPxCAFlNEevoEH3Sl0sibVcOQVnN" crossorigin="anonymous">
+
+<link rel="stylesheet" href="//cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/styles/github.min.css">
+
+</head>
+
+<body>
+<section class="section">
+  <div class="container">
+    <nav class="nav">
+      <div class="nav-left">
+        <a class="nav-item" href="https://blog.japaric.io/"><h1 class="title is-4">Embedded in Rust</h1></a>
+      </div>
+      <div class="nav-right">
+        <nav class="nav-item level is-mobile">
+          
+          <a class="level-item" href="https://github.com/japaric" target="_blank">
+            <span class="icon">
+              <i class="fa fa-github"></i>
+            </span>
+          </a>
+          
+          <a class="level-item" href="/index.xml" target="_blank">
+            <span class="icon">
+              <i class="fa fa-rss"></i>
+            </span>
+          </a>
+          
+        </nav>
+      </div>
+    </nav>
+  </div>
+</section>
+
+<section class="section">
+  <div class="container">
+    <h1 class="title">Hello, world!</h1>
+    <h2 class="subtitle is-5">April 24, 2017 by Jorge Aparicio</h2>
+    
+    <div class="content">
+      <p>Hey there! Welcome to my blog, where I&rsquo;ll be writing about Rust and embedded
+systems-y stuff &ndash; that&rsquo;s it, mainly about programming ARM Cortex-M
+microcontrollers as that&rsquo;s what Rust best supports today <sup id="fnref:1"><a href="#fn:1" class="footnote-ref" role="doc-noteref">1</a></sup>. But, I&rsquo;m
+interested in anything that has a <code>#![no_std]</code> attribute in it <sup id="fnref:2"><a href="#fn:2" class="footnote-ref" role="doc-noteref">2</a></sup> so I
+may cover some other stuff as well.</p>
+<p>That being said, this first post is neither about Rust or embedded stuff as it&rsquo;s
+mainly for testing my blogging setup; so, why not write about that instead?
+(Otherwise this post will end up being too short)</p>
+<h1 id="my-blogging-setup">My blogging setup</h1>
+<p>This blog is a static website built using <a href="https://gohugo.io">Hugo</a>, a fast static site generator
+written in Go. The blog theme is a modified version of the <a href="https://themes.gohugo.io/hucore/">hucore</a> theme. The
+modifications are the following:</p>
+<ul>
+<li>Customizable highlight.js theme.</li>
+</ul>
+<p>I didn&rsquo;t like the default theme and there didn&rsquo;t seem to be any way to change it
+so I hacked the theme source code to make the theme customizable. I&rsquo;ve picked
+the <code>tomorrow-night</code> theme for this blog since that&rsquo;s what I use in my terminal.
+It looks like this:</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">main</span>() {
+    println<span style="color:#f92672">!</span>(<span style="color:#e6db74">&#34;Hello, world!&#34;</span>);
+}
+</code></pre></div><ul>
+<li>LiveReload support.</li>
+</ul>
+<p>But you won&rsquo;t notice this one as it&rsquo;s a development only feature.</p>
+<ul>
+<li>Table of Contents</li>
+</ul>
+<p>Which you should see on the right. I stole this one from the <a href="https://themes.gohugo.io/hugo-theme-minos">Minos</a> theme. I
+&hellip; hope they don&rsquo;t mind.</p>
+<p>As a good citizen of the open source world, I sent PRs to <a href="https://github.com/mgjohansen/hucore">mgjohansen/hucore</a>
+with some of these modifications.</p>
+<p>Leaving the theme aside, the &ldquo;source&rdquo; of this blog, a bunch of Markdown files,
+is hosted on <a href="https://github.com/japaric/embedded-in-rust">GitHub</a>. The site is hosted on <a href="https://pages.github.com/">GitHub pages</a> and I&rsquo;m <a href="https://github.com/japaric/embedded-in-rust/blob/master/.travis.yml">using
+Travis</a> to update the site every time I push to the source repo.</p>
+<p>I think that&rsquo;s enough for this post. See you in the next one! (Oh, you have no
+idea what I have in stock 😄)</p>
+<section class="footnotes" role="doc-endnotes">
+<hr>
+<ol>
+<li id="fn:1" role="doc-endnote">
+<p>There&rsquo;s in tree support for MSP430 microcontrollers but I own no
+MSP430 hardware; and, AVR support is not in tree yet. <a href="#fnref:1" class="footnote-backref" role="doc-backlink">&#x21a9;&#xfe0e;</a></p>
+</li>
+<li id="fn:2" role="doc-endnote">
+<p>That includes building your own <code>std</code>! So I may write about <a href="https://github.com/japaric/xargo">Xargo</a>
+and <a href="https://github.com/japaric/steed">steed</a> at some point. <a href="#fnref:2" class="footnote-backref" role="doc-backlink">&#x21a9;&#xfe0e;</a></p>
+</li>
+</ol>
+</section>
+
+    </div>
+
+    
+    
+    <div class="article-toc" >
+        <h3>Contents</h3>
+        <nav id="TableOfContents"></nav>
+    </div>
+    
+    
+
+    
+  </div>
+</section>
+
+
+<section class="section">
+  <div class="container has-text-centered">
+    <p><a rel="license" href="http://creativecommons.org/licenses/by/4.0/"><img alt="Creative Commons License" src="https://i.creativecommons.org/l/by/4.0/80x15.png" /></a><br/>Jorge Aparicio</p>
+  </div>
+</section>
+
+
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/styles/tomorrow-night.min.css" />
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/highlight.min.js" integrity="sha256-aYTdUrn6Ow1DDgh5JTc3aDGnnju48y/1c8s1dgkYPQ8=" crossorigin="anonymous"></script>
+
+<script type="text/javascript" src="//cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/languages/armasm.min.js"></script>
+
+<script type="text/javascript" src="//cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/languages/c.min.js"></script>
+
+<script type="text/javascript" src="//cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/languages/diff.min.js"></script>
+
+<script type="text/javascript" src="//cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/languages/llvm.min.js"></script>
+
+<script type="text/javascript" src="//cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/languages/rust.min.js"></script>
+
+<script type="text/javascript" src="//cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/languages/shell.min.js"></script>
+
+<script>hljs.initHighlightingOnLoad();</script>
+
+
+</body>

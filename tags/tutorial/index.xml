@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8" standalone="yes"?>
+<rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom">
+  <channel>
+    <title>tutorial on Embedded in Rust</title>
+    <link>https://blog.japaric.io/tags/tutorial/</link>
+    <description>Recent content in tutorial on Embedded in Rust</description>
+    <generator>Hugo -- gohugo.io</generator>
+    <language>en-us</language>
+    <copyright>&lt;a rel=&#34;license&#34; href=&#34;http://creativecommons.org/licenses/by/4.0/&#34;&gt;&lt;img alt=&#34;Creative Commons License&#34; src=&#34;https://i.creativecommons.org/l/by/4.0/80x15.png&#34; /&gt;&lt;/a&gt;&lt;br/&gt;Jorge Aparicio</copyright>
+    <lastBuildDate>Fri, 28 Apr 2017 22:05:45 -0500</lastBuildDate><atom:link href="https://blog.japaric.io/tags/tutorial/index.xml" rel="self" type="application/rss+xml" />
+    <item>
+      <title>Rust your ARM microcontroller!</title>
+      <link>https://blog.japaric.io/quickstart/</link>
+      <pubDate>Fri, 28 Apr 2017 22:05:45 -0500</pubDate>
+      
+      <guid>https://blog.japaric.io/quickstart/</guid>
+      <description>IMPORTANT! READ THIS!
+Hello there! This article is outdated and following it will only confuse you. Check out the embedded Rust book and the rest of the embedded WG bookshelf for up to date and maintained documentation on embedded Rust development.
+If you still want to read this post, for historical reasons and what now, scroll down.
+ Want to program your microcontroller in Rust but your microcontroller vendor doesn&amp;rsquo;t provide a Rust HAL / SDK?</description>
+    </item>
+    
+  </channel>
+</rss>

@@ -1,0 +1,86 @@
+<?xml version="1.0" encoding="utf-8" standalone="yes"?>
+<rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom">
+  <channel>
+    <title>rtfm on Embedded in Rust</title>
+    <link>https://blog.japaric.io/tags/rtfm/</link>
+    <description>Recent content in rtfm on Embedded in Rust</description>
+    <generator>Hugo -- gohugo.io</generator>
+    <language>en-us</language>
+    <copyright>&lt;a rel=&#34;license&#34; href=&#34;http://creativecommons.org/licenses/by/4.0/&#34;&gt;&lt;img alt=&#34;Creative Commons License&#34; src=&#34;https://i.creativecommons.org/l/by/4.0/80x15.png&#34; /&gt;&lt;/a&gt;&lt;br/&gt;Jorge Aparicio</copyright>
+    <lastBuildDate>Sun, 23 Jun 2019 18:00:00 +0200</lastBuildDate><atom:link href="https://blog.japaric.io/tags/rtfm/index.xml" rel="self" type="application/rss+xml" />
+    <item>
+      <title>Real Time For the Masses goes multi-core</title>
+      <link>https://blog.japaric.io/multicore-rtfm/</link>
+      <pubDate>Sun, 23 Jun 2019 18:00:00 +0200</pubDate>
+      
+      <guid>https://blog.japaric.io/multicore-rtfm/</guid>
+      <description>v0.5.0 of Real Time For the Masses (RTFM), the embedded concurrency framework, is coming out soon-ish &amp;ndash; some time after Rust 1.36 is released &amp;ndash; and will include experimental support for homogeneous and heterogeneous multi-core Cortex-M devices. This blog post covers the upcoming multi-core API and includes a refresher on the single-core API.
+Heterogeneous support in μAMP But first, one update relevant to multi-core RTFM from the μAMP (microamp) front since the last post: cargo-microamp has gained support for heterogeneous multi-core devices.</description>
+    </item>
+    
+    <item>
+      <title>RTFM v0.4: &#43;stable, software tasks, message passing and a timer queue</title>
+      <link>https://blog.japaric.io/rtfm-v4/</link>
+      <pubDate>Wed, 19 Dec 2018 18:40:45 +0100</pubDate>
+      
+      <guid>https://blog.japaric.io/rtfm-v4/</guid>
+      <description>Hey there! It&amp;rsquo;s been a long time since my last post.
+Today I&amp;rsquo;m pleased to announce v0.4.0 of the Real Time for The Masses framework (AKA RTFM), a concurrency framework for building real time applications.
+The greatest new feature, IMO, is that RTFM now works on stable Rust (1.31+)! 🎉 🎉 🎉
+This release also packs quite a few new features which I&amp;rsquo;ll briefly cover in this post. For a more throughout explanation of RTFM&amp;rsquo;s task model and its capabilities check out the RTFM book, which includes examples you can run on your laptop (yay for emulation), and the API documentation.</description>
+    </item>
+    
+    <item>
+      <title>RTFM v0.3.0: safe `&amp;&#39;static mut T` and less locks</title>
+      <link>https://blog.japaric.io/rtfm-v3/</link>
+      <pubDate>Mon, 22 Jan 2018 19:58:35 +0100</pubDate>
+      
+      <guid>https://blog.japaric.io/rtfm-v3/</guid>
+      <description>RTFM (Real Time For the Masses) v0.3.0 is out! This blog post will cover the goodies of this new release.
+The minor (breaking) release was mainly to become compatible with the new IO model presented in my previous blog post, but a new feature also shipped with this release: safe creation of &amp;amp;&#39;static mut references.
+First, let&amp;rsquo;s look at one feature that landed in v0.2.1 but that didn&amp;rsquo;t get documented in this blog, yet it was essential to adapt RTFM to the new IO model:</description>
+    </item>
+    
+    <item>
+      <title>RTFM v2: simpler, less overhead and more device support</title>
+      <link>https://blog.japaric.io/rtfm-v2/</link>
+      <pubDate>Sat, 29 Jul 2017 02:39:45 -0500</pubDate>
+      
+      <guid>https://blog.japaric.io/rtfm-v2/</guid>
+      <description>Hiya folks! It&amp;rsquo;s been a while. Today I&amp;rsquo;m pleased to present the next version of the Real Time For the Masses framework: cortex-m-rtfm v0.2.0 or just v2, which is how I like to call it.
+Here&amp;rsquo;s the executive summary of the changes:
+  v2 is simpler. v1 used a bunch of tokens &amp;ndash; ceiling tokens, priority tokens, preemption threshold tokens and task tokens &amp;ndash; for memory safety; this made the API rather boilerplatery.</description>
+    </item>
+    
+    <item>
+      <title>A CPU usage monitor for the RTFM framework</title>
+      <link>https://blog.japaric.io/cpu-monitor/</link>
+      <pubDate>Sun, 04 Jun 2017 14:08:14 -0500</pubDate>
+      
+      <guid>https://blog.japaric.io/cpu-monitor/</guid>
+      <description>We have used the RTFM framework in the previous posts but put most of the application logic in tasks, and always sent the processor to sleep in the idle function. In this post we&amp;rsquo;ll put the idle function to better use and build a CPU usage monitor there.
+Idle The main logic of the CPU usage monitor will be in the idle function. Let&amp;rsquo;s see how it works:
+// RESOURCES peripherals!</description>
+    </item>
+    
+    <item>
+      <title>Overhead analysis of the RTFM framework</title>
+      <link>https://blog.japaric.io/rtfm-overhead/</link>
+      <pubDate>Tue, 23 May 2017 09:33:23 -0500</pubDate>
+      
+      <guid>https://blog.japaric.io/rtfm-overhead/</guid>
+      <description>In the last post I introduced the RTFM framework, and made several claims about it being highly efficient both in memory usage and runtime overhead. In this post I&amp;rsquo;ll analyze all the RTFM concurrency primitives to back up those claims. To do that I&amp;rsquo;ll first introduce a non-invasive timing method that&amp;rsquo;s accurate to a single clock cycle, which is the time the processor spends to execute one of the simplest instructions.</description>
+    </item>
+    
+    <item>
+      <title>Fearless concurrency in your microcontroller</title>
+      <link>https://blog.japaric.io/fearless-concurrency/</link>
+      <pubDate>Tue, 09 May 2017 09:07:39 -0500</pubDate>
+      
+      <guid>https://blog.japaric.io/fearless-concurrency/</guid>
+      <description>I want to start by thanking all the people that has sent improvements and comments to all the crates and tools I presented in the last blog post. The Rust community rocks!
+ Last time I showed you how to easily develop Rust programs for pretty much any ARM Cortex-M microcontroller. In this post I&amp;rsquo;ll show you one way of doing memory safe concurrency. It&amp;rsquo;s important to note that the Rust language doesn&amp;rsquo;t impose a single concurrency model.</description>
+    </item>
+    
+  </channel>
+</rss>

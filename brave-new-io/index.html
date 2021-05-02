@@ -1,0 +1,752 @@
+<!DOCTYPE html>
+<html lang="en-us">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta content="Rust, embedded, development" name="keywords">
+<meta content="Jorge Aparicio" name="author">
+<meta property="og:title" content="Brave new I/O - Embedded in Rust">
+<meta property="og:url" content="https://blog.japaric.io/brave-new-io/">
+<meta property="og:description" content="A blog about Rust and embedded stuff">
+<meta property="og:type" content="website" />
+<title>Brave new I/O | Embedded in Rust</title>
+<link rel="stylesheet" href="https://blog.japaric.io//css/style.css">
+<link rel="shortcut icon" href="https://blog.japaric.io//wave.ico">
+<link rel="alternate" type="application/atom+xml" title="Embedded in Rust Posts" href="https://blog.japaric.io//index.xml">
+<link href="//maxcdn.bootstrapcdn.com/font-awesome/4.7.0/css/font-awesome.min.css" rel="stylesheet" integrity="sha384-wvfXpqpZZVQGK6TAh5PVlGOfQNHSoD2xbE+QkPxCAFlNEevoEH3Sl0sibVcOQVnN" crossorigin="anonymous">
+
+<link rel="stylesheet" href="//cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/styles/github.min.css">
+
+</head>
+
+<body>
+<section class="section">
+  <div class="container">
+    <nav class="nav">
+      <div class="nav-left">
+        <a class="nav-item" href="https://blog.japaric.io/"><h1 class="title is-4">Embedded in Rust</h1></a>
+      </div>
+      <div class="nav-right">
+        <nav class="nav-item level is-mobile">
+          
+          <a class="level-item" href="https://github.com/japaric" target="_blank">
+            <span class="icon">
+              <i class="fa fa-github"></i>
+            </span>
+          </a>
+          
+          <a class="level-item" href="/index.xml" target="_blank">
+            <span class="icon">
+              <i class="fa fa-rss"></i>
+            </span>
+          </a>
+          
+        </nav>
+      </div>
+    </nav>
+  </div>
+</section>
+
+<section class="section">
+  <div class="container">
+    <h1 class="title">Brave new I/O</h1>
+    <h2 class="subtitle is-5">January 18, 2018 by Jorge Aparicio</h2>
+    
+      <div class="tags">
+    
+        <a class="button is-link" href="/tags/i/o">I/O</a>
+    
+        <a class="button is-link" href="/tags/microcontroller">microcontroller</a>
+    
+</div>
+
+    
+    <div class="content">
+      <p>Hey there! It&rsquo;s been a while. I&rsquo;ve been working on some cool stuff for you. Now that&rsquo;s in more or
+less good shape I can blog about it!</p>
+<p>This blog post introduces our new approach to I/O in embedded contexts.</p>
+<h1 id="overview-the-register-model">Overview: The register model</h1>
+<p>First some background information</p>
+<p>In microcontrollers all external I/O requires interacting with <em>peripherals</em>. Peripherals are
+additional pieces of electronics that sit in the same chip / package as the core processor.</p>
+<p>Communication between the processor and peripherals occurs through a shared memory region. This
+memory region is logically split in <em>registers</em>. Each register is usually machine word sized (e.g.
+32 bits on ARMv7-M), to guarantee atomic (single instruction) memory accesses to it. All registers
+associated to a single peripheral are usually located in a contiguous memory location; this group of
+registers is referred to as register block.</p>
+<p>Thus all I/O boils down to memory operations on these registers.</p>
+<h1 id="the-old-approach">The old approach</h1>
+<p>The old approach follows the C model of having peripherals' register blocks as global (read:
+globally visible and accessible) resources.</p>
+<p>In C, this model has the issue that two execution contexts (e.g. threads / interrupts) may perform
+non atomic operations (e.g. a read-modify-write operation) on the same register leading to a <em>race
+condition</em> (*). See below:</p>
+<blockquote>
+<p>(*) not a UB triggering data race. AFAIS UB (torn reads / write and misoptimization) can&rsquo;t
+really occur because operations on registers are marked as volatile and they are atomic (single
+instruction); microcontrollers are (usually) single core; and the memory model of the register
+memory region is non-weak.</p>
+</blockquote>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-c" data-lang="c"><span style="color:#75715e">// defined elsewhere
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">static</span> <span style="color:#66d9ef">volatile</span> <span style="color:#66d9ef">int</span><span style="color:#f92672">*</span> GPIOA_ODR <span style="color:#f92672">=</span> <span style="color:#ae81ff">0x48000014</span>;
+
+<span style="color:#66d9ef">void</span> <span style="color:#a6e22e">main</span>() {
+  <span style="color:#66d9ef">while</span> (<span style="color:#ae81ff">1</span>) {
+    <span style="color:#f92672">*</span>GPIOA_ODR <span style="color:#f92672">+=</span> <span style="color:#ae81ff">1</span>;
+  }
+}
+
+<span style="color:#75715e">// can preempt `main`
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">void</span> <span style="color:#a6e22e">interrupt_handler</span>() {
+  <span style="color:#f92672">*</span>GPIOA_ODR <span style="color:#f92672">*=</span> <span style="color:#ae81ff">2</span>;
+}
+</code></pre></div><p>Here <code>main</code> and <code>interrupt_handler</code> race each other and this can cause the effects of
+<code>interrupt_handler</code> to sometimes be lost.</p>
+<p>In Rust, we improved this situation by making the register blocks not <em>directly</em> accessible. Instead
+you had to use a critical section (or, in <a href="https://docs.rs/cortex-m-rtfm/0.3.0/cortex_m_rtfm/">Real Time For the Masses</a> (RTFM), prove the
+compiler that no preemption was possible) to access the register block. We also made register
+manipulation fully type safe by generating an API from vendor provided <a href="https://www.keil.com/pack/doc/CMSIS/SVD/html/index.html">System View
+Description</a> (SVD) files using a tool called <a href="https://docs.rs/svd2rust/0.12.0/svd2rust/"><code>svd2rust</code></a>.</p>
+<p>Here&rsquo;s the previous C example ported to the old Rust model.</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#75715e">// generated by svd2rust
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">const</span> GPIOA: <span style="color:#a6e22e">Peripheral</span><span style="color:#f92672">&lt;</span>GPIOA<span style="color:#f92672">&gt;</span> <span style="color:#f92672">=</span> <span style="color:#66d9ef">unsafe</span> { Peripheral::new(<span style="color:#ae81ff">0x4800_0000</span>) };
+<span style="color:#75715e">// also generated by svd2rust
+</span><span style="color:#75715e"></span><span style="color:#75715e">#[repr(C)]</span>
+<span style="color:#66d9ef">struct</span> <span style="color:#a6e22e">GPIOA</span> {
+    moder: <span style="color:#a6e22e">MODER</span>, otyper: <span style="color:#a6e22e">OTYPER</span>, ospeedr: <span style="color:#a6e22e">OSPEEDR</span>, pupdr: <span style="color:#a6e22e">PUPDR</span>, idr: <span style="color:#a6e22e">IDR</span>,
+    odr: <span style="color:#a6e22e">ODR</span>, <span style="color:#75715e">/* .. */</span>
+}
+
+<span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">main</span>() {
+    <span style="color:#66d9ef">loop</span> {
+        <span style="color:#75715e">// critical section: `interrupt_handler` can&#39;t preempt this closure
+</span><span style="color:#75715e"></span>        interrupt::free(<span style="color:#f92672">|</span>cs<span style="color:#f92672">|</span> {
+            GPIOA.borrow(cs).odr.modify(<span style="color:#f92672">|</span>r, w<span style="color:#f92672">|</span> w.bits(r.bits() <span style="color:#f92672">+</span> <span style="color:#ae81ff">1</span>));
+        });
+    }
+}
+
+<span style="color:#75715e">// can preempt `main`
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">interrupt_handler</span>() {
+    interrupt::free(<span style="color:#f92672">|</span>cs<span style="color:#f92672">|</span> {
+        GPIOA.borrow(cs).odr.modify(<span style="color:#f92672">|</span>r, w<span style="color:#f92672">|</span> w.bits(r.bits() <span style="color:#f92672">*</span> <span style="color:#ae81ff">2</span>));
+    });
+}
+</code></pre></div><p>The Rust version doesn&rsquo;t have the race condition that the C version had. That coupled with the type
+safe API, which prevents you from misusing the registers (i.e. writing to the reserved portions of
+it), was a great improvement but was not enough for creating solid higher level abstractions.</p>
+<h2 id="the-hole-in-the-old-model">The hole in the old model</h2>
+<p>The Achilles heel of this model, and the C model, is the <em>global access</em> property of peripherals.
+That simply breaks all abstractions. Here&rsquo;s an example:</p>
+<p>Correct clock configuration (there are several clocks running at different frequencies in a
+microcontroller) is important for the correct operation of peripherals, like the USART, that deal
+with asynchronous communication protocols, like serial communication. In asynchronous communication
+protocols both sides of the communication channel have to agree on some baud rate (bit rate) before
+the communication takes place. The communication only works if both sides operate at the agreed upon
+baud rate.</p>
+<p>Say you create a <code>Serial</code> abstraction that reads the RCC peripheral, which controls the clock
+configuration, during initialization to configure the USART1 peripheral to operate at the right baud
+rate:</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#66d9ef">struct</span> <span style="color:#a6e22e">Serial</span><span style="color:#f92672">&lt;</span><span style="color:#a6e22e">&#39;a</span><span style="color:#f92672">&gt;</span> {
+    usart: <span style="color:#66d9ef">&amp;</span><span style="color:#a6e22e">&#39;a</span> <span style="color:#66d9ef">mut</span> USART1,
+}
+
+<span style="color:#66d9ef">impl</span><span style="color:#f92672">&lt;</span><span style="color:#a6e22e">&#39;a</span><span style="color:#f92672">&gt;</span> Serial<span style="color:#f92672">&lt;</span><span style="color:#a6e22e">&#39;a</span><span style="color:#f92672">&gt;</span> {
+    <span style="color:#66d9ef">pub</span> <span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">new</span>(usart1: <span style="color:#66d9ef">&amp;</span><span style="color:#a6e22e">&#39;a</span> <span style="color:#66d9ef">mut</span> USART1) -&gt; <span style="color:#a6e22e">Self</span> { <span style="color:#75715e">/* .. */</span> }
+    <span style="color:#66d9ef">pub</span> <span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">init</span>(<span style="color:#f92672">&amp;</span><span style="color:#66d9ef">mut</span> self, rcc: <span style="color:#66d9ef">&amp;</span><span style="color:#a6e22e">RCC</span>, baud_rate: <span style="color:#66d9ef">u32</span>) { <span style="color:#75715e">/* .. */</span> }
+    <span style="color:#66d9ef">pub</span> <span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">write</span>(<span style="color:#f92672">&amp;</span><span style="color:#66d9ef">mut</span> self, byte: <span style="color:#66d9ef">u8</span>) -&gt; Result<span style="color:#f92672">&lt;</span>(), Error<span style="color:#f92672">&gt;</span> { <span style="color:#75715e">/* .. */</span> }
+}
+</code></pre></div><p>You use the abstraction in some RTFM application where a task has exclusive access to the USART1
+peripheral and you are able to use the <code>Serial</code> abstraction without locks.</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#75715e">// rtfm: v0.2.0
+</span><span style="color:#75715e"></span>
+app<span style="color:#f92672">!</span> { .. }
+
+<span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">init</span>(p: <span style="color:#a6e22e">init</span>::Peripherals, r: <span style="color:#a6e22e">init</span>::Resources) {
+    Serial(p.USART1).init(p.RCC, <span style="color:#ae81ff">115_200</span>);
+    <span style="color:#75715e">// ..
+</span><span style="color:#75715e"></span>}
+
+<span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">task</span>(t: <span style="color:#66d9ef">&amp;</span><span style="color:#a6e22e">mut</span> Threshold, r: <span style="color:#a6e22e">EXTI0</span>::Resources) {
+    <span style="color:#66d9ef">let</span> <span style="color:#66d9ef">mut</span> serial <span style="color:#f92672">=</span> Serial(r.USART1);
+    <span style="color:#75715e">// do stuff with `serial`
+</span><span style="color:#75715e"></span>}
+</code></pre></div><p>All seems good. Except that there&rsquo;s <em>no</em> guarantee that RCC will not be modified by some other task
+thus there&rsquo;s no guarantee that the clock configuration will remain the same for all the executions
+of <code>task</code>. The other task doesn&rsquo;t even have to name the RCC as one of its resources because the RCC
+has global visibility so any task can always access it (this is actually <a href="https://github.com/japaric/cortex-m-rtfm/issues/13">an old RTFM bug</a> that&rsquo;s
+only occurs with the old I/O model):</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">foo</span>() {
+    interrupt::free(<span style="color:#f92672">|</span>cs<span style="color:#f92672">|</span> {
+        <span style="color:#66d9ef">let</span> rcc: <span style="color:#66d9ef">&amp;</span><span style="color:#a6e22e">RCC</span> <span style="color:#f92672">=</span> RCC.borrow(cs);
+        <span style="color:#75715e">// modify `RCC` to tweak the clock configuration to, say, halve all the
+</span><span style="color:#75715e"></span>        <span style="color:#75715e">// clock frequencies
+</span><span style="color:#75715e"></span>    });
+}
+
+<span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">some_other_task</span>(t: <span style="color:#66d9ef">&amp;</span><span style="color:#a6e22e">mut</span> Threshold, r: <span style="color:#a6e22e">EXTI1</span>::Resources) {
+    foo();
+}
+</code></pre></div><p>If this happens then the serial communication will fail: the hardware will raise some &ldquo;framing&rdquo;
+error flag to signal the baud rate mismatch.</p>
+<p>(Some of you may be thinking &ldquo;but then you should store a reference to <code>RCC</code> in <code>Serial</code> to make
+sure the clock configuration can&rsquo;t change&rdquo;. Unfortunately that&rsquo;s not enough because <code>Serial</code> has to
+be <em>re-constructed</em> every time the task starts so RCC can still be modified by other task between
+the end of <code>task</code> and the next time it&rsquo;s invoked)</p>
+<p>Once you know about this hole then you conclude that no abstraction around the <code>svd2rust</code> API can
+hold their invariants because <em>peripherals are always open to modification, even by crates created
+by a third party</em>. Yikes!</p>
+<h1 id="the-new-approach">The new approach</h1>
+<p>The new I/O model (<code>svd2rust</code> v0.12.x) removes the root of the problem: it no longer provides global
+access to peripherals. Instead peripherals need to be <code>take</code>n (read: moved) <em>into</em> the current
+execution context. See below:</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#75715e">// stm32f30x was generated using `svd2rust`
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">extern</span> <span style="color:#66d9ef">crate</span> stm32f30x;
+
+<span style="color:#66d9ef">use</span> stm32f30x::{GPIOA, Peripherals};
+
+<span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">main</span>() {
+    <span style="color:#66d9ef">let</span> p <span style="color:#f92672">=</span> stm32f30x::Peripherals::take().unwrap();
+
+    <span style="color:#75715e">// difference: this is now an *owned* value, not a reference
+</span><span style="color:#75715e"></span>    <span style="color:#66d9ef">let</span> gpioa: <span style="color:#a6e22e">GPIOA</span> <span style="color:#f92672">=</span> p.GPIOA;
+
+    <span style="color:#75715e">// same register manipulation API as before
+</span><span style="color:#75715e"></span>    gpioa.odr.modify(<span style="color:#f92672">|</span>r, w<span style="color:#f92672">|</span> w.bits(r.bits() <span style="color:#f92672">*</span> <span style="color:#ae81ff">2</span>));
+}
+</code></pre></div><p>The peripherals can only be <code>take</code>n once. <code>Peripherals::take</code> returns an <code>Option</code> that will only be
+<code>Some</code> the first time the method is called; subsequent calls to <code>Peripheral::take</code> will return the
+<code>None</code> variant.</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">main</span>() {
+    <span style="color:#66d9ef">let</span> ok <span style="color:#f92672">=</span> Peripherals::take().unwrap();
+    <span style="color:#66d9ef">let</span> panics <span style="color:#f92672">=</span> Peripherals::take().unwrap();
+}
+</code></pre></div><p>This effectively makes each peripheral a singleton because there can only ever be at most one
+instance of them at any point in time. In the old model peripherals were also singletons but they
+were <em>global</em> singletons: singletons accessible by anyone. In the new model peripherals are <em>scoped</em>
+singletons that are <em>owned</em> by the execution context (task / thread) from where <code>Peripherals::take</code>
+was called. A peripheral is not, forever, tied to a single execution context, though; it can be
+<em>moved</em> into another execution context if desired because every peripheral is <code>Send</code>able.</p>
+<p>How does this new ownership based model affect the way we create higher level abstractions? Let&rsquo;s
+see.</p>
+<h2 id="freezing-the-clock-configuration">Freezing the clock configuration</h2>
+<p>Before I showed that changing the clock configuration can be problematic as it can affect the
+operation of peripherals like the USART. Now that we have ownership over peripherals, making sure
+that the clock configuration never changes is very easy: you simply <code>drop</code> the <code>RCC</code> peripheral.
+Once <code>RCC</code> is gone the RCC registers can no longer be modified thus the clock configuration will
+remain unchanged from that point and on.</p>
+<p>RCC stands for Reset and Clock Control and controls not only the clock configuration but it&rsquo;s
+responsible for enabling, resetting and disabling other peripherals. Dropping the whole thing would
+mean that we can no longer enable other peripherals and most peripherals start disabled at boot time
+to save power so maybe it&rsquo;s not the best of ideas.</p>
+<p>What we can do instead is <em>split</em> RCC into parts in charge of different functionalities:</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#66d9ef">struct</span> <span style="color:#a6e22e">Parts</span> { ahb: <span style="color:#a6e22e">AHB</span>, apb1: <span style="color:#a6e22e">APB1</span>, apb2: <span style="color:#a6e22e">APB2</span>, cfgr: <span style="color:#a6e22e">CFGR</span> }
+
+<span style="color:#66d9ef">trait</span> RccExt {
+    <span style="color:#e6db74">/// Constrains RCC functionality by splitting it in parts
+</span><span style="color:#e6db74"></span>    <span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">constrain</span>(self) -&gt; <span style="color:#a6e22e">Parts</span>;
+}
+
+<span style="color:#66d9ef">impl</span> RccExt <span style="color:#66d9ef">for</span> RCC { .. }
+</code></pre></div><p><code>CFGR</code> controls the clock configuration and the other parts are in charge of enabling and disabling
+peripherals. Note that <code>constrain</code> <em>consumes</em> the original <code>RCC</code> which granted <em>full access</em> to
+every RCC register; this effectively <em>constrains</em> the operations that can be performed on RCC
+registers to only the ones exposed by the members of <code>Parts</code>.</p>
+<p>With a bit more of work we can achieve something like this:</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">main</span>() {
+    <span style="color:#66d9ef">let</span> p <span style="color:#f92672">=</span> Peripherals::take().unwrap();
+    <span style="color:#66d9ef">let</span> rcc <span style="color:#f92672">=</span> p.RCC.split();
+
+    <span style="color:#66d9ef">let</span> clocks: <span style="color:#a6e22e">Clocks</span> <span style="color:#f92672">=</span> rcc.cfgr.sysclk(<span style="color:#ae81ff">64.</span>mhz()).pclk1(<span style="color:#ae81ff">32.</span>mhz()).freeze();
+
+    assert_eq<span style="color:#f92672">!</span>(clocks.sysclk(), <span style="color:#ae81ff">64.</span>mhz());
+    assert_eq<span style="color:#f92672">!</span>(clocks.hclk(), <span style="color:#ae81ff">64.</span>mhz());
+    assert_eq<span style="color:#f92672">!</span>(clocks.pclk1(), <span style="color:#ae81ff">32.</span>mhz());
+    assert_eq<span style="color:#f92672">!</span>(clocks.pclk2(), <span style="color:#ae81ff">32.</span>mhz());
+
+    <span style="color:#75715e">// can still use `rcc.{ahb,apb1,apb2}` over here
+</span><span style="color:#75715e"></span>}
+</code></pre></div><p><code>CFGR</code> exposes a builder-like API to pick the frequency of each clock. The final <code>freeze</code> method
+makes the configuration effective, consumes <code>CFGR</code> and returns a <code>Clocks</code> value. <code>Clocks</code> is a
+<code>Copy</code>-able struct that contains the <em>frozen</em> clock configuration. <code>Clocks</code> can be used in the
+initialization of abstractions like <code>Serial</code>; its very existence holds the invariant that the clock
+configuration will not change.</p>
+<h2 id="typed-configuration">Typed configuration</h2>
+<p>Physical pins on a microcontroller can be configured as digital inputs, as digital outputs or as
+peripheral pins (pins associated to peripherals like the USART). We can encode this configuration in
+the <em>type</em> of a pin to enforce at compile time that a pin has a certain configuration. We can think
+of the different configurations as the different states the pin can be in. This pattern of encoding
+states in the type system is known as <em>type state</em> (some people also call it <em>session types</em>).</p>
+<p>Let&rsquo;s see how this would apply in practice:</p>
+<!-- raw HTML omitted -->
+<!-- raw HTML omitted -->
+<!-- raw HTML omitted -->
+<!-- raw HTML omitted -->
+<!-- raw HTML omitted -->
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">main</span>() {
+    <span style="color:#66d9ef">let</span> p <span style="color:#f92672">=</span> Peripherals::take().unwrap();
+
+    <span style="color:#66d9ef">let</span> <span style="color:#66d9ef">mut</span> rcc <span style="color:#f92672">=</span> p.RCC.constrain();
+
+    <span style="color:#75715e">// splits the GPIOA peripheral into 16 independent pins + registers
+</span><span style="color:#75715e"></span>    <span style="color:#66d9ef">let</span> <span style="color:#66d9ef">mut</span> gpioa <span style="color:#f92672">=</span> p.GPIOA.split(<span style="color:#f92672">&amp;</span><span style="color:#66d9ef">mut</span> rcc.ahb);
+    <span style="color:#75715e">// all pins start as floating inputs
+</span><span style="color:#75715e"></span>    <span style="color:#66d9ef">let</span> pa9: <span style="color:#a6e22e">PA9</span><span style="color:#f92672">&lt;</span>Input<span style="color:#f92672">&lt;</span>Floating<span style="color:#f92672">&gt;&gt;</span> <span style="color:#f92672">=</span> gpioa.pa9;
+
+    <span style="color:#75715e">// API available in the `Input&lt;_&gt;` state
+</span><span style="color:#75715e"></span>    <span style="color:#66d9ef">if</span> pa9.is_low() {
+        <span style="color:#75715e">// ..
+</span><span style="color:#75715e"></span>    } <span style="color:#66d9ef">else</span> <span style="color:#66d9ef">if</span> pa9.is_high() {
+        <span style="color:#75715e">// ..
+</span><span style="color:#75715e"></span>    }
+
+    <span style="color:#75715e">// configure the pin PA9 as an output
+</span><span style="color:#75715e"></span>    <span style="color:#75715e">// this operation consumes the original `pa9` value
+</span><span style="color:#75715e"></span>    <span style="color:#66d9ef">let</span> <span style="color:#66d9ef">mut</span> pa9: <span style="color:#a6e22e">PA9</span><span style="color:#f92672">&lt;</span>Output<span style="color:#f92672">&lt;</span>PushPull<span style="color:#f92672">&gt;&gt;</span> <span style="color:#f92672">=</span>
+        pa9.into_push_pull_output(<span style="color:#f92672">&amp;</span><span style="color:#66d9ef">mut</span> gpioa.moder, <span style="color:#f92672">&amp;</span><span style="color:#66d9ef">mut</span> gpioa.otyper);
+
+    <span style="color:#75715e">// API available in the `Output&lt;_&gt;` state
+</span><span style="color:#75715e"></span>    pa9.set_low();
+    pa9.set_high();
+}
+</code></pre></div><p>The <code>gpioa.moder</code> and <code>gpioa.otyper</code> values are proxies for the MODER and OTYPER registers. The API
+requires explicitly passing them to avoid a race condition in the rare case that you want to
+configure GPIOA pins from different execution contexts that can preempt each other; in that scenario
+the API will force you to use a critical section to access the proxies.</p>
+<p>It may seem redundant to be explicit about these registers when all the configuration is done in a
+single execution context, but by having these explicit proxies you can be sure that once they are
+destroyed the configuration of the GPIOA pins can&rsquo;t be changed anymore.</p>
+<h2 id="no-pin-overlap">No pin overlap</h2>
+<p>Modern microcontrollers pack lots of peripherals in a single package&ndash; sometimes so many peripherals
+that not all of them can be used at the same time. This is actually normal because most applications
+won&rsquo;t use all of them; instead each application will use different kinds of peripherals and
+different number of instances of each kind.</p>
+<p>For maximum flexibility vendors don&rsquo;t hardwire peripherals to physical pins (mainly because there&rsquo;s
+not enough physical pins in the first place) instead one can configure the function of a pin at
+<em>runtime</em> &ndash; this effectively associates the pin to a particular peripheral. But it&rsquo;s definitively
+an error to associate a single pin to more than one peripheral. With move semantics we can reject
+such misconfigurations at compile time:</p>
+<!-- raw HTML omitted -->
+<!-- raw HTML omitted -->
+<!-- raw HTML omitted -->
+<!-- raw HTML omitted -->
+<!-- raw HTML omitted -->
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">main</span>() {
+    <span style="color:#66d9ef">let</span> p <span style="color:#f92672">=</span> Peripherals::take().unwrap();
+
+    <span style="color:#66d9ef">let</span> <span style="color:#66d9ef">mut</span> flash <span style="color:#f92672">=</span> p.FLASH.constrain();
+    <span style="color:#66d9ef">let</span> <span style="color:#66d9ef">mut</span> rcc <span style="color:#f92672">=</span> p.RCC.constrain();
+
+    <span style="color:#66d9ef">let</span> <span style="color:#66d9ef">mut</span> gpioa <span style="color:#f92672">=</span> p.GPIOA.split(<span style="color:#f92672">&amp;</span><span style="color:#66d9ef">mut</span> rcc.ahb);
+    <span style="color:#66d9ef">let</span> clocks <span style="color:#f92672">=</span> rcc.cfgr.freeze(<span style="color:#f92672">&amp;</span><span style="color:#66d9ef">mut</span> flash.acr);
+
+    <span style="color:#75715e">// use pins PA9 and PA10 with USART1
+</span><span style="color:#75715e"></span>    <span style="color:#75715e">// the `Serial::usart1` constructor requires the pins to be configured with
+</span><span style="color:#75715e"></span>    <span style="color:#75715e">// the right Alternate Function (AF); it also consumes the pins
+</span><span style="color:#75715e"></span>    <span style="color:#66d9ef">let</span> tx <span style="color:#f92672">=</span> gpioa.pa9.into_af7(<span style="color:#f92672">&amp;</span><span style="color:#66d9ef">mut</span> gpioa.moder, <span style="color:#f92672">&amp;</span><span style="color:#66d9ef">mut</span> gpioa.afrh);
+    <span style="color:#66d9ef">let</span> rx <span style="color:#f92672">=</span> gpioa.pa10.into_af7(<span style="color:#f92672">&amp;</span><span style="color:#66d9ef">mut</span> gpioa.moder, <span style="color:#f92672">&amp;</span><span style="color:#66d9ef">mut</span> gpioa.afrh);
+    <span style="color:#66d9ef">let</span> serial <span style="color:#f92672">=</span>
+        Serial::usart1(p.USART1, (tx, rx), <span style="color:#ae81ff">9_600.</span>bps(), clocks, <span style="color:#f92672">&amp;</span><span style="color:#66d9ef">mut</span> rcc.apb2);
+
+    <span style="color:#75715e">// try to use PA9 and PA10 with I2C2
+</span><span style="color:#75715e"></span>    <span style="color:#66d9ef">let</span> scl <span style="color:#f92672">=</span> gpioa.pa9.into_af4(<span style="color:#f92672">&amp;</span><span style="color:#66d9ef">mut</span> gpioa.moder, <span style="color:#f92672">&amp;</span><span style="color:#66d9ef">mut</span> gpioa.afrh);
+    <span style="color:#75715e">//~^ error: use of move value: `gpioa.pa9`
+</span><span style="color:#75715e"></span>    <span style="color:#66d9ef">let</span> sda <span style="color:#f92672">=</span> gpioa.pa10.into_af4(<span style="color:#f92672">&amp;</span><span style="color:#66d9ef">mut</span> gpioa.moder, <span style="color:#f92672">&amp;</span><span style="color:#66d9ef">mut</span> gpioa.afrh);
+    <span style="color:#75715e">//~^ error: use of move value: `gpioa.pa10`
+</span><span style="color:#75715e"></span>    <span style="color:#66d9ef">let</span> i2c <span style="color:#f92672">=</span> I2c::i2c2(p.I2C2, (scl, sda), <span style="color:#ae81ff">400.</span>khz(), clocks, <span style="color:#f92672">&amp;</span><span style="color:#66d9ef">mut</span> rcc.apb1);
+}
+</code></pre></div><hr>
+<p>And this is just the tip of iceberg of the things you can do with the new I/O model.</p>
+<h1 id="layered-io">Layered I/O</h1>
+<p>Let&rsquo;s now look at another aspect of the I/O story: code reuse.</p>
+<p>The API that <code>svd2rust</code> generates serves as the lowest abstraction layer sitting very close to the
+hardware and providing an API for directly manipulating registers. Most people will want to program
+with higher level abstractions that map closer to actions like &ldquo;read this sensor&rdquo;, &ldquo;send data
+through this interface&rdquo;, etc.</p>
+<p>This section covers my plan for building those higher level abstractions with minimal code
+duplication.</p>
+<h2 id="thou-shalt-not-block">Thou shalt not block</h2>
+<p>I/O can be performed in a blocking fashion or in an asynchronous fashion. And there&rsquo;s more than one
+way to do asynchronous I/O: there&rsquo;s the callback model (&ldquo;run this function when data is ready&rdquo;), the
+futures model (&ldquo;a future represents an I/O action that will be completed some time in the future;
+poll to see if the I/O has completed or not&rdquo;) and the generators model (&ldquo;yield control, instead of
+blocking, when no more progress can be made&rdquo;).</p>
+<p>We can implement a blocking API on top of the <code>svd2rust</code> API; we can implement a futures based
+version of the API on top of the <code>svd2rust</code> API; and we can implement a generator based version of
+the API on top of the <code>svd2rust</code> API. The implementations of those three flavors of the same API
+will look very similar. The question is: can we implement some intermediate API to avoid <em>writing
+register manipulation</em> code in those three implementations? The answer is the <a href="https://docs.rs/nb/0.1.1/nb/"><code>nb</code></a> crate.</p>
+<p>I pulled a solution out of the Tokio book, or maybe it&rsquo;s actually from the *nix book. The solution I
+chose was to implement the intermediate API as a non blocking API that returns a <code>WouldBlock</code> error
+variant to signal that the operation can <em>not</em> be completed right now. This non fatal error variant
+has a different meaning depending on the (a)synchronous model is used in:</p>
+<ul>
+<li>In a blocking API, <code>WouldBlock</code> means try again i.e. busy wait (or maybe do something more
+elaborated if you have a threading system).</li>
+<li>In a futures based API, <code>WouldBlock</code> means <code>Async::NotReady</code></li>
+<li>In a generator based API, <code>WouldBlock</code> means <code>yield</code></li>
+</ul>
+<h3 id="async-your-way">Async, your way</h3>
+<p>Let&rsquo;s look at an example. Below is shown the <code>nb</code> API for reading a single byte from a serial
+interface. <code>Serial::read</code> will return <code>Ok(byte)</code> if new data is available to be read; it will return
+<code>Err(nb::Error::WouldBlock)</code> if no new data is available at the moment; and it will return e.g.
+<code>Err(nb::Error::Other(Error::Overrun))</code> if some fatal error occurred.</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#66d9ef">enum</span> <span style="color:#a6e22e">Error</span> {
+    Noise,
+    Framing,
+    Overrun,
+    <span style="color:#75715e">// ..
+</span><span style="color:#75715e"></span>}
+
+<span style="color:#66d9ef">impl</span> Serial {
+    <span style="color:#66d9ef">pub</span> <span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">read</span>(<span style="color:#f92672">&amp;</span><span style="color:#66d9ef">mut</span> self) -&gt; <span style="color:#a6e22e">nb</span>::Result<span style="color:#f92672">&lt;</span><span style="color:#66d9ef">u8</span>, Error<span style="color:#f92672">&gt;</span> { <span style="color:#75715e">/* .. */</span> }
+}
+</code></pre></div><p>The <a href="https://docs.rs/nb/0.1.1/nb/"><code>nb</code></a> crate provides macros to easily transform this intermediate API into the (a)synchronous
+models I mentioned:</p>
+<p><a href="https://github.com/japaric/nb/blob/v0.1.1/src/lib.rs#L428-L456"><code>block!</code></a> is used to implement blocking APIs by busy waiting.</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">blocking_read</span>(serial: <span style="color:#66d9ef">&amp;</span><span style="color:#a6e22e">mut</span> Serial) -&gt; Result<span style="color:#f92672">&lt;</span><span style="color:#66d9ef">u8</span>, Error<span style="color:#f92672">&gt;</span> {
+    block<span style="color:#f92672">!</span>(serial.read())
+}
+</code></pre></div><p><a href="https://github.com/japaric/nb/blob/v0.1.1/src/lib.rs#L458-L495"><code>try_nb!</code></a> is used to implement futures based APIs.</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">futures_read</span>(serial: <span style="color:#a6e22e">Serial</span>) -&gt; <span style="color:#a6e22e">impl</span> Future<span style="color:#f92672">&lt;</span>(Serial, <span style="color:#66d9ef">u8</span>), Error<span style="color:#f92672">&gt;</span> {
+    <span style="color:#66d9ef">let</span> <span style="color:#66d9ef">mut</span> serial <span style="color:#f92672">=</span> Some(serial);
+    futures::poll_fn(<span style="color:#66d9ef">move</span> <span style="color:#f92672">||</span> {
+        <span style="color:#66d9ef">let</span> byte <span style="color:#f92672">=</span> try_nb<span style="color:#f92672">!</span>(serial.as_mut().unwrap().read());
+        Ok(Async::Ready((serial.take().unwrap(), byte)))
+    })
+}
+</code></pre></div><p><a href="https://github.com/japaric/nb/blob/v0.1.1/src/lib.rs#L389-L426"><code>await!</code></a> is used to implement generator based APIs.</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">generator_read</span>(
+    <span style="color:#66d9ef">mut</span> serial: <span style="color:#a6e22e">Serial</span>,
+) -&gt; <span style="color:#a6e22e">impl</span> Generator<span style="color:#f92672">&lt;</span>Return <span style="color:#f92672">=</span> Result<span style="color:#f92672">&lt;</span>(Serial, <span style="color:#66d9ef">u8</span>), Error<span style="color:#f92672">&gt;</span>, Yield <span style="color:#f92672">=</span> ()<span style="color:#f92672">&gt;</span> {
+    <span style="color:#66d9ef">let</span> byte <span style="color:#f92672">=</span> <span style="color:#66d9ef">await</span><span style="color:#f92672">!</span>(serial.read())<span style="color:#f92672">?</span>;
+    Ok((serial, byte))
+}
+</code></pre></div><p>None of these higher level APIs required writing any register manipulation code and the functions
+could even have been made generic if <code>Serial::read</code> was a trait method instead of an inherent
+method. Which brings me to the next topic.</p>
+<h2 id="hal-traits">HAL traits</h2>
+<p>The <code>nb</code> crate provides an easy transition from the svd2rust API to the different (a)synchronous
+models but for code reuse we have to write generic code and this means that we have to establish a
+set of traits to build that generic code upon.</p>
+<p>Enter the <a href="https://docs.rs/embedded-hal/0.1.0"><code>embedded-hal</code></a> crate.</p>
+<p>This crate is basically a collection of traits that provides interfaces for the different
+peripherals available on a embedded device. These traits form a Hardware Abstraction Layer, an
+abstraction that hides device specific details like registers.</p>
+<p>At the center of this crate we have <code>nb</code> based traits that make functions like the <code>Serial::read</code>
+method we saw before more generic:</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#66d9ef">pub</span> <span style="color:#66d9ef">mod</span> serial {
+    <span style="color:#66d9ef">pub</span> <span style="color:#66d9ef">trait</span> Read<span style="color:#f92672">&lt;</span>Word<span style="color:#f92672">&gt;</span> {
+        <span style="color:#66d9ef">type</span> <span style="color:#a6e22e">Error</span>;
+
+        <span style="color:#e6db74">/// Reads a single word from the serial interface
+</span><span style="color:#e6db74"></span>        <span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">read</span>(<span style="color:#f92672">&amp;</span><span style="color:#66d9ef">mut</span> self) -&gt; <span style="color:#a6e22e">nb</span>::Result<span style="color:#f92672">&lt;</span>Word, Self::Error<span style="color:#f92672">&gt;</span>;
+    }
+}
+</code></pre></div><p>Then we have slightly higher level traits that actually pick an (a)synchronous model. Where possible
+opt-in default implementations on top of the <code>nb</code> traits are provided.</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#e6db74">/// Blocking API
+</span><span style="color:#e6db74"></span><span style="color:#66d9ef">pub</span> <span style="color:#66d9ef">mod</span> blocking {
+    <span style="color:#e6db74">/// Blocking SPI API
+</span><span style="color:#e6db74"></span>    <span style="color:#66d9ef">pub</span> <span style="color:#66d9ef">mod</span> spi {
+        <span style="color:#e6db74">/// Blocking transfer
+</span><span style="color:#e6db74"></span>        <span style="color:#66d9ef">pub</span> <span style="color:#66d9ef">trait</span> Transfer<span style="color:#f92672">&lt;</span>Word<span style="color:#f92672">&gt;</span> {
+            <span style="color:#66d9ef">type</span> <span style="color:#a6e22e">Error</span>;
+
+            <span style="color:#e6db74">/// Sends `words` to the slave. Returns the `words` received from
+</span><span style="color:#e6db74"></span>            <span style="color:#e6db74">/// the slave
+</span><span style="color:#e6db74"></span>            <span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">transfer</span><span style="color:#f92672">&lt;</span><span style="color:#a6e22e">&#39;w</span><span style="color:#f92672">&gt;</span>(
+                <span style="color:#f92672">&amp;</span><span style="color:#66d9ef">mut</span> self,
+                words: <span style="color:#66d9ef">&amp;</span><span style="color:#a6e22e">&#39;w</span> <span style="color:#66d9ef">mut</span> [Word],
+            ) -&gt; Result<span style="color:#f92672">&lt;&amp;</span><span style="color:#a6e22e">&#39;w</span> [Word], Self::Error<span style="color:#f92672">&gt;</span>;
+        }
+
+        <span style="color:#e6db74">/// Blocking transfer
+</span><span style="color:#e6db74"></span>        <span style="color:#66d9ef">pub</span> <span style="color:#66d9ef">mod</span> transfer {
+            <span style="color:#e6db74">/// Marker trait to opt into a default implementation of
+</span><span style="color:#e6db74"></span>            <span style="color:#e6db74">/// `blocking::spi::Transfer&lt;W&gt;`
+</span><span style="color:#e6db74"></span>            <span style="color:#66d9ef">pub</span> <span style="color:#66d9ef">trait</span> Default<span style="color:#f92672">&lt;</span>W<span style="color:#f92672">&gt;</span>: ::spi::FullDuplex<span style="color:#f92672">&lt;</span>W<span style="color:#f92672">&gt;</span> {}
+
+            <span style="color:#66d9ef">impl</span><span style="color:#f92672">&lt;</span>W, S<span style="color:#f92672">&gt;</span> blocking::spi::Transfer<span style="color:#f92672">&lt;</span>W<span style="color:#f92672">&gt;</span> <span style="color:#66d9ef">for</span> S
+            <span style="color:#66d9ef">where</span>
+                S: Default<span style="color:#f92672">&lt;</span>W<span style="color:#f92672">&gt;</span>,
+                W: Clone,
+            {
+                <span style="color:#66d9ef">type</span> <span style="color:#a6e22e">Error</span> <span style="color:#f92672">=</span> S::Error;
+
+                <span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">transfer</span>(
+                    <span style="color:#f92672">&amp;</span><span style="color:#66d9ef">mut</span> self,
+                    words: <span style="color:#66d9ef">&amp;</span><span style="color:#a6e22e">&#39;w</span> <span style="color:#66d9ef">mut</span> [Word],
+                ) -&gt; Result<span style="color:#f92672">&lt;&amp;</span><span style="color:#a6e22e">&#39;w</span> [Word], S::Error<span style="color:#f92672">&gt;</span> {
+                    <span style="color:#66d9ef">for</span> word <span style="color:#66d9ef">in</span> words.iter_mut() {
+                        block<span style="color:#f92672">!</span>(self.send(word.clone()))<span style="color:#f92672">?</span>;
+                        <span style="color:#f92672">*</span>word <span style="color:#f92672">=</span> block<span style="color:#f92672">!</span>(self.read())<span style="color:#f92672">?</span>;
+                    }
+
+                    Ok(words)
+                }
+            }
+        }
+    }
+}
+</code></pre></div><h3 id="write-once-run-everywhere">Write once, run everywhere</h3>
+<p>The end goal of having these traits is writing <em>generic</em> drivers: library crates that let you
+interface external components but that &ndash; thanks to the HAL &ndash; whose implementation is oblivious
+to the hardware details of the platform they are running on.</p>
+<p>SPI and I2C are two widely used communication protocols and there are several external components,
+like digital sensors, out there that can be interfaced using one of these two communication
+protocols. The <code>embedded-hal</code> crate contains blocking traits for these two communication protocols
+and, as a proof of concept, I have developed a few <em>no_std</em> generic drivers on top of those traits:</p>
+<ul>
+<li><a href="https://docs.rs/l3gd20/0.1.0/l3gd20/"><code>l3gd20</code></a>, gyroscope found on the STM32F3DISCOVERY board</li>
+<li><a href="https://docs.rs/lsm303dlhc/0.1.0/lsm303dlhc/"><code>lsm303dlhc</code></a>, accelerometer + compass found on the STM32F3DISCOVERY board</li>
+<li><a href="https://github.com/japaric/mfrc522"><code>mfrc522</code></a>, RFID tag reader / writer</li>
+<li><a href="https://github.com/japaric/mpu9250"><code>mpu9250</code></a>, Nine-Axis (Gyro + Accelerometer + Compass) MEMS MotionTracking Device</li>
+</ul>
+<p>As an example, let&rsquo;s look at the <code>mfrc522</code> driver:</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#75715e">#![no_std]</span>
+
+<span style="color:#66d9ef">extern</span> <span style="color:#66d9ef">crate</span> embedded_hal <span style="color:#66d9ef">as</span> hal;
+
+<span style="color:#e6db74">/// MFRC522 driver
+</span><span style="color:#e6db74"></span><span style="color:#66d9ef">struct</span> <span style="color:#a6e22e">Mfrc522</span><span style="color:#f92672">&lt;</span>SPI, NSS<span style="color:#f92672">&gt;</span> <span style="color:#66d9ef">where</span>
+    SPI: <span style="color:#a6e22e">hal</span>::blocking::spi::Transfer<span style="color:#f92672">&lt;</span><span style="color:#66d9ef">u8</span><span style="color:#f92672">&gt;</span> <span style="color:#f92672">+</span> hal::blocking::spi::Write<span style="color:#f92672">&lt;</span><span style="color:#66d9ef">u8</span><span style="color:#f92672">&gt;</span>,
+    NSS: <span style="color:#a6e22e">hal</span>::digital::OutputPin,
+{
+    spi: <span style="color:#a6e22e">SPI</span>,
+    nss: <span style="color:#a6e22e">NSS</span>,
+}
+</code></pre></div><p>The driver uses a SPI bus and a NSS (slave select) pin to interface with a MFRC522. The driver is
+generic over both the SPI bus and the NSS pin; this means any abstraction that implements the
+required traits can be used here. For instance, the <a href="https://crates.io/crates/linux-embedded-hal"><code>linux-embedded-hal</code></a> crate which implements
+the <code>embedded-hal</code> traits for the <a href="https://crates.io/crates/spidev"><code>spidev</code></a> and <a href="https://crates.io/crates/sysfs_gpio"><code>sysfs_gpio</code></a> crates can be used with this driver
+to build a <a href="https://github.com/japaric/mfrc522/blob/v0.1.0/examples/rpi.rs#L68">program that targets a platform running Linux</a>, like the Raspeberry Pi.</p>
+<!-- raw HTML omitted -->
+<!-- raw HTML omitted -->
+<p>Since the crate is a <code>no_std</code> crate it can also be used to build a <code>no_std</code> program that targets an
+ARM Cortex-M microcontroller. (The source for this second program will be in the <a href="https://github.com/japaric/blue-pill"><code>blue-pill</code></a>
+repository once I finish cleaning it up.)</p>
+<!-- raw HTML omitted -->
+<p>So, by using the <code>embedded-hal</code> traits driver authors can effortlessly support a bunch of diverse
+platforms (AVR, ARM Cortex-M, MSP430, RISC-V microcontrollers; ARM Cortex-A single board computers;
+etc.) in a single crate. Whereas application developers, by implementing the <code>embedded-hal</code> traits
+for their platform, can unlock a bunch of drivers at zero extra effort.</p>
+<h2 id="crate-hierarchy-for-cortex-m">Crate hierarchy for Cortex-M</h2>
+<p>Here&rsquo;s the whole I/O picture for the Cortex-M ecosystem.</p>
+<p>At the lowest level we have the device crates generated by <code>svd2rust</code>. These expose type safe APIs
+for directly manipulating registers. Depending on the source SVD file a device crate can support a
+single device or several device families. For example, the <code>stm32f30x</code> crate supports device
+families STM32F301xx, STM32F302xx and STM32F303xx.</p>
+<p>At the next level you have <em>HAL implementation</em> crates like the <a href="https://crates.io/crates/stm32f30x-hal"><code>stm32f30x-hal</code></a> that implement the
+<code>embedded-hal</code> traits for a single device crate. These crates expose higher level APIs for <code>Serial</code>
+interfaces, <code>SPI</code> interfaces, clock configuration, etc. and it&rsquo;s what most people will be using.
+These crates let you use generic drivers to interface external components.</p>
+<p>There&rsquo;s one more level: <em>board support</em> crates.</p>
+<p>HAL impl crates are highly generic: they let you configure peripherals to work with any valid pin
+configuration. This is reflected in the types exposed by the crate:</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#75715e">// crate: stm32f30x-hal
+</span><span style="color:#75715e"></span>
+<span style="color:#75715e">// `Serial` is generic over
+</span><span style="color:#75715e">// - the USART peripheral, which can be USART1, USART2, etc.
+</span><span style="color:#75715e">// - the TX and RX pins, which can be PA9 and PA10 or PB7 and PB8 for USART1, etc.
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">struct</span> <span style="color:#a6e22e">Serial</span><span style="color:#f92672">&lt;</span>USART, TX, RX<span style="color:#f92672">&gt;</span> <span style="color:#66d9ef">where</span>
+    TX: <span style="color:#a6e22e">TxPin</span><span style="color:#f92672">&lt;</span>USART<span style="color:#f92672">&gt;</span>,
+    RX: <span style="color:#a6e22e">RxPin</span><span style="color:#f92672">&lt;</span>USART<span style="color:#f92672">&gt;</span>,
+    ..
+{ .. }
+
+<span style="color:#66d9ef">impl</span><span style="color:#f92672">&lt;</span>TX, RX<span style="color:#f92672">&gt;</span> Serial<span style="color:#f92672">&lt;</span>USART1, TX, RX<span style="color:#f92672">&gt;</span> <span style="color:#66d9ef">where</span> .. {
+    <span style="color:#66d9ef">pub</span> <span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">usart1</span>(usart: <span style="color:#a6e22e">USART1</span>, (tx, rx): (TX, RX), ..) -&gt; <span style="color:#a6e22e">Self</span> { .. }
+}
+</code></pre></div><p>But PCBs already have their microcontroller&rsquo;s pins routed to external components; this means that
+some peripherals / pins <em>have</em> to be configured in a certain way. Thus board support crates should
+narrow down the possible configurations of a peripheral to a single configuration to avoid
+misconfigurations. Board support crates can achieve that by exposing type aliases that turn the
+generic types from HAL impl crates into concrete types:</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#75715e">// crate: f3 (board support crate for the STM32F3DISCOVERY)
+</span><span style="color:#75715e"></span>
+<span style="color:#75715e">// driver crate that exposes a generic `Lsm303dlhc&lt;I2C&gt; where I2C: ..` type
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">extern</span> <span style="color:#66d9ef">crate</span> lsm303dlhc;
+
+<span style="color:#75715e">// Pins PA9 and PA10 have been routed to e.g. an UART &lt;-&gt; USB adapter so they
+</span><span style="color:#75715e">// can only be used for serial communication
+</span><span style="color:#75715e">// `Serial1` represents that serial interface
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">pub</span> <span style="color:#66d9ef">type</span> <span style="color:#a6e22e">Serial1</span> <span style="color:#f92672">=</span> stm32f30x_hal::Serial<span style="color:#f92672">&lt;</span>USART1, PA9<span style="color:#f92672">&lt;</span>AF7<span style="color:#f92672">&gt;</span>, PA10<span style="color:#f92672">&lt;</span>AF7<span style="color:#f92672">&gt;&gt;</span>;
+
+<span style="color:#75715e">// LSM303DLHC is connected to the microcontroller via the I2C1 bus lines: PB6
+</span><span style="color:#75715e">// and PB7
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">pub</span> <span style="color:#66d9ef">type</span> <span style="color:#a6e22e">Lsm303dlhc</span> <span style="color:#f92672">=</span> lsm303dlhc::Lsm303dlhc<span style="color:#f92672">&lt;</span>I2c<span style="color:#f92672">&lt;</span>I2C1, (PB6<span style="color:#f92672">&lt;</span>AF4<span style="color:#f92672">&gt;</span>, PB7<span style="color:#f92672">&lt;</span>AF4<span style="color:#f92672">&gt;</span>)<span style="color:#f92672">&gt;&gt;</span>;
+</code></pre></div><p>This means that we can <em>specify board connections at the type level</em> and have them enforced by the
+compiler: if, for example, you try to construct a <code>f3::Lsm303dlhc</code> value using pins other than PB6
+and PB7 you&rsquo;ll get a compiler error.</p>
+<h1 id="conclusion">Conclusion</h1>
+<p>The new I/O model brings move semantics to the table which lets us exploit the type system (mainly
+using the type state pattern) to check configurations at compile time and have to compiler reject
+wrong configurations.</p>
+<p>The new model also serves as a solid foundation on top of which we can build generic drivers using
+the <code>embedded-hal</code> traits.</p>
+<p>The best part is that these two advantages are orthogonal. Perhaps you are not too crazy about the
+type state stuff and think it&rsquo;s too much work for little gain. That&rsquo;s totally OK! You can still
+benefit from the generic driver crates if you implement the <code>embedde-hal</code> traits; type state is not
+a requirement for using generic driver crates.</p>
+<h1 id="whats-next">What&rsquo;s next</h1>
+<h2 id="async-hal">Async HAL</h2>
+<p>All my proof of concept driver crates expose a blocking API. We want to explore writing
+asynchronous driver crates using futures / generators. We are kind of blocked on that front though
+because to write truly generic async driver code we would need HAL traits whose methods return
+futures or generators and <code>impl Trait</code> doesn&rsquo;t work in that position yet:</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#75715e">// I2C async write
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">trait</span> Write {
+    <span style="color:#66d9ef">type</span> <span style="color:#a6e22e">Error</span>;
+
+    <span style="color:#66d9ef">fn</span> <span style="color:#a6e22e">write</span>(
+        self,
+        addr: <span style="color:#66d9ef">u8</span>,
+        bytes: [<span style="color:#66d9ef">u8</span>; <span style="color:#ae81ff">16</span>], <span style="color:#75715e">// NOTE should be generic over the size
+</span><span style="color:#75715e"></span>    ) -&gt; <span style="color:#a6e22e">impl</span> Generator<span style="color:#f92672">&lt;</span>Return <span style="color:#f92672">=</span> Result<span style="color:#f92672">&lt;</span>(Self, [<span style="color:#66d9ef">u8</span>; <span style="color:#ae81ff">16</span>]), Self::Error<span style="color:#f92672">&gt;</span>, Yield <span style="color:#f92672">=</span> ()<span style="color:#f92672">&gt;</span>;
+    <span style="color:#75715e">//~^ error: `impl Trait` not allowed outside of function and inherent method return types
+</span><span style="color:#75715e"></span>}
+</code></pre></div><p>Using boxed trait objects is not really an option as some applications will prefer to leave out
+the memory allocator. It might be possible to walk down the futures route right now if we are OK
+with using really long (lasagna) types that implement the <code>Future</code> trait as the return types &hellip;</p>
+<h2 id="reduce-implementation-work">Reduce implementation work</h2>
+<p>With the crate hierarchy I described before <code>svd2rust</code> does 90% of the work by generating the device
+crates for us. Writing those by hand would be extremely tedious and error prone; it would also take
+lots of human hours to completely write a single device crate.</p>
+<p>The next level of the hierarchy, the HAL impl crates, need to be written by a human because
+semantics need to be understood (&ldquo;what does this register do?&quot;) and tools can&rsquo;t do those for us.
+However, the way <code>svd2rust</code> currently works will let us to write a bunch of duplicated code. Let me
+elaborate:</p>
+<p><code>svd2rust</code> produces a single device crate per input SVD file. The SVD file can be generic like the
+STM32F30X.svd which covers <em>three</em> device families: STM32F301xx, STM32F302xx and STM32F303xx; or
+less generic like the STM32F301X.svd, STM32F302X and STM32F303X.svd where each one targets <em>one</em> of
+the device families mentioned before.</p>
+<p>You may already see where this is going. If we generated <em>three</em> device crates and implemented
+<em>three</em> HAL impl crates we would have ended with three very similar looking crates. By, instead,
+implementing the HAL for the more generic device crate we reduce the amount of required work by
+66%.</p>
+<p>Vendors may not always provide these more generic SVD files but there are many similarities between
+devices from the same vendor, even if they are from different product lines. If we can make
+<code>svd2rust</code> find those similarities to produce <em>shared</em> crates (see below) for us we could make it do
+99% of the implementation work.</p>
+<p>Ideally <code>svd2rust -i *.svd</code> should generate crates like these:</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#75715e">// crate: stm32_common
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">pub</span> <span style="color:#66d9ef">struct</span> <span style="color:#a6e22e">GPIOA</span> { .. }
+<span style="color:#75715e">// ..
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">pub</span> <span style="color:#66d9ef">struct</span> <span style="color:#a6e22e">USART1</span> { .. }
+<span style="color:#66d9ef">pub</span> <span style="color:#66d9ef">struct</span> <span style="color:#a6e22e">USART2</span> { .. }
+<span style="color:#66d9ef">pub</span> <span style="color:#66d9ef">struct</span> <span style="color:#a6e22e">USART3</span> { .. }
+<span style="color:#75715e">// ..
+</span></code></pre></div><div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#75715e">// crate: stm32f10x
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">extern</span> <span style="color:#66d9ef">crate</span> stm32_common;
+
+<span style="color:#75715e">// NOTE no USART3 here
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">pub</span> <span style="color:#66d9ef">use</span> stm32_common::{GPIOA, .., USART1, USART2, ..};
+</code></pre></div><div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#75715e">// crate: stm32f20x
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">extern</span> <span style="color:#66d9ef">crate</span> stm32_common;
+
+<span style="color:#66d9ef">pub</span> <span style="color:#66d9ef">use</span> stm32_common::{GPIOA, .., USART1, USART2, USART3, ..};
+</code></pre></div><p>Then the HAL implementation only needs to be done for the <code>stm32_common</code>:</p>
+<div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-rust" data-lang="rust"><span style="color:#75715e">// crate: stm32_common_hal
+</span><span style="color:#75715e"></span>
+<span style="color:#66d9ef">extern</span> <span style="color:#66d9ef">crate</span> stm32_common;
+
+<span style="color:#66d9ef">use</span> stm32_common::USART1;
+
+<span style="color:#66d9ef">pub</span> <span style="color:#66d9ef">struct</span> <span style="color:#a6e22e">Serial</span><span style="color:#f92672">&lt;</span>USART, ..<span style="color:#f92672">&gt;</span> { .. }
+
+<span style="color:#75715e">// this implementation supports devices from the STM32F10x, STM32F20x, etc. families
+</span><span style="color:#75715e"></span><span style="color:#66d9ef">impl</span> hal::serial::Write <span style="color:#66d9ef">for</span> Serial<span style="color:#f92672">&lt;</span>USART1, ..<span style="color:#f92672">&gt;</span> { .. }
+</code></pre></div><h2 id="making-more-batteries">Making more batteries</h2>
+<p>To encourage the use of the <code>embedded-hal</code> traits and to grow the no-std crates.io ecosystem I&rsquo;m
+starting <a href="https://github.com/rust-embedded/rfcs/issues/39">the weekly driver initiative</a> 🎉.</p>
+<p>The goal is to release one generic, <code>no_std</code>, <code>embedded-hal</code> based driver crate every one or maybe
+two weeks. I can probably implement ~20 of these crates in a year on my own (I don&rsquo;t think I have
+more than 30 external components with me in any case) so I hope others will join in so we can get
+way more crates published. A short blog post will accompany each driver release describing its
+functionality.</p>
+<p>That&rsquo;s it for this post. Until next time.</p>
+<hr>
+<p><strong>Thank you patrons! ❤️</strong></p>
+<p>I want to wholeheartedly thank:</p>
+<!-- raw HTML omitted -->
+<p><a href="https://github.com/Razican">Iban Eguia</a>, <a href="https://github.com/aturon">Aaron Turon</a>, <a href="https://github.com/archaelus">Geoff Cant</a>, <a href="http://www.harrisonchin.com/">Harrison Chin</a>, <a href="https://github.com/brandonedens">Brandon Edens</a>, <a href="https://github.com/whitequark">whitequark</a>,  <a href="https://jamesmunns.com/">James
+Munns</a>, <a href="https://github.com/flundstrom2">Fredrik Lundström</a>, <a href="https://github.com/kjetilkjeka">Kjetil Kjeka</a>, Kor Nielsen and 34 more people for supporting my work
+on Patreon.</p>
+<!-- raw HTML omitted -->
+<hr>
+<p>Let&rsquo;s discuss on <a href="https://www.reddit.com/r/rust/comments/7r5jqw/eir_brave_new_io/">reddit</a>.</p>
+
+    </div>
+
+    
+    
+    <div class="article-toc" >
+        <h3>Contents</h3>
+        <nav id="TableOfContents">
+  <ul>
+    <li><a href="#the-hole-in-the-old-model">The hole in the old model</a></li>
+  </ul>
+
+  <ul>
+    <li><a href="#freezing-the-clock-configuration">Freezing the clock configuration</a></li>
+    <li><a href="#typed-configuration">Typed configuration</a></li>
+    <li><a href="#no-pin-overlap">No pin overlap</a></li>
+  </ul>
+
+  <ul>
+    <li><a href="#thou-shalt-not-block">Thou shalt not block</a>
+      <ul>
+        <li><a href="#async-your-way">Async, your way</a></li>
+      </ul>
+    </li>
+    <li><a href="#hal-traits">HAL traits</a>
+      <ul>
+        <li><a href="#write-once-run-everywhere">Write once, run everywhere</a></li>
+      </ul>
+    </li>
+    <li><a href="#crate-hierarchy-for-cortex-m">Crate hierarchy for Cortex-M</a></li>
+  </ul>
+
+  <ul>
+    <li><a href="#async-hal">Async HAL</a></li>
+    <li><a href="#reduce-implementation-work">Reduce implementation work</a></li>
+    <li><a href="#making-more-batteries">Making more batteries</a></li>
+  </ul>
+</nav>
+    </div>
+    
+    
+
+    
+  </div>
+</section>
+
+
+<section class="section">
+  <div class="container has-text-centered">
+    <p><a rel="license" href="http://creativecommons.org/licenses/by/4.0/"><img alt="Creative Commons License" src="https://i.creativecommons.org/l/by/4.0/80x15.png" /></a><br/>Jorge Aparicio</p>
+  </div>
+</section>
+
+
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/styles/tomorrow-night.min.css" />
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/highlight.min.js" integrity="sha256-aYTdUrn6Ow1DDgh5JTc3aDGnnju48y/1c8s1dgkYPQ8=" crossorigin="anonymous"></script>
+
+<script type="text/javascript" src="//cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/languages/armasm.min.js"></script>
+
+<script type="text/javascript" src="//cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/languages/c.min.js"></script>
+
+<script type="text/javascript" src="//cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/languages/diff.min.js"></script>
+
+<script type="text/javascript" src="//cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/languages/llvm.min.js"></script>
+
+<script type="text/javascript" src="//cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/languages/rust.min.js"></script>
+
+<script type="text/javascript" src="//cdnjs.cloudflare.com/ajax/libs/highlight.js/9.15.6/languages/shell.min.js"></script>
+
+<script>hljs.initHighlightingOnLoad();</script>
+
+
+</body>

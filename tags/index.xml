@@ -1,0 +1,156 @@
+<?xml version="1.0" encoding="utf-8" standalone="yes"?>
+<rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom">
+  <channel>
+    <title>Tags on Embedded in Rust</title>
+    <link>https://blog.japaric.io/tags/</link>
+    <description>Recent content in Tags on Embedded in Rust</description>
+    <generator>Hugo -- gohugo.io</generator>
+    <language>en-us</language>
+    <copyright>&lt;a rel=&#34;license&#34; href=&#34;http://creativecommons.org/licenses/by/4.0/&#34;&gt;&lt;img alt=&#34;Creative Commons License&#34; src=&#34;https://i.creativecommons.org/l/by/4.0/80x15.png&#34; /&gt;&lt;/a&gt;&lt;br/&gt;Jorge Aparicio</copyright>
+    <lastBuildDate>Sun, 23 Jun 2019 18:00:00 +0200</lastBuildDate><atom:link href="https://blog.japaric.io/tags/index.xml" rel="self" type="application/rss+xml" />
+    <item>
+      <title>AMP</title>
+      <link>https://blog.japaric.io/tags/amp/</link>
+      <pubDate>Sun, 23 Jun 2019 18:00:00 +0200</pubDate>
+      
+      <guid>https://blog.japaric.io/tags/amp/</guid>
+      <description></description>
+    </item>
+    
+    <item>
+      <title>concurrency</title>
+      <link>https://blog.japaric.io/tags/concurrency/</link>
+      <pubDate>Sun, 23 Jun 2019 18:00:00 +0200</pubDate>
+      
+      <guid>https://blog.japaric.io/tags/concurrency/</guid>
+      <description></description>
+    </item>
+    
+    <item>
+      <title>multi-core</title>
+      <link>https://blog.japaric.io/tags/multi-core/</link>
+      <pubDate>Sun, 23 Jun 2019 18:00:00 +0200</pubDate>
+      
+      <guid>https://blog.japaric.io/tags/multi-core/</guid>
+      <description></description>
+    </item>
+    
+    <item>
+      <title>rtfm</title>
+      <link>https://blog.japaric.io/tags/rtfm/</link>
+      <pubDate>Sun, 23 Jun 2019 18:00:00 +0200</pubDate>
+      
+      <guid>https://blog.japaric.io/tags/rtfm/</guid>
+      <description></description>
+    </item>
+    
+    <item>
+      <title>functional safety</title>
+      <link>https://blog.japaric.io/tags/functional-safety/</link>
+      <pubDate>Sat, 13 Apr 2019 16:39:52 +0200</pubDate>
+      
+      <guid>https://blog.japaric.io/tags/functional-safety/</guid>
+      <description></description>
+    </item>
+    
+    <item>
+      <title>static analysis</title>
+      <link>https://blog.japaric.io/tags/static-analysis/</link>
+      <pubDate>Sat, 13 Apr 2019 16:39:52 +0200</pubDate>
+      
+      <guid>https://blog.japaric.io/tags/static-analysis/</guid>
+      <description></description>
+    </item>
+    
+    <item>
+      <title>tooling</title>
+      <link>https://blog.japaric.io/tags/tooling/</link>
+      <pubDate>Sat, 13 Apr 2019 16:39:52 +0200</pubDate>
+      
+      <guid>https://blog.japaric.io/tags/tooling/</guid>
+      <description></description>
+    </item>
+    
+    <item>
+      <title>ARM Cortex-M</title>
+      <link>https://blog.japaric.io/tags/arm-cortex-m/</link>
+      <pubDate>Wed, 19 Dec 2018 18:40:45 +0100</pubDate>
+      
+      <guid>https://blog.japaric.io/tags/arm-cortex-m/</guid>
+      <description></description>
+    </item>
+    
+    <item>
+      <title>safety</title>
+      <link>https://blog.japaric.io/tags/safety/</link>
+      <pubDate>Sat, 17 Feb 2018 18:16:39 +0100</pubDate>
+      
+      <guid>https://blog.japaric.io/tags/safety/</guid>
+      <description></description>
+    </item>
+    
+    <item>
+      <title>microcontroller</title>
+      <link>https://blog.japaric.io/tags/microcontroller/</link>
+      <pubDate>Fri, 09 Feb 2018 11:47:30 +0100</pubDate>
+      
+      <guid>https://blog.japaric.io/tags/microcontroller/</guid>
+      <description></description>
+    </item>
+    
+    <item>
+      <title>performance</title>
+      <link>https://blog.japaric.io/tags/performance/</link>
+      <pubDate>Sun, 04 Jun 2017 14:08:14 -0500</pubDate>
+      
+      <guid>https://blog.japaric.io/tags/performance/</guid>
+      <description></description>
+    </item>
+    
+    <item>
+      <title>recipe</title>
+      <link>https://blog.japaric.io/tags/recipe/</link>
+      <pubDate>Sun, 04 Jun 2017 14:08:14 -0500</pubDate>
+      
+      <guid>https://blog.japaric.io/tags/recipe/</guid>
+      <description></description>
+    </item>
+    
+    <item>
+      <title>analysis</title>
+      <link>https://blog.japaric.io/tags/analysis/</link>
+      <pubDate>Wed, 31 May 2017 21:14:06 -0500</pubDate>
+      
+      <guid>https://blog.japaric.io/tags/analysis/</guid>
+      <description></description>
+    </item>
+    
+    <item>
+      <title>template</title>
+      <link>https://blog.japaric.io/tags/template/</link>
+      <pubDate>Fri, 28 Apr 2017 22:05:45 -0500</pubDate>
+      
+      <guid>https://blog.japaric.io/tags/template/</guid>
+      <description></description>
+    </item>
+    
+    <item>
+      <title>tutorial</title>
+      <link>https://blog.japaric.io/tags/tutorial/</link>
+      <pubDate>Fri, 28 Apr 2017 22:05:45 -0500</pubDate>
+      
+      <guid>https://blog.japaric.io/tags/tutorial/</guid>
+      <description></description>
+    </item>
+    
+    <item>
+      <title>I/O</title>
+      <link>https://blog.japaric.io/tags/i/o/</link>
+      <pubDate>Mon, 01 Jan 0001 00:00:00 +0000</pubDate>
+      
+      <guid>https://blog.japaric.io/tags/i/o/</guid>
+      <description></description>
+    </item>
+    
+  </channel>
+</rss>
